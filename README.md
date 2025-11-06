@@ -1,7 +1,6 @@
-# Welcome to streamlit
+[![Live Demo](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://dualsubstrate-demo-chassis.streamlit.app)
 
-This is the app you get when you run `streamlit hello`, extracted as its own app.
-
-Edit [Hello.py](./Hello.py) to customize this app to your heart's desire. ❤️
-
-Check it out on [Streamlit Community Cloud](https://st-hello-app.streamlit.app/)
+“Engine stays hardened on Fly.
+Demo chassis lives on Streamlit Cloud (free).
+No shared code, no shared infra – zero blast-radius.
+5-minute spin-up, 30-second deploy loop.”
