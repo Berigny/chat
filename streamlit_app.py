@@ -2,6 +2,7 @@ import base64
 import io
 import json
 import math
+import os
 import struct
 import wave
 from urllib.parse import unquote
@@ -9,6 +10,8 @@ from urllib.parse import unquote
 import requests
 import streamlit as st
 API = "https://dualsubstrate-commercial.fly.dev"
+API_KEY = st.secrets.get("API_KEY") or os.getenv("DUALSUBSTRATE_API_KEY") or "demo-key"
+HEADERS = {"x-api-key": API_KEY} if API_KEY else {}
 
 st.set_page_config(page_title="DualSubstrate Live Demo", layout="centered")
 st.title("🎤 Live Prime-Ledger Demo (Browser STT)")
@@ -90,9 +93,11 @@ if st.session_state.last:
     text = st.session_state.last.get("text", "")
     if text:
         try:
+            payload = {"entity": "demo_user", "factors": _hash(text), "text": text}
             resp = requests.post(
                 f"{API}/anchor",
-                json={"entity": "demo_user", "factors": _hash(text)},
+                json=payload,
+                headers=HEADERS,
                 timeout=10,
             )
             resp.raise_for_status()
@@ -105,7 +110,7 @@ if st.session_state.last:
 
 if st.button("🔍 Recall last sentence"):
     try:
-        resp = requests.get(f"{API}/retrieve?entity=demo_user", timeout=10)
+        resp = requests.get(f"{API}/retrieve?entity=demo_user", headers=HEADERS, timeout=10)
         if not resp.ok:
             st.warning(f"Recall failed: {resp.status_code} {resp.text}")
         else:
@@ -127,7 +132,7 @@ if st.button("🔍 Recall last sentence"):
 tokens_saved = 0
 integrity = 0.0
 try:
-    metrics_resp = requests.get(f"{API}/metrics", timeout=10)
+    metrics_resp = requests.get(f"{API}/metrics", headers=HEADERS, timeout=10)
     metrics_resp.raise_for_status()
     m = metrics_resp.json()
     tokens_saved = m.get("tokens_deduped", m.get("tokens_saved", 0))
