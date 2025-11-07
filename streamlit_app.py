@@ -79,7 +79,7 @@ def _transcribe_audio(raw_bytes: bytes) -> str:
 
 def _anchor_text(text: str) -> None:
     """Send the captured sentence to the ledger API."""
-    payload = {"entity": "demo_user", "factors": _hash(text), "text": text}
+    payload = {"entity": "demo_user", "factors": [], "text": text}
     try:
         resp = requests.post(
             f"{API}/anchor",
@@ -124,7 +124,7 @@ else:
 
 if st.button("🔍 Recall last sentence"):
     try:
-        resp = requests.get(f"{API}/recall?entity=demo_user", headers=HEADERS, timeout=10)
+        resp = requests.get(f"{API}/retrieve?entity=demo_user", headers=HEADERS, timeout=10)
         if not resp.ok:
             st.warning(f"Recall failed: {resp.status_code} {resp.text}")
         else:
