@@ -1,20 +1,20 @@
 import base64
+import hashlib
 import io
-import json
 import math
 import os
 import struct
 import wave
-from urllib.parse import unquote
 
 import requests
 import streamlit as st
+import speech_recognition as sr
 API = "https://dualsubstrate-commercial.fly.dev"
 API_KEY = st.secrets.get("API_KEY") or os.getenv("DUALSUBSTRATE_API_KEY") or "demo-key"
 HEADERS = {"x-api-key": API_KEY} if API_KEY else {}
 
 st.set_page_config(page_title="DualSubstrate Live Demo", layout="centered")
-st.title("🎤 Live Prime-Ledger Demo (Browser STT)")
+st.title("Live Prime-Ledger Demo (Browser STT)")
 st.markdown(
     """
     <style>
@@ -25,43 +25,49 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-# ---------- browser STT (no Whisper) ----------
-html = """
-<script>
-function startSTT(){
-  const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if(!Speech){
-    alert("SpeechRecognition not supported in this browser.");
-    return;
-  }
-  const r = new Speech();
-  r.interimResults=false; r.lang='en-US';
-  r.onresult=e=>{
-    const t=e.results[0][0].transcript;
-    const url = new URL(window.parent.location.href);
-    url.searchParams.set('data', JSON.stringify({text:t}));
-    window.parent.location.replace(url.toString());
-  };
-  r.onerror=err=>console.error(err);
-  r.start();
-}
-</script>
-<button onclick="startSTT()">Start talking</button>
-"""
-st.components.v1.html(html, height=100)
+# ---------- browser recording ----------
+recognizer = sr.Recognizer()
+if "last_text" not in st.session_state:
+    st.session_state.last_text = None
+if "last_audio" not in st.session_state:
+    st.session_state.last_audio = None
+if "last_audio_digest" not in st.session_state:
+    st.session_state.last_audio_digest = None
 
-# ---------- callback route via Streamlit ----------
-if "last" not in st.session_state:
-    st.session_state.last = None
 
-if st.query_params.get("data"):
-    raw_payload = st.query_params["data"][0]
-    try:
-        st.session_state.last = json.loads(unquote(raw_payload))
-    except json.JSONDecodeError:
-        st.warning("Received malformed STT payload.")
-    finally:
-        st.query_params.clear()
+def _transcribe_audio(raw_bytes: bytes) -> str:
+    """Turn recorded audio into text using Google's free recognizer."""
+    audio_buffer = io.BytesIO(raw_bytes)
+    audio_buffer.name = "input.wav"
+    with sr.AudioFile(audio_buffer) as source:
+        audio_data = recognizer.record(source)
+    return recognizer.recognize_google(audio_data)
+
+
+audio_file = st.audio_input(
+    "Press to talk",
+    key="stream_audio",
+    type=["wav"],
+    help="Hold to record, release to process.",
+)
+if audio_file:
+    audio_bytes = audio_file.getvalue()
+    st.session_state.last_audio = audio_bytes
+    st.audio(audio_bytes, format="audio/wav")
+    digest = hashlib.sha1(audio_bytes).hexdigest()
+    if digest == st.session_state.last_audio_digest:
+        st.info("Audio already processed. Record again to capture new text.")
+    else:
+        st.session_state.last_audio_digest = digest
+        try:
+            transcript = _transcribe_audio(audio_bytes)
+            if transcript:
+                st.session_state.last_text = transcript
+                st.success(f"Captured: {transcript}")
+            else:
+                st.warning("No speech detected in the recording.")
+        except Exception as exc:
+            st.error(f"Transcription failed: {exc}")
 
 # ---------- tiny helper ----------
 def _hash(s: str):
@@ -89,8 +95,8 @@ def _tts(text: str) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 # ---------- call engine ----------
-if st.session_state.last:
-    text = st.session_state.last.get("text", "")
+if st.session_state.last_text:
+    text = st.session_state.last_text.strip()
     if text:
         try:
             payload = {"entity": "demo_user", "factors": _hash(text), "text": text}
@@ -106,7 +112,7 @@ if st.session_state.last:
         except requests.RequestException as exc:
             st.error(f"Anchor failed: {exc}")
         finally:
-            st.session_state.last = None
+            st.session_state.last_text = None
 
 if st.button("🔍 Recall last sentence"):
     try:
@@ -117,8 +123,8 @@ if st.button("🔍 Recall last sentence"):
             payload = resp.json()
             st.write(payload)
             recalled_text = payload.get("text")
-            if not recalled_text and st.session_state.last:
-                recalled_text = st.session_state.last.get("text")
+            if not recalled_text and st.session_state.last_text:
+                recalled_text = st.session_state.last_text
             audio_payload = _tts(recalled_text) if recalled_text else ""
             if audio_payload:
                 st.components.v1.html(
