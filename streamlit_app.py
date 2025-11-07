@@ -49,6 +49,24 @@ def _transcribe_audio(raw_bytes: bytes) -> str:
     return recognizer.recognize_google(audio_data)
 
 
+def _anchor_text(text: str) -> None:
+    """Send the captured sentence to the ledger API."""
+    payload = {"entity": "demo_user", "factors": _hash(text), "text": text}
+    try:
+        resp = requests.post(
+            f"{API}/anchor",
+            json=payload,
+            headers=HEADERS,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        st.success("Anchored last sentence.")
+        st.write(resp.json())
+        st.session_state.last_text = text
+    except requests.RequestException as exc:
+        st.error(f"Anchor failed: {exc}")
+
+
 if recognizer is None:
     st.warning("SpeechRecognition package missing. Please reinstall dependencies.")
 else:
@@ -69,8 +87,8 @@ else:
             try:
                 transcript = _transcribe_audio(audio_bytes)
                 if transcript:
-                    st.session_state.last_text = transcript
                     st.success(f"Captured: {transcript}")
+                    _anchor_text(transcript)
                 else:
                     st.warning("No speech detected in the recording.")
             except Exception as exc:
@@ -102,26 +120,6 @@ def _tts(text: str) -> str:
             frames.extend(struct.pack("<h", sample))
         wf.writeframes(frames)
     return base64.b64encode(buf.getvalue()).decode()
-
-# ---------- call engine ----------
-if st.session_state.last_text:
-    text = st.session_state.last_text.strip()
-    if text:
-        try:
-            payload = {"entity": "demo_user", "factors": _hash(text), "text": text}
-            resp = requests.post(
-                f"{API}/anchor",
-                json=payload,
-                headers=HEADERS,
-                timeout=10,
-            )
-            resp.raise_for_status()
-            st.success("Anchored last sentence.")
-            st.write(resp.json())
-        except requests.RequestException as exc:
-            st.error(f"Anchor failed: {exc}")
-        finally:
-            st.session_state.last_text = None
 
 if st.button("🔍 Recall last sentence"):
     try:
