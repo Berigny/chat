@@ -78,8 +78,10 @@ else:
 
 # ---------- tiny helper ----------
 def _hash(s: str):
-    MAP = {w: p for p, w in enumerate("the and is to of a in that it with on for are as this was at be by an".split(), start=11)}
-    return [{"prime": MAP.get(w.lower(), 2), "k": 1} for w in s.split() if w.isalpha()][:30]
+    """Map words → pseudo primes with unit deltas for the demo ledger."""
+    words = "the and is to of a in that it with on for are as this was at be by an".split()
+    mapping = {w: p for p, w in enumerate(words, start=11)}
+    return [{"prime": mapping.get(word.lower(), 2), "delta": 1} for word in s.split() if word.isalpha()][:30]
 
 
 def _tts(text: str) -> str:
