@@ -8,7 +8,10 @@ import wave
 
 import requests
 import streamlit as st
-import speech_recognition as sr
+try:
+    import speech_recognition as sr
+except ModuleNotFoundError:  # pragma: no cover - Streamlit Cloud bootstrap
+    sr = None
 API = "https://dualsubstrate-commercial.fly.dev"
 API_KEY = st.secrets.get("API_KEY") or os.getenv("DUALSUBSTRATE_API_KEY") or "demo-key"
 HEADERS = {"x-api-key": API_KEY} if API_KEY else {}
@@ -26,7 +29,7 @@ st.markdown(
 )
 
 # ---------- browser recording ----------
-recognizer = sr.Recognizer()
+recognizer = sr.Recognizer() if sr else None
 if "last_text" not in st.session_state:
     st.session_state.last_text = None
 if "last_audio" not in st.session_state:
@@ -37,6 +40,8 @@ if "last_audio_digest" not in st.session_state:
 
 def _transcribe_audio(raw_bytes: bytes) -> str:
     """Turn recorded audio into text using Google's free recognizer."""
+    if recognizer is None:
+        raise RuntimeError("Speech recognizer unavailable.")
     audio_buffer = io.BytesIO(raw_bytes)
     audio_buffer.name = "input.wav"
     with sr.AudioFile(audio_buffer) as source:
@@ -44,30 +49,32 @@ def _transcribe_audio(raw_bytes: bytes) -> str:
     return recognizer.recognize_google(audio_data)
 
 
-audio_file = st.audio_input(
-    "Press to talk",
-    key="stream_audio",
-    type=["wav"],
-    help="Hold to record, release to process.",
-)
-if audio_file:
-    audio_bytes = audio_file.getvalue()
-    st.session_state.last_audio = audio_bytes
-    st.audio(audio_bytes, format="audio/wav")
-    digest = hashlib.sha1(audio_bytes).hexdigest()
-    if digest == st.session_state.last_audio_digest:
-        st.info("Audio already processed. Record again to capture new text.")
-    else:
-        st.session_state.last_audio_digest = digest
-        try:
-            transcript = _transcribe_audio(audio_bytes)
-            if transcript:
-                st.session_state.last_text = transcript
-                st.success(f"Captured: {transcript}")
-            else:
-                st.warning("No speech detected in the recording.")
-        except Exception as exc:
-            st.error(f"Transcription failed: {exc}")
+if recognizer is None:
+    st.warning("SpeechRecognition package missing. Please reinstall dependencies.")
+else:
+    audio_file = st.audio_input(
+        "Press to talk",
+        key="stream_audio",
+        help="Hold to record, release to process.",
+    )
+    if audio_file:
+        audio_bytes = audio_file.getvalue()
+        st.session_state.last_audio = audio_bytes
+        st.audio(audio_bytes, format="audio/wav")
+        digest = hashlib.sha1(audio_bytes).hexdigest()
+        if digest == st.session_state.last_audio_digest:
+            st.info("Audio already processed. Record again to capture new text.")
+        else:
+            st.session_state.last_audio_digest = digest
+            try:
+                transcript = _transcribe_audio(audio_bytes)
+                if transcript:
+                    st.session_state.last_text = transcript
+                    st.success(f"Captured: {transcript}")
+                else:
+                    st.warning("No speech detected in the recording.")
+            except Exception as exc:
+                st.error(f"Transcription failed: {exc}")
 
 # ---------- tiny helper ----------
 def _hash(s: str):
