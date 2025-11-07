@@ -28,6 +28,34 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
+# ---------- tiny helpers ----------
+def _hash(s: str):
+    """Map words → pseudo primes with unit deltas for the demo ledger."""
+    words = "the and is to of a in that it with on for are as this was at be by an".split()
+    mapping = {w: p for p, w in enumerate(words, start=11)}
+    return [{"prime": mapping.get(word.lower(), 2), "delta": 1} for word in s.split() if word.isalpha()][:30]
+
+
+def _tts(text: str) -> str:
+    """Generate a short base64 WAV tone derived from the text."""
+    if not text:
+        return ""
+    sample_rate = 16000
+    duration = min(max(len(text) * 0.05, 0.4), 3.0)
+    freq = 260 + (sum(ord(ch) for ch in text) % 480)
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(sample_rate)
+        frames = bytearray()
+        for i in range(int(sample_rate * duration)):
+            sample = int(32767 * 0.25 * math.sin(2 * math.pi * freq * i / sample_rate))
+            frames.extend(struct.pack("<h", sample))
+        wf.writeframes(frames)
+    return base64.b64encode(buf.getvalue()).decode()
+
+
 # ---------- browser recording ----------
 recognizer = sr.Recognizer() if sr else None
 if "last_text" not in st.session_state:
@@ -93,33 +121,6 @@ else:
                     st.warning("No speech detected in the recording.")
             except Exception as exc:
                 st.error(f"Transcription failed: {exc}")
-
-# ---------- tiny helper ----------
-def _hash(s: str):
-    """Map words → pseudo primes with unit deltas for the demo ledger."""
-    words = "the and is to of a in that it with on for are as this was at be by an".split()
-    mapping = {w: p for p, w in enumerate(words, start=11)}
-    return [{"prime": mapping.get(word.lower(), 2), "delta": 1} for word in s.split() if word.isalpha()][:30]
-
-
-def _tts(text: str) -> str:
-    """Generate a short base64 WAV tone derived from the text."""
-    if not text:
-        return ""
-    sample_rate = 16000
-    duration = min(max(len(text) * 0.05, 0.4), 3.0)
-    freq = 260 + (sum(ord(ch) for ch in text) % 480)
-    buf = io.BytesIO()
-    with wave.open(buf, "wb") as wf:
-        wf.setnchannels(1)
-        wf.setsampwidth(2)
-        wf.setframerate(sample_rate)
-        frames = bytearray()
-        for i in range(int(sample_rate * duration)):
-            sample = int(32767 * 0.25 * math.sin(2 * math.pi * freq * i / sample_rate))
-            frames.extend(struct.pack("<h", sample))
-        wf.writeframes(frames)
-    return base64.b64encode(buf.getvalue()).decode()
 
 if st.button("🔍 Recall last sentence"):
     try:
