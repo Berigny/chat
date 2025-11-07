@@ -124,7 +124,7 @@ else:
 
 if st.button("🔍 Recall last sentence"):
     try:
-        resp = requests.get(f"{API}/retrieve?entity=demo_user", headers=HEADERS, timeout=10)
+        resp = requests.get(f"{API}/recall?entity=demo_user", headers=HEADERS, timeout=10)
         if not resp.ok:
             st.warning(f"Recall failed: {resp.status_code} {resp.text}")
         else:
