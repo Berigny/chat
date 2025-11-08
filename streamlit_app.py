@@ -59,8 +59,8 @@ def _tts(text: str) -> str:
 # ---------- browser recording ----------
 recognizer = sr.Recognizer() if sr else None
 if recognizer:
-    recognizer.dynamic_energy_threshold = True
-    recognizer.energy_threshold = 150
+    recognizer.dynamic_energy_threshold = False
+    recognizer.energy_threshold = 120
 if "last_text" not in st.session_state:
     st.session_state.last_text = None
 if "last_audio" not in st.session_state:
@@ -80,12 +80,11 @@ def _transcribe_audio(raw_bytes: bytes) -> str:
     audio_buffer = io.BytesIO(raw_bytes)
     audio_buffer.name = "input.wav"
     with sr.AudioFile(audio_buffer) as source:
-        recognizer.adjust_for_ambient_noise(source, duration=0.05)
         audio_data = recognizer.record(source)
     try:
         return recognizer.recognize_google(audio_data)
-    except sr.UnknownValueError:
-        return ""
+    except sr.UnknownValueError as exc:
+        raise RuntimeError("Could not understand the audio sample.") from exc
     except sr.RequestError as exc:
         raise RuntimeError(f"Speech service unavailable: {exc}") from exc
 
@@ -127,16 +126,17 @@ else:
             st.session_state.last_audio_digest = digest
             try:
                 transcript = _transcribe_audio(audio_bytes)
-                if transcript:
+            except RuntimeError as exc:
+                st.warning(str(exc))
+            except Exception as exc:
+                detail = str(exc).strip() or exc.__class__.__name__
+                st.error(f"Transcription failed: {detail}")
+            else:
+                if transcript.strip():
                     st.success(f"Captured: {transcript}")
                     _anchor_text(transcript)
                 else:
                     st.warning("No speech detected in the recording.")
-            except sr.UnknownValueError:
-                st.warning("Did not catch that—please try again with a clearer sample.")
-            except Exception as exc:
-                detail = str(exc).strip() or exc.__class__.__name__
-                st.error(f"Transcription failed: {detail}")
 
 if st.button("🔍 Recall last sentence"):
     try:
