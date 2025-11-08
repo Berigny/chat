@@ -1,5 +1,4 @@
 import audioop
-import audioop
 import base64
 import hashlib
 import io
@@ -158,11 +157,21 @@ def _anchor_text(text: str) -> None:
             timeout=10,
         )
         resp.raise_for_status()
-        st.success("Anchored last sentence.")
-        st.write(resp.json())
-        st.session_state.last_text = text
+    except requests.HTTPError as exc:
+        status = exc.response.status_code if exc.response else "?"
+        body = exc.response.text if exc.response else ""
+        st.error(f"Anchor failed ({status}): {body or exc}")
+        return
     except requests.RequestException as exc:
         st.error(f"Anchor failed: {exc}")
+        return
+
+    st.success("Anchored last sentence.")
+    try:
+        st.write(resp.json())
+    except ValueError:
+        st.info("Anchor succeeded but returned non-JSON payload.")
+    st.session_state.last_text = text
 
 
 if recognizer is None:
