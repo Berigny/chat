@@ -72,6 +72,11 @@ if "recall_status" not in st.session_state:
     st.session_state.recall_status = None
     st.session_state.recall_error = None
     st.session_state.recall_payload = None
+if "ledger_payload" not in st.session_state:
+    st.session_state.ledger_payload = None
+    st.session_state.ledger_error = None
+if "last_hypothesis" not in st.session_state:
+    st.session_state.last_hypothesis = None
 
 
 def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
@@ -174,6 +179,25 @@ def _anchor_text(text: str) -> None:
     st.session_state.last_text = text
 
 
+def _fetch_ledger(entity: str) -> None:
+    """Load the persisted factor vector for this entity from RocksDB."""
+    try:
+        resp = requests.get(
+            f"{API}/ledger",
+            params={"entity": entity},
+            headers=HEADERS,
+            timeout=10,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        st.session_state.ledger_payload = None
+        st.session_state.ledger_error = str(exc)
+        st.warning(f"Ledger fetch failed: {exc}")
+        return
+    st.session_state.ledger_error = None
+    st.session_state.ledger_payload = resp.json()
+
+
 if recognizer is None:
     st.warning("SpeechRecognition package missing. Please reinstall dependencies.")
 else:
@@ -219,6 +243,8 @@ if st.button("🔍 Recall last sentence"):
         st.session_state.recall_status = None
         st.session_state.recall_payload = None
         st.session_state.recall_error = str(exc)
+    finally:
+        _fetch_ledger("demo_user")
 
 # render outside the button block so it survives reruns
 if st.session_state.recall_error:
@@ -238,6 +264,12 @@ elif st.session_state.recall_payload:
 if st.session_state.get("last_hypothesis"):
     with st.expander("Debug: last speech hypothesis"):
         st.json(st.session_state.last_hypothesis)
+
+if st.session_state.ledger_payload:
+    st.subheader("Ledger snapshot (RocksDB)")
+    st.json(st.session_state.ledger_payload)
+elif st.session_state.ledger_error:
+    st.info(f"Ledger snapshot unavailable: {st.session_state.ledger_error}")
 
 # ---------- metrics ----------
 tokens_saved = 0
