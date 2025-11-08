@@ -1,4 +1,5 @@
 import audioop
+import audioop
 import base64
 import hashlib
 import io
@@ -101,6 +102,11 @@ def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
     if rate != target_rate:
         audio, _ = audioop.ratecv(audio, sampwidth, channels, rate, target_rate, None)
         rate = target_rate
+    # boost quiet clips
+    peak = audioop.max(audio, sampwidth) or 1
+    if peak < 8000:
+        factor = min(4.0, 20000 / peak)
+        audio = audioop.mul(audio, sampwidth, factor)
 
     buf = io.BytesIO()
     with wave.open(buf, "wb") as wf:
