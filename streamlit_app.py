@@ -60,7 +60,7 @@ def _tts(text: str) -> str:
 recognizer = sr.Recognizer() if sr else None
 if recognizer:
     recognizer.dynamic_energy_threshold = True
-    recognizer.energy_threshold = 200
+    recognizer.energy_threshold = 150
 if "last_text" not in st.session_state:
     st.session_state.last_text = None
 if "last_audio" not in st.session_state:
@@ -80,9 +80,14 @@ def _transcribe_audio(raw_bytes: bytes) -> str:
     audio_buffer = io.BytesIO(raw_bytes)
     audio_buffer.name = "input.wav"
     with sr.AudioFile(audio_buffer) as source:
-        # recognizer.adjust_for_ambient_noise(source, duration=0.05)
+        recognizer.adjust_for_ambient_noise(source, duration=0.05)
         audio_data = recognizer.record(source)
-    return recognizer.recognize_google(audio_data)
+    try:
+        return recognizer.recognize_google(audio_data)
+    except sr.UnknownValueError:
+        return ""
+    except sr.RequestError as exc:
+        raise RuntimeError(f"Speech service unavailable: {exc}") from exc
 
 
 def _anchor_text(text: str) -> None:
