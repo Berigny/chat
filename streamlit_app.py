@@ -64,6 +64,10 @@ if "last_audio" not in st.session_state:
     st.session_state.last_audio = None
 if "last_audio_digest" not in st.session_state:
     st.session_state.last_audio_digest = None
+if "recall_status" not in st.session_state:
+    st.session_state.recall_status = None
+    st.session_state.recall_error = None
+    st.session_state.recall_payload = None
 
 
 def _transcribe_audio(raw_bytes: bytes) -> str:
@@ -79,7 +83,7 @@ def _transcribe_audio(raw_bytes: bytes) -> str:
 
 def _anchor_text(text: str) -> None:
     """Send the captured sentence to the ledger API."""
-    payload = {"entity": "demo_user", "factors": [], "text": text}
+    payload = {"entity": "demo_user", "factors": _hash(text), "text": text}
     try:
         resp = requests.post(
             f"{API}/anchor",
@@ -125,22 +129,28 @@ else:
 if st.button("🔍 Recall last sentence"):
     try:
         resp = requests.get(f"{API}/retrieve?entity=demo_user", headers=HEADERS, timeout=10)
-        if not resp.ok:
-            st.warning(f"Recall failed: {resp.status_code} {resp.text}")
-        else:
-            payload = resp.json()
-            st.write(payload)
-            recalled_text = payload.get("text")
-            if not recalled_text and st.session_state.last_text:
-                recalled_text = st.session_state.last_text
-            audio_payload = _tts(recalled_text) if recalled_text else ""
-            if audio_payload:
-                st.components.v1.html(
-                    f'<audio autoplay><source src="data:audio/wav;base64,{audio_payload}" type="audio/wav"></audio>',
-                    height=0,
-                )
+        st.session_state.recall_status = resp.status_code
+        st.session_state.recall_payload = resp.json() if resp.ok else None
+        st.session_state.recall_error = None if resp.ok else resp.text
     except requests.RequestException as exc:
-        st.error(f"Recall failed: {exc}")
+        st.session_state.recall_status = None
+        st.session_state.recall_payload = None
+        st.session_state.recall_error = str(exc)
+
+# render outside the button block so it survives reruns
+if st.session_state.recall_error:
+    st.warning(f"Recall failed: {st.session_state.recall_error}")
+elif st.session_state.recall_payload:
+    st.write(st.session_state.recall_payload)
+    recalled_text = st.session_state.recall_payload.get("text")
+    if not recalled_text and st.session_state.last_text:
+        recalled_text = st.session_state.last_text
+    audio_payload = _tts(recalled_text) if recalled_text else ""
+    if audio_payload:
+        st.components.v1.html(
+            f'<audio autoplay><source src="data:audio/wav;base64,{audio_payload}" type="audio/wav"></audio>',
+            height=0,
+        )
 
 # ---------- metrics ----------
 tokens_saved = 0
