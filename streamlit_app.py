@@ -124,7 +124,10 @@ else:
                 else:
                     st.warning("No speech detected in the recording.")
             except Exception as exc:
-                st.error(f"Transcription failed: {exc}")
+                detail = str(exc).strip()
+                if not detail:
+                    detail = exc.__class__.__name__
+                st.error(f"Transcription failed: {detail}")
 
 if st.button("🔍 Recall last sentence"):
     try:
