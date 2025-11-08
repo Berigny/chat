@@ -5,6 +5,7 @@ import io
 import math
 import os
 import struct
+import time
 import wave
 
 import requests
@@ -14,6 +15,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Streamlit Cloud bootstrap
     sr = None
 API = "https://dualsubstrate-commercial.fly.dev"
+ENTITY = "demo_user"
 API_KEY = st.secrets.get("DUALSUBSTRATE_API_KEY") or os.getenv("DUALSUBSTRATE_API_KEY") or "demo-key"
 HEADERS = {"x-api-key": API_KEY} if API_KEY else {}
 
@@ -30,11 +32,19 @@ st.markdown(
 )
 
 # ---------- tiny helpers ----------
+PRIME_WORDS = "the and is to of a in that it with on for are as this was at be by an".split()
+WORD_TO_PRIME = {w: p for p, w in enumerate(PRIME_WORDS, start=11)}
+PRIME_TO_WORD = {p: w for w, p in WORD_TO_PRIME.items()}
+FALLBACK_LABEL = "novel token"
+
+
 def _hash(s: str):
     """Map words → pseudo primes with unit deltas for the demo ledger."""
-    words = "the and is to of a in that it with on for are as this was at be by an".split()
-    mapping = {w: p for p, w in enumerate(words, start=11)}
-    return [{"prime": mapping.get(word.lower(), 2), "delta": 1} for word in s.split() if word.isalpha()][:30]
+    return [
+        {"prime": WORD_TO_PRIME.get(word.lower(), 2), "delta": 1}
+        for word in s.split()
+        if word.isalpha()
+    ][:30]
 
 
 def _tts(text: str) -> str:
@@ -77,6 +87,10 @@ if "ledger_payload" not in st.session_state:
     st.session_state.ledger_error = None
 if "last_hypothesis" not in st.session_state:
     st.session_state.last_hypothesis = None
+if "history" not in st.session_state:
+    st.session_state.history = []
+if "typed_input" not in st.session_state:
+    st.session_state.typed_input = ""
 
 
 def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
@@ -153,7 +167,7 @@ def _transcribe_audio(raw_bytes: bytes) -> str:
 
 def _anchor_text(text: str) -> None:
     """Send the captured sentence to the ledger API."""
-    payload = {"entity": "demo_user", "factors": _hash(text), "text": text}
+    payload = {"entity": ENTITY, "factors": _hash(text), "text": text}
     try:
         resp = requests.post(
             f"{API}/anchor",
@@ -172,11 +186,21 @@ def _anchor_text(text: str) -> None:
         return
 
     st.success("Anchored last sentence.")
+    resp_payload = None
     try:
-        st.write(resp.json())
+        resp_payload = resp.json()
+        st.write(resp_payload)
     except ValueError:
         st.info("Anchor succeeded but returned non-JSON payload.")
     st.session_state.last_text = text
+    _fetch_ledger(ENTITY)
+    history_entry = {
+        "text": text,
+        "timestamp": (resp_payload or {}).get("timestamp", int(time.time() * 1000)),
+        "ledger": st.session_state.ledger_payload,
+    }
+    st.session_state.history.append(history_entry)
+    st.session_state.history = st.session_state.history[-12:]
 
 
 def _fetch_ledger(entity: str) -> None:
@@ -198,39 +222,56 @@ def _fetch_ledger(entity: str) -> None:
     st.session_state.ledger_payload = resp.json()
 
 
-if recognizer is None:
-    st.warning("SpeechRecognition package missing. Please reinstall dependencies.")
-else:
-    audio_file = st.audio_input(
-        "Press to talk",
-        key="stream_audio",
-        help="Hold to record, release to process.",
-    )
-    if audio_file:
-        audio_bytes = audio_file.getvalue()
-        st.session_state.last_audio = audio_bytes
-        st.caption(
-            f"Clip bytes: {len(audio_bytes)} | MIME: {audio_file.type or 'unknown'}"
+col_voice, col_text = st.columns(2)
+with col_voice:
+    if recognizer is None:
+        st.warning("SpeechRecognition package missing. Please reinstall dependencies.")
+    else:
+        audio_file = st.audio_input(
+            "Press to talk",
+            key="stream_audio",
+            help="Hold to record, release to process.",
         )
-        st.audio(audio_bytes, format="audio/wav")
-        digest = hashlib.sha1(audio_bytes).hexdigest()
-        if digest == st.session_state.last_audio_digest:
-            st.info("Audio already processed. Record again to capture new text.")
-        else:
-            st.session_state.last_audio_digest = digest
-            try:
-                transcript = _transcribe_audio(audio_bytes)
-            except RuntimeError as exc:
-                st.warning(str(exc))
-            except Exception as exc:
-                detail = str(exc).strip() or exc.__class__.__name__
-                st.error(f"Transcription failed: {detail}")
+        if audio_file:
+            audio_bytes = audio_file.getvalue()
+            st.session_state.last_audio = audio_bytes
+            st.caption(
+                f"Clip bytes: {len(audio_bytes)} | MIME: {audio_file.type or 'unknown'}"
+            )
+            st.audio(audio_bytes, format="audio/wav")
+            digest = hashlib.sha1(audio_bytes).hexdigest()
+            if digest == st.session_state.last_audio_digest:
+                st.info("Audio already processed. Record again to capture new text.")
             else:
-                if transcript.strip():
-                    st.success(f"Captured: {transcript}")
-                    _anchor_text(transcript)
+                st.session_state.last_audio_digest = digest
+                try:
+                    transcript = _transcribe_audio(audio_bytes)
+                except RuntimeError as exc:
+                    st.warning(str(exc))
+                except Exception as exc:
+                    detail = str(exc).strip() or exc.__class__.__name__
+                    st.error(f"Transcription failed: {detail}")
                 else:
-                    st.warning("No speech detected in the recording.")
+                    if transcript.strip():
+                        st.success(f"Captured: {transcript}")
+                        _anchor_text(transcript)
+                    else:
+                        st.warning("No speech detected in the recording.")
+
+with col_text:
+    st.markdown("**Typed memory**")
+    with st.form("typed_memory"):
+        typed_text = st.text_area(
+            "Describe the same identity in text", height=120, key="typed_input"
+        )
+        submitted = st.form_submit_button("Anchor typed text")
+        if submitted:
+            content = typed_text.strip()
+            if not content:
+                st.warning("Please enter some text before anchoring.")
+            else:
+                _anchor_text(content)
+                st.session_state.typed_input = ""
 
 
 if st.button("🔍 Recall last sentence"):
@@ -267,9 +308,35 @@ if st.session_state.get("last_hypothesis"):
 
 if st.session_state.ledger_payload:
     st.subheader("Ledger snapshot (RocksDB)")
+    factors = st.session_state.ledger_payload.get("factors")
+    top_primes = _top_primes(factors)
+    if top_primes:
+        trait_cols = st.columns(len(top_primes))
+        for col, trait in zip(trait_cols, top_primes):
+            label = PRIME_TO_WORD.get(trait["prime"], FALLBACK_LABEL).title()
+            col.metric(
+                label,
+                trait["value"],
+                help=f"Prime {trait['prime']}",
+            )
     st.json(st.session_state.ledger_payload)
 elif st.session_state.ledger_error:
     st.info(f"Ledger snapshot unavailable: {st.session_state.ledger_error}")
+
+if st.session_state.history:
+    st.subheader("Identity timeline")
+    for idx, entry in enumerate(reversed(st.session_state.history), start=1):
+        title = f"{_format_timestamp(entry['timestamp'])} • {entry['text'][:60]}"
+        with st.expander(title):
+            st.write(entry["text"])
+            factors = (entry.get("ledger") or {}).get("factors")
+            if factors:
+                st.caption("Top primes")
+                for trait in _top_primes(factors, limit=5):
+                    label = PRIME_TO_WORD.get(trait["prime"], FALLBACK_LABEL).title()
+                    st.write(f"- {label} (prime {trait['prime']}): {trait['value']}")
+            else:
+                st.caption("No ledger snapshot captured for this entry.")
 
 # ---------- metrics ----------
 tokens_saved = 0
@@ -292,3 +359,19 @@ with col2:
     st.markdown('<div class="metric-card">', unsafe_allow_html=True)
     st.metric("🔒 Ledger integrity %", f"{integrity*100:.1f} %", label_visibility="visible")
     st.markdown("</div>", unsafe_allow_html=True)
+def _format_timestamp(ms: int) -> str:
+    try:
+        return time.strftime("%H:%M:%S", time.localtime(ms / 1000))
+    except Exception:
+        return str(ms)
+
+
+def _top_primes(factors, limit: int = 3):
+    if not factors:
+        return []
+    ranked = sorted(
+        (f for f in factors if f.get("value")),
+        key=lambda f: abs(f.get("value", 0)),
+        reverse=True,
+    )
+    return ranked[:limit]
