@@ -13,7 +13,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - Streamlit Cloud bootstrap
     sr = None
 API = "https://dualsubstrate-commercial.fly.dev"
-API_KEY = st.secrets.get("API_KEY") or os.getenv("DUALSUBSTRATE_API_KEY") or "demo-key"
+API_KEY = st.secrets.get("DUALSUBSTRATE_API_KEY") or os.getenv("DUALSUBSTRATE_API_KEY") or "demo-key"
 HEADERS = {"x-api-key": API_KEY} if API_KEY else {}
 
 st.set_page_config(page_title="DualSubstrate Live Demo", layout="centered")
