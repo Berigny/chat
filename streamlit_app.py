@@ -1,3 +1,4 @@
+import audioop
 import base64
 import hashlib
 import io
@@ -73,11 +74,49 @@ if "recall_status" not in st.session_state:
     st.session_state.recall_payload = None
 
 
+def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
+    """Convert arbitrary WAV input to mono 16kHz 16-bit PCM for SR."""
+    try:
+        with wave.open(io.BytesIO(raw_bytes)) as wf:
+            params = wf.getparams()
+            audio = wf.readframes(params.nframes)
+            sampwidth = params.sampwidth
+            channels = params.nchannels
+            rate = params.framerate
+    except wave.Error as exc:
+        raise RuntimeError("Unsupported audio format. Please record again.") from exc
+
+    # convert sample width to 16-bit
+    if sampwidth != 2:
+        audio = audioop.lin2lin(audio, sampwidth, 2)
+        sampwidth = 2
+
+    # collapse to mono
+    if channels != 1:
+        audio = audioop.tomono(audio, sampwidth, 0.5, 0.5)
+        channels = 1
+
+    # resample to 16kHz
+    target_rate = 16000
+    if rate != target_rate:
+        audio, _ = audioop.ratecv(audio, sampwidth, channels, rate, target_rate, None)
+        rate = target_rate
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)
+        wf.setframerate(target_rate)
+        wf.writeframes(audio)
+    buf.seek(0)
+    return buf
+
+
 def _transcribe_audio(raw_bytes: bytes) -> str:
     """Turn recorded audio into text using Google's free recognizer."""
     if recognizer is None:
         raise RuntimeError("Speech recognizer unavailable.")
-    audio_buffer = io.BytesIO(raw_bytes)
+    audio_buffer = _normalize_audio(raw_bytes)
     audio_buffer.name = "input.wav"
     with sr.AudioFile(audio_buffer) as source:
         audio_data = recognizer.record(source)
