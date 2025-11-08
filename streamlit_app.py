@@ -109,6 +109,11 @@ if "history" not in st.session_state:
     st.session_state.history = []
 if "typed_input" not in st.session_state:
     st.session_state.typed_input = ""
+if "clear_typed" not in st.session_state:
+    st.session_state.clear_typed = False
+if st.session_state.clear_typed:
+    st.session_state.typed_input = ""
+    st.session_state.clear_typed = False
 
 
 def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
@@ -185,7 +190,11 @@ def _transcribe_audio(raw_bytes: bytes) -> str:
 
 def _anchor_text(text: str) -> None:
     """Send the captured sentence to the ledger API."""
-    payload = {"entity": ENTITY, "factors": _hash(text), "text": text}
+    factors = _hash(text)
+    if not factors:
+        st.warning("Text did not contain any alphabetical tokens to anchor.")
+        return
+    payload = {"entity": ENTITY, "factors": factors, "text": text}
     try:
         resp = requests.post(
             f"{API}/anchor",
@@ -289,12 +298,12 @@ with col_text:
                 st.warning("Please enter some text before anchoring.")
             else:
                 _anchor_text(content)
-                st.session_state.typed_input = ""
+                st.session_state.clear_typed = True
 
 
 if st.button("🔍 Recall last sentence"):
     try:
-        resp = requests.get(f"{API}/retrieve?entity=demo_user", headers=HEADERS, timeout=10)
+        resp = requests.get(f"{API}/retrieve?entity={ENTITY}", headers=HEADERS, timeout=10)
         st.session_state.recall_status = resp.status_code
         st.session_state.recall_payload = resp.json() if resp.ok else None
         st.session_state.recall_error = None if resp.ok else resp.text
@@ -303,7 +312,7 @@ if st.button("🔍 Recall last sentence"):
         st.session_state.recall_payload = None
         st.session_state.recall_error = str(exc)
     finally:
-        _fetch_ledger("demo_user")
+        _fetch_ledger(ENTITY)
 
 # render outside the button block so it survives reruns
 if st.session_state.recall_error:
