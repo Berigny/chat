@@ -130,16 +130,20 @@ def _transcribe_audio(raw_bytes: bytes) -> str:
     try:
         all_hyp = recognizer.recognize_google(audio_data, show_all=True)
     except sr.UnknownValueError as exc:
+        st.session_state.last_hypothesis = {"error": "unknown_value"}
         raise RuntimeError("Could not understand the audio sample.") from exc
     except sr.RequestError as exc:
+        st.session_state.last_hypothesis = {"error": "request", "detail": str(exc)}
         raise RuntimeError(f"Speech service unavailable: {exc}") from exc
 
     if isinstance(all_hyp, dict) and all_hyp.get("alternative"):
         best = all_hyp["alternative"][0]
         transcript = best.get("transcript", "").strip()
         if transcript:
+            st.session_state.last_hypothesis = best
             return transcript
         raise RuntimeError("Google STT returned empty transcript.")
+    st.session_state.last_hypothesis = all_hyp or {"error": "empty"}
     raise RuntimeError("No speech detected—try recording again a bit louder.")
 
 
@@ -221,6 +225,10 @@ elif st.session_state.recall_payload:
             f'<audio autoplay><source src="data:audio/wav;base64,{audio_payload}" type="audio/wav"></audio>',
             height=0,
         )
+
+if st.session_state.get("last_hypothesis"):
+    with st.expander("Debug: last speech hypothesis"):
+        st.json(st.session_state.last_hypothesis)
 
 # ---------- metrics ----------
 tokens_saved = 0
