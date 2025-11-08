@@ -77,6 +77,7 @@ def _transcribe_audio(raw_bytes: bytes) -> str:
     audio_buffer = io.BytesIO(raw_bytes)
     audio_buffer.name = "input.wav"
     with sr.AudioFile(audio_buffer) as source:
+        recognizer.adjust_for_ambient_noise(source, duration=0.3)
         audio_data = recognizer.record(source)
     return recognizer.recognize_google(audio_data)
 
@@ -123,10 +124,10 @@ else:
                     _anchor_text(transcript)
                 else:
                     st.warning("No speech detected in the recording.")
+            except sr.UnknownValueError:
+                st.warning("Did not catch that—please try again with a clearer sample.")
             except Exception as exc:
-                detail = str(exc).strip()
-                if not detail:
-                    detail = exc.__class__.__name__
+                detail = str(exc).strip() or exc.__class__.__name__
                 st.error(f"Transcription failed: {detail}")
 
 if st.button("🔍 Recall last sentence"):
