@@ -128,15 +128,19 @@ def _transcribe_audio(raw_bytes: bytes) -> str:
         recognizer.adjust_for_ambient_noise(source, duration=0.15)
         audio_data = recognizer.record(source)
     try:
-        return recognizer.recognize_google(audio_data)
+        all_hyp = recognizer.recognize_google(audio_data, show_all=True)
     except sr.UnknownValueError as exc:
-        # attempt a second pass with show_all to inspect raw hypotheses
-        alt = recognizer.recognize_google(audio_data, show_all=True)
-        if isinstance(alt, dict) and alt.get("alternative"):
-            return alt["alternative"][0].get("transcript", "").strip()
         raise RuntimeError("Could not understand the audio sample.") from exc
     except sr.RequestError as exc:
         raise RuntimeError(f"Speech service unavailable: {exc}") from exc
+
+    if isinstance(all_hyp, dict) and all_hyp.get("alternative"):
+        best = all_hyp["alternative"][0]
+        transcript = best.get("transcript", "").strip()
+        if transcript:
+            return transcript
+        raise RuntimeError("Google STT returned empty transcript.")
+    raise RuntimeError("No speech detected—try recording again a bit louder.")
 
 
 def _anchor_text(text: str) -> None:
