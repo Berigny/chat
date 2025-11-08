@@ -61,8 +61,8 @@ def _tts(text: str) -> str:
 # ---------- browser recording ----------
 recognizer = sr.Recognizer() if sr else None
 if recognizer:
-    recognizer.dynamic_energy_threshold = False
-    recognizer.energy_threshold = 120
+    recognizer.dynamic_energy_threshold = True
+    recognizer.energy_threshold = 100
 if "last_text" not in st.session_state:
     st.session_state.last_text = None
 if "last_audio" not in st.session_state:
@@ -125,10 +125,15 @@ def _transcribe_audio(raw_bytes: bytes) -> str:
     audio_buffer = _normalize_audio(raw_bytes)
     audio_buffer.name = "input.wav"
     with sr.AudioFile(audio_buffer) as source:
+        recognizer.adjust_for_ambient_noise(source, duration=0.15)
         audio_data = recognizer.record(source)
     try:
         return recognizer.recognize_google(audio_data)
     except sr.UnknownValueError as exc:
+        # attempt a second pass with show_all to inspect raw hypotheses
+        alt = recognizer.recognize_google(audio_data, show_all=True)
+        if isinstance(alt, dict) and alt.get("alternative"):
+            return alt["alternative"][0].get("transcript", "").strip()
         raise RuntimeError("Could not understand the audio sample.") from exc
     except sr.RequestError as exc:
         raise RuntimeError(f"Speech service unavailable: {exc}") from exc
@@ -163,6 +168,9 @@ else:
     if audio_file:
         audio_bytes = audio_file.getvalue()
         st.session_state.last_audio = audio_bytes
+        st.caption(
+            f"Clip bytes: {len(audio_bytes)} | MIME: {audio_file.type or 'unknown'}"
+        )
         st.audio(audio_bytes, format="audio/wav")
         digest = hashlib.sha1(audio_bytes).hexdigest()
         if digest == st.session_state.last_audio_digest:
