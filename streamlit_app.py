@@ -67,6 +67,24 @@ def _tts(text: str) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
+def _format_timestamp(ms: int) -> str:
+    try:
+        return time.strftime("%H:%M:%S", time.localtime(ms / 1000))
+    except Exception:
+        return str(ms)
+
+
+def _top_primes(factors, limit: int = 3):
+    if not factors:
+        return []
+    ranked = sorted(
+        (f for f in factors if f.get("value")),
+        key=lambda f: abs(f.get("value", 0)),
+        reverse=True,
+    )
+    return ranked[:limit]
+
+
 # ---------- browser recording ----------
 recognizer = sr.Recognizer() if sr else None
 if recognizer:
@@ -359,19 +377,3 @@ with col2:
     st.markdown('<div class="metric-card">', unsafe_allow_html=True)
     st.metric("🔒 Ledger integrity %", f"{integrity*100:.1f} %", label_visibility="visible")
     st.markdown("</div>", unsafe_allow_html=True)
-def _format_timestamp(ms: int) -> str:
-    try:
-        return time.strftime("%H:%M:%S", time.localtime(ms / 1000))
-    except Exception:
-        return str(ms)
-
-
-def _top_primes(factors, limit: int = 3):
-    if not factors:
-        return []
-    ranked = sorted(
-        (f for f in factors if f.get("value")),
-        key=lambda f: abs(f.get("value", 0)),
-        reverse=True,
-    )
-    return ranked[:limit]
