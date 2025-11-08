@@ -17,7 +17,13 @@ except ModuleNotFoundError:  # pragma: no cover - Streamlit Cloud bootstrap
     sr = None
 API = "https://dualsubstrate-commercial.fly.dev"
 ENTITY = "demo_user"
-API_KEY = st.secrets.get("DUALSUBSTRATE_API_KEY") or os.getenv("DUALSUBSTRATE_API_KEY") or "demo-key"
+def _secret(key: str):
+    try:
+        return st.secrets.get(key)
+    except Exception:
+        return None
+
+API_KEY = _secret("DUALSUBSTRATE_API_KEY") or os.getenv("DUALSUBSTRATE_API_KEY") or "demo-key"
 HEADERS = {"x-api-key": API_KEY} if API_KEY else {}
 
 st.set_page_config(page_title="DualSubstrate Live Demo", layout="centered")
@@ -33,17 +39,19 @@ st.markdown(
 )
 
 # ---------- tiny helpers ----------
-PRIME_WORDS = "the and is to of a in that it with on for are as this was at be by an".split()
-WORD_TO_PRIME = {w: p for p, w in enumerate(PRIME_WORDS, start=11)}
+PRIME_ARRAY = (2, 3, 5, 7, 11, 13, 17, 19)
+PRIME_WORDS = ("identity", "memory", "voice", "ledger", "trust", "security", "insight", "story")
+WORD_TO_PRIME = {w: p for w, p in zip(PRIME_WORDS, PRIME_ARRAY)}
 PRIME_TO_WORD = {p: w for w, p in WORD_TO_PRIME.items()}
 FALLBACK_LABEL = "novel token"
+FALLBACK_PRIME = PRIME_ARRAY[0]
 
 
 def _hash(s: str):
     """Map words → pseudo primes with unit deltas for the demo ledger."""
     tokens = re.findall(r"[A-Za-z]+", s)
     return [
-        {"prime": WORD_TO_PRIME.get(word.lower(), 2), "delta": 1}
+        {"prime": WORD_TO_PRIME.get(word.lower(), FALLBACK_PRIME), "delta": 1}
         for word in tokens
     ][:30]
 
