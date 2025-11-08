@@ -4,6 +4,7 @@ import hashlib
 import io
 import math
 import os
+import re
 import struct
 import time
 import wave
@@ -40,10 +41,10 @@ FALLBACK_LABEL = "novel token"
 
 def _hash(s: str):
     """Map words → pseudo primes with unit deltas for the demo ledger."""
+    tokens = re.findall(r"[A-Za-z]+", s)
     return [
         {"prime": WORD_TO_PRIME.get(word.lower(), 2), "delta": 1}
-        for word in s.split()
-        if word.isalpha()
+        for word in tokens
     ][:30]
 
 
