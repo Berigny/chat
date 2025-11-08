@@ -58,6 +58,9 @@ def _tts(text: str) -> str:
 
 # ---------- browser recording ----------
 recognizer = sr.Recognizer() if sr else None
+if recognizer:
+    recognizer.dynamic_energy_threshold = True
+    recognizer.energy_threshold = 200
 if "last_text" not in st.session_state:
     st.session_state.last_text = None
 if "last_audio" not in st.session_state:
@@ -77,7 +80,7 @@ def _transcribe_audio(raw_bytes: bytes) -> str:
     audio_buffer = io.BytesIO(raw_bytes)
     audio_buffer.name = "input.wav"
     with sr.AudioFile(audio_buffer) as source:
-        recognizer.adjust_for_ambient_noise(source, duration=0.3)
+        # recognizer.adjust_for_ambient_noise(source, duration=0.05)
         audio_data = recognizer.record(source)
     return recognizer.recognize_google(audio_data)
 
