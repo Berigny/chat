@@ -1,5 +1,4 @@
 import base64
-import hashlib
 import io
 import math
 import os
@@ -8,16 +7,13 @@ import wave
 
 import requests
 import streamlit as st
-try:
-    import speech_recognition as sr
-except ModuleNotFoundError:  # pragma: no cover - Streamlit Cloud bootstrap
-    sr = None
+
 API = "https://dualsubstrate-commercial.fly.dev"
 API_KEY = st.secrets.get("DUALSUBSTRATE_API_KEY") or os.getenv("DUALSUBSTRATE_API_KEY") or "demo-key"
 HEADERS = {"x-api-key": API_KEY} if API_KEY else {}
 
 st.set_page_config(page_title="DualSubstrate Live Demo", layout="centered")
-st.title("Live Prime-Ledger Demo (Browser STT)")
+st.title("🎤 Live Prime-Ledger Demo")
 st.markdown(
     """
     <style>
@@ -33,7 +29,7 @@ def _hash(s: str):
     """Map words → pseudo primes with unit deltas for the demo ledger."""
     words = "the and is to of a in that it with on for are as this was at be by an".split()
     mapping = {w: p for p, w in enumerate(words, start=11)}
-    return [{"prime": mapping.get(word.lower(), 2), "delta": 1} for word in s.split() if word.isalpha()][:30]
+    return [{"prime": mapping.get(word.lower(), 2), "k": 1} for word in s.split() if word.isalpha()][:30]
 
 
 def _tts(text: str) -> str:
@@ -56,37 +52,13 @@ def _tts(text: str) -> str:
     return base64.b64encode(buf.getvalue()).decode()
 
 
-# ---------- browser recording ----------
-recognizer = sr.Recognizer() if sr else None
-if recognizer:
-    recognizer.dynamic_energy_threshold = False
-    recognizer.energy_threshold = 120
+# ---------- session state ----------
 if "last_text" not in st.session_state:
     st.session_state.last_text = None
-if "last_audio" not in st.session_state:
-    st.session_state.last_audio = None
-if "last_audio_digest" not in st.session_state:
-    st.session_state.last_audio_digest = None
 if "recall_status" not in st.session_state:
     st.session_state.recall_status = None
     st.session_state.recall_error = None
     st.session_state.recall_payload = None
-
-
-def _transcribe_audio(raw_bytes: bytes) -> str:
-    """Turn recorded audio into text using Google's free recognizer."""
-    if recognizer is None:
-        raise RuntimeError("Speech recognizer unavailable.")
-    audio_buffer = io.BytesIO(raw_bytes)
-    audio_buffer.name = "input.wav"
-    with sr.AudioFile(audio_buffer) as source:
-        audio_data = recognizer.record(source)
-    try:
-        return recognizer.recognize_google(audio_data)
-    except sr.UnknownValueError as exc:
-        raise RuntimeError("Could not understand the audio sample.") from exc
-    except sr.RequestError as exc:
-        raise RuntimeError(f"Speech service unavailable: {exc}") from exc
 
 
 def _anchor_text(text: str) -> None:
@@ -106,37 +78,58 @@ def _anchor_text(text: str) -> None:
     except requests.RequestException as exc:
         st.error(f"Anchor failed: {exc}")
 
+# ---- JS that actually talks to Streamlit ----
+html = """
+<button id="talk-button">Start talking</button>
+<p id="status-message"></p>
+<script>
+    const button = document.getElementById('talk-button');
+    const statusMessage = document.getElementById('status-message');
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recognition;
 
-if recognizer is None:
-    st.warning("SpeechRecognition package missing. Please reinstall dependencies.")
-else:
-    audio_file = st.audio_input(
-        "Press to talk",
-        key="stream_audio",
-        help="Hold to record, release to process.",
-    )
-    if audio_file:
-        audio_bytes = audio_file.getvalue()
-        st.session_state.last_audio = audio_bytes
-        st.audio(audio_bytes, format="audio/wav")
-        digest = hashlib.sha1(audio_bytes).hexdigest()
-        if digest == st.session_state.last_audio_digest:
-            st.info("Audio already processed. Record again to capture new text.")
-        else:
-            st.session_state.last_audio_digest = digest
-            try:
-                transcript = _transcribe_audio(audio_bytes)
-            except RuntimeError as exc:
-                st.warning(str(exc))
-            except Exception as exc:
-                detail = str(exc).strip() or exc.__class__.__name__
-                st.error(f"Transcription failed: {detail}")
-            else:
-                if transcript.strip():
-                    st.success(f"Captured: {transcript}")
-                    _anchor_text(transcript)
-                else:
-                    st.warning("No speech detected in the recording.")
+    if (!SpeechRecognition) {
+        button.disabled = true;
+        statusMessage.textContent = 'Speech recognition not supported in this browser.';
+    } else {
+        recognition = new SpeechRecognition();
+        recognition.continuous = false; // Only capture a single utterance
+        recognition.interimResults = false; // We only want the final result
+
+        recognition.onstart = () => {
+            button.textContent = 'Listening...';
+            button.disabled = true;
+        };
+
+        recognition.onend = () => {
+            button.textContent = 'Start talking';
+            button.disabled = false;
+        };
+
+        recognition.onresult = (event) => {
+            const transcript = event.results[0][0].transcript;
+            window.parent.postMessage({
+                type: 'streamlit:setComponentValue',
+                value: { 'text': transcript }
+            }, '*');
+        };
+
+        button.onclick = () => {
+            button.textContent = 'Listening...';
+            button.disabled = true;
+            recognition.start();
+        };
+    }
+</script>
+"""
+
+# ---- register the component ----
+text = st.components.v1.html(html, height=80)
+
+# ---- if JS sent something, process it ----
+if isinstance(text, dict) and "text" in text:
+    st.write(f"Captured: **{text['text']}**")
+    _anchor_text(text['text'])
 
 if st.button("🔍 Recall last sentence"):
     try:
