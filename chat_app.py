@@ -44,10 +44,12 @@ if genai and GENAI_KEY:
 
 OPENAI_API_KEY = _secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 
-st.set_page_config(page_title="Ledger Chat", layout="centered")
-st.title("DualSubstrate ledger demo")
+st.set_page_config(page_title="Ledger Chat", layout="wide")
 st.markdown(
-    "Speak or type. Everything anchors to the DualSubstrate ledger. Tip:  type  /q  or  “what did I say at 7 pm”  and I’ll quote you **word-for-word** from the prime-ledger.  Anything else = normal chat."
+    """
+    <h1 class="main-title">What needs remembering next?</h1>
+    """,
+    unsafe_allow_html=True,
 )
 
 _TOAST_CONTAINER = None
@@ -79,25 +81,144 @@ _TOAST_CONTAINER = st.container()
 st.markdown(
     """
 <style>
-    div[data-testid="stForm"] div[data-baseweb="input"] {
-        border: none;
-        box-shadow: none;
-        background-color: transparent;
+    .main-title {
+        font-size: 2rem;
+        font-weight: 400;
+        margin-bottom: 1.5rem;
     }
 
-    div[data-testid="stForm"] div[data-baseweb="input"]:focus-within {
-        box-shadow: none;
-        border: none;
+    .memory-wrapper {
+        border: 1px solid rgba(49, 51, 63, 0.2);
+        border-radius: 1.75rem;
+        padding: 0.75rem 1rem;
+        background: rgba(250, 250, 250, 0.7);
+        backdrop-filter: blur(4px);
+        transition: box-shadow 0.2s ease;
     }
 
-    .chat-history {
+    .memory-wrapper:hover {
+        box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12);
+    }
+
+    .memory-wrapper form {
+        margin: 0;
+    }
+
+    .memory-wrapper .stTextArea textarea {
+        border: none;
+        box-shadow: none;
+        background: transparent;
+        min-height: 3.2rem;
         max-height: 400px;
+        padding: 0;
+        font-size: 1rem;
+        line-height: 1.6;
+        resize: vertical;
         overflow-y: auto;
-        padding-right: 0.5rem;
+    }
+
+    .memory-wrapper .stTextArea textarea:focus {
+        min-height: 8rem;
+    }
+
+    .memory-wrapper .stTextArea > div > div {
+        border: none !important;
+        box-shadow: none !important;
+        background: transparent !important;
+    }
+
+    .memory-wrapper .stTextArea textarea::placeholder {
+        color: rgba(49, 51, 63, 0.6);
+    }
+
+    .memory-wrapper .stButton > button {
+        width: 100%;
+        height: 3rem;
+        border-radius: 1.5rem;
+        border: 1px solid transparent;
+        background: transparent;
+        color: rgba(49, 51, 63, 0.7);
+        font-size: 1.25rem;
+        transition: background 0.2s ease;
+    }
+
+    .memory-wrapper .stButton > button:hover {
+        background: rgba(49, 51, 63, 0.08);
+    }
+
+    .chat-stream {
+        font-size: 0.95rem;
+        line-height: 1.55;
     }
 
     .chat-entry {
+        padding: 0.25rem 0;
+    }
+
+    .chat-stream hr {
+        border: 0;
+        border-top: 1px solid rgba(49, 51, 63, 0.12);
+        margin: 0.75rem 0;
+    }
+
+    .about-col {
+        padding: 0 1.25rem;
+    }
+
+    .about-col-right {
+        border-left: 1px solid rgba(49, 51, 63, 0.12);
+    }
+
+    .about-heading {
+        font-weight: 400;
+        font-size: 1.5rem;
         margin-bottom: 0.75rem;
+    }
+
+    .about-text {
+        font-size: 0.95rem;
+        line-height: 1.6;
+    }
+
+    .metrics-heading {
+        font-size: 1.25rem;
+        font-weight: 400;
+        margin: 1rem 0 0.5rem;
+    }
+
+    .metrics-paragraph {
+        font-size: 1.25rem;
+        line-height: 1.6;
+        margin-bottom: 1rem;
+    }
+
+    .metrics-row div[data-testid="stHorizontalBlock"] {
+        gap: 1rem;
+    }
+
+    .metrics-row .stMetric {
+        border-radius: 1rem;
+        padding: 0.75rem;
+        background: rgba(250, 250, 250, 0.7);
+        box-shadow: inset 0 0 0 1px rgba(49, 51, 63, 0.1);
+    }
+
+    .full-divider {
+        border: 0;
+        border-top: 1px solid rgba(49, 51, 63, 0.12);
+        margin: 2rem 0 1.5rem;
+    }
+
+    .prime-heading {
+        font-weight: 400;
+        font-size: 1.5rem;
+        margin-bottom: 0.75rem;
+    }
+
+    .prime-text {
+        font-size: 0.95rem;
+        line-height: 1.6;
+        margin-bottom: 1rem;
     }
 </style>
 """,
@@ -124,6 +245,10 @@ if "rolling_text" not in st.session_state:
     st.session_state.rolling_text = []
 if "last_anchor_ts" not in st.session_state:
     st.session_state.last_anchor_ts = time.time()
+if "show_file_uploader" not in st.session_state:
+    st.session_state.show_file_uploader = False
+if "show_audio_recorder" not in st.session_state:
+    st.session_state.show_audio_recorder = False
 
 
 def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
@@ -472,12 +597,6 @@ def _chat_response(prompt: str, use_openai=False):
 
 
 # ---------- investor KPI ----------
-st.sidebar.header("Ledger Chat with Persistent Memory")
-st.sidebar.caption(
-    "Tokens Saved = words you never had to re-compute; Integrity = % of anchors that were unique (100 % = zero duplicates); Durability = hours your speech has survived restarts."
-)
-
-# fetch once, with error handling
 try:
     metrics_resp = requests.get(f"{API}/metrics", headers=HEADERS, timeout=5)
     metrics_resp.raise_for_status()
@@ -486,100 +605,173 @@ except (requests.RequestException, ValueError):
     metrics = {"tokens_deduped": "N/A", "ledger_integrity": 0.0}
 
 try:
-    memories_resp = requests.get(f"{API}/memories", params={"entity": ENTITY, "limit": 1}, headers=HEADERS, timeout=5)
+    memories_resp = requests.get(
+        f"{API}/memories",
+        params={"entity": ENTITY, "limit": 1},
+        headers=HEADERS,
+        timeout=5,
+    )
     memories_resp.raise_for_status()
     memories = memories_resp.json()
 except (requests.RequestException, ValueError):
     memories = []
 
-# Safely access memories and metrics
-oldest = memories[-1].get("timestamp", time.time() * 1000) / 1000 if isinstance(memories, list) and memories else time.time()
+oldest = (
+    memories[-1].get("timestamp", time.time() * 1000) / 1000
+    if isinstance(memories, list) and memories
+    else time.time()
+)
 durability_h = (time.time() - oldest) / 3600
 tokens_saved = metrics.get("tokens_deduped", "N/A")
 ledger_integrity = metrics.get("ledger_integrity", 0.0)
 
-st.sidebar.metric("💰 Tokens Saved", tokens_saved)
-st.sidebar.metric("🔒 Integrity %", f"{ledger_integrity*100:.1f} %")
-st.sidebar.metric("🧱 Durability h", f"{durability_h:.1f}")
+with st.container():
+    st.markdown('<div class="memory-wrapper">', unsafe_allow_html=True)
+    with st.form("memory_form", clear_on_submit=False):
+        cols = st.columns([0.08, 0.76, 0.08, 0.08])
+        with cols[0]:
+            attach_clicked = st.form_submit_button(
+                "+", use_container_width=True, help="Attach a file"
+            )
+        with cols[1]:
+            st.text_area(
+                "Memory input",
+                key="typed_input",
+                placeholder="type, speak or attach a new memory",
+                label_visibility="collapsed",
+            )
+        with cols[2]:
+            mic_clicked = st.form_submit_button(
+                "🎙", use_container_width=True, help="Record audio"
+            )
+        with cols[3]:
+            send_clicked = st.form_submit_button(
+                "➤", use_container_width=True, help="Send memory"
+            )
+    st.markdown("</div>", unsafe_allow_html=True)
 
-status_notes = []
-if ledger_integrity >= 0.995:
-    status_notes.append("🔒 Ledger integrity above target")
-if durability_h >= 24:
-    status_notes.append("🧱 Durability exceeds 24h window")
-if status_notes:
-    for note in status_notes:
-        st.sidebar.caption(note)
+typed_text = st.session_state.typed_input
+if send_clicked:
+    text = typed_text.strip()
+    if not text:
+        _warning("Enter some text first.")
+    elif _maybe_handle_recall_query(text):
+        pass
+    else:
+        st.session_state.chat_history.append(("You", text))
+        quote_mode = _is_quote_request(text)
+        bot_reply = _chat_response(text, use_openai=True)
+        if bot_reply is None:
+            bot_reply = ""
+        _update_rolling_memory(text, bot_reply, quote_mode=quote_mode)
+    st.session_state.show_file_uploader = False
+    st.session_state.show_audio_recorder = False
+    st.session_state.typed_input = ""
+elif attach_clicked:
+    st.session_state.show_file_uploader = not st.session_state.show_file_uploader
+    if st.session_state.show_file_uploader:
+        st.session_state.show_audio_recorder = False
+elif mic_clicked:
+    st.session_state.show_audio_recorder = not st.session_state.show_audio_recorder
+    if st.session_state.show_audio_recorder:
+        st.session_state.show_file_uploader = False
 
-st.sidebar.divider()
-
-if st.sidebar.button("Load ledger"):
-    _load_ledger()
-
-if st.session_state.recall_payload:
-    st.sidebar.write("Last recall:", st.session_state.recall_payload)
-if st.session_state.ledger_state:
-    st.sidebar.write("Ledger:", st.session_state.ledger_state)
-
-with st.container(border=True):
-    col_text, col_voice = st.columns([4, 1])
-
-    with col_text:
-        with st.form("typed_chat", clear_on_submit=True):
-            typed_text = st.text_input("Enter a prompt here", key="typed_input")
-            submitted = st.form_submit_button("Send")
-        if submitted:
-            text = typed_text.strip()
-            if not text:
-                _warning("Enter some text first.")
-            elif _maybe_handle_recall_query(text):
-                pass
-            else:
-                st.session_state.chat_history.append(("You", text))
-                quote_mode = _is_quote_request(text)
-                bot_reply = _chat_response(text, use_openai=True)
-                if bot_reply is None:
-                    bot_reply = ""
-                _update_rolling_memory(text, bot_reply, quote_mode=quote_mode)
-
-    with col_voice:
-        audio = st.audio_input("Hold to talk", key="voice_input")
-        if audio:
-            audio_bytes = audio.getvalue()
-            digest = hashlib.sha1(audio_bytes).hexdigest()
-            if digest != st.session_state.last_audio_digest:
-                st.session_state.last_audio_digest = digest
-                norm = _normalize_audio(audio_bytes)
-                if not (OpenAI and OPENAI_API_KEY):
-                    _warning("OpenAI API key missing.")
-                else:
-                    client = OpenAI(api_key=OPENAI_API_KEY)
-                    try:
-                        transcript = client.audio.transcriptions.create(
-                            model="whisper-1",
-                            file=norm
-                        )
-                        text = transcript.text
-                        st.write(f"Transcript: {text}")
-                        if text and _maybe_handle_recall_query(text):
-                            pass
-                        elif text:
-                            st.session_state.chat_history.append(("You", text))
-                            quote_mode = _is_quote_request(text)
-                            bot_reply = _chat_response(text, use_openai=True)
-                            if bot_reply is None:
-                                bot_reply = ""
-                            _update_rolling_memory(text, bot_reply, quote_mode=quote_mode)
-                    except Exception as exc:
-                        _error(f"Transcription failed: {exc}")
-
-st.subheader("Chat History")
-recent_history = list(reversed(st.session_state.chat_history[-20:]))
-if recent_history:
-    history_html = "".join(
-        f"<div class='chat-entry'><strong>{html.escape(role)}:</strong> {html.escape(content)}</div>"
-        for role, content in recent_history
+if st.session_state.show_file_uploader:
+    uploaded = st.file_uploader(
+        "Attach a new memory",
+        key="memory_upload",
+        label_visibility="collapsed",
     )
-else:
-    history_html = "<div class='chat-entry'>No chat history yet.</div>"
-st.markdown(f"<div class='chat-history'>{history_html}</div>", unsafe_allow_html=True)
+    if uploaded:
+        st.caption(f"Attached file: {uploaded.name}")
+
+if st.session_state.show_audio_recorder:
+    audio = st.audio_input("Hold to record", key="voice_input")
+    if audio:
+        audio_bytes = audio.getvalue()
+        digest = hashlib.sha1(audio_bytes).hexdigest()
+        if digest != st.session_state.last_audio_digest:
+            st.session_state.last_audio_digest = digest
+            norm = _normalize_audio(audio_bytes)
+            if not (OpenAI and OPENAI_API_KEY):
+                _warning("OpenAI API key missing.")
+            else:
+                client = OpenAI(api_key=OPENAI_API_KEY)
+                try:
+                    transcript = client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=norm,
+                    )
+                    text = transcript.text
+                    st.write(f"Transcript: {text}")
+                    if text and _maybe_handle_recall_query(text):
+                        pass
+                    elif text:
+                        st.session_state.chat_history.append(("You", text))
+                        quote_mode = _is_quote_request(text)
+                        bot_reply = _chat_response(text, use_openai=True)
+                        if bot_reply is None:
+                            bot_reply = ""
+                        _update_rolling_memory(text, bot_reply, quote_mode=quote_mode)
+                except Exception as exc:
+                    _error(f"Transcription failed: {exc}")
+
+tab_chat, tab_about = st.tabs(["Chat", "About DualSubstrate"])
+
+with tab_chat:
+    recent_history = list(reversed(st.session_state.chat_history[-20:]))
+    if recent_history:
+        entries = [
+            f"<div class='chat-entry'><strong>{html.escape(role)}:</strong> {html.escape(content)}</div>"
+            for role, content in recent_history
+        ]
+        stream_html = "<hr>".join(entries)
+    else:
+        stream_html = "<div class='chat-entry'>No chat history yet.</div>"
+    st.markdown(f"<div class='chat-stream'>{stream_html}</div>", unsafe_allow_html=True)
+
+with tab_about:
+    col_left, col_right = st.columns(2)
+    with col_left:
+        st.markdown(
+            """
+            <div class="about-col about-col-left">
+                <div class="about-heading">DualSubstrate ledger demo</div>
+                <p class="about-text">To test this DualSubstrate ledger demo speak or type. Everything anchors to the prime-based ledger. Tip: type /q or “what did I say at 7 pm” and I’ll quote you word-for-word from the prime-ledger. Anything else = normal chat.</p>
+                <hr>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+    with col_right:
+        st.markdown(
+            """
+            <div class="about-col about-col-right">
+                <div class="metrics-heading">Metrics</div>
+                <p class="metrics-paragraph">Tokens Saved = words you never had to re-compute; Integrity = % of anchors that were unique (100 % = zero duplicates); Durability = hours your speech has survived restarts.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        st.markdown('<div class="metrics-row">', unsafe_allow_html=True)
+        metric_cols = st.columns(3)
+        with metric_cols[0]:
+            st.metric("Tokens Saved", tokens_saved)
+        with metric_cols[1]:
+            st.metric("Integrity %", f"{ledger_integrity*100:.1f} %")
+        with metric_cols[2]:
+            st.metric("Durability h", f"{durability_h:.1f}")
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    st.markdown("<hr class='full-divider'>", unsafe_allow_html=True)
+    st.markdown(
+        """
+        <div class="prime-heading">Prime-Ledger Snapshot</div>
+        <p class="prime-text">A live, word-perfect copy of everything you’ve anchored - sealed in primes, mathematically identical forever.</p>
+        """,
+        unsafe_allow_html=True,
+    )
+    if st.button("Load ledger", key="load_ledger"):
+        _load_ledger()
+    if st.session_state.ledger_state:
+        st.json(st.session_state.ledger_state)
