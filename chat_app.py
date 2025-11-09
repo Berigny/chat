@@ -17,6 +17,10 @@ try:
     from openai import OpenAI
 except ModuleNotFoundError:
     OpenAI = None
+try:
+    import parsedatetime as pdt
+except ModuleNotFoundError:
+    pdt = None
 
 API = "https://dualsubstrate-commercial.fly.dev"
 ENTITY = "demo_user"
@@ -38,6 +42,9 @@ OPENAI_API_KEY = _secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 st.set_page_config(page_title="Ledger Chat", layout="centered")
 st.title("Ledger Chat with Persistent Memory")
 st.caption("Speak or type. Everything anchors to the DualSubstrate ledger.")
+
+TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
+CAL = pdt.Calendar() if pdt else None
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -97,6 +104,39 @@ FALLBACK_PRIME = PRIME_ARRAY[0]
 def _hash_text(text: str):
     tokens = re.findall(r"[A-Za-z]+", text)
     return [{"prime": WORD_TO_PRIME.get(tok.lower(), FALLBACK_PRIME), "delta": 1} for tok in tokens][:30]
+
+
+def _maybe_handle_recall_query(text: str) -> bool:
+    if CAL is None:
+        return False
+    match = TIME_PATTERN.search(text)
+    if not match:
+        return False
+    phrase = match.group(1)
+    parsed, status = CAL.parse(phrase)
+    if status == 0:
+        return False
+    ts_ms = int(time.mktime(parsed) * 1000)
+    resp = requests.get(
+        f"{API}/memories",
+        params={"entity": ENTITY, "since": ts_ms, "limit": 1},
+        headers=HEADERS,
+        timeout=10,
+    )
+    if not resp.ok:
+        st.warning(f"Recall failed: {resp.text}")
+        return True
+    data = resp.json()
+    if data:
+        entry = data[0]
+        stamp = entry.get("timestamp", ts_ms)
+        human = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp / 1000))
+        msg = f"Memory @ {human}: {entry.get('text', '(no text)')}"
+        st.session_state.chat_history.append(("Memory", msg))
+        st.info(msg)
+    else:
+        st.info("Nothing found around that time.")
+    return True
 
 
 def _anchor(text: str):
@@ -192,6 +232,8 @@ with col_text:
         text = typed_text.strip()
         if not text:
             st.warning("Enter some text first.")
+        elif _maybe_handle_recall_query(text):
+            st.session_state.clear_typed = True
         elif _anchor(text):
             _chat_response(text, use_openai=use_openai_model)
             st.session_state.clear_typed = True
@@ -215,7 +257,9 @@ with col_voice:
                     )
                     text = transcript.text
                     st.write(f"Transcript: {text}")
-                    if text and _anchor(text):
+                    if text and _maybe_handle_recall_query(text):
+                        pass
+                    elif text and _anchor(text):
                         _chat_response(text, use_openai=use_openai_model)
                 except Exception as exc:
                     st.error(f"Transcription failed: {exc}")
