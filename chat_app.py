@@ -78,11 +78,6 @@ if "last_audio_digest" not in st.session_state:
     st.session_state.last_audio_digest = None
 if "typed_input" not in st.session_state:
     st.session_state.typed_input = ""
-if "clear_typed" not in st.session_state:
-    st.session_state.clear_typed = False
-if st.session_state.clear_typed:
-    st.session_state.typed_input = ""
-    st.session_state.clear_typed = False
 if "ledger_state" not in st.session_state:
     st.session_state.ledger_state = None
 if "recall_payload" not in st.session_state:
@@ -305,8 +300,6 @@ def _chat_response(prompt: str, use_openai=False):
 
 
 st.sidebar.header("Live Memory")
-if st.sidebar.button("Recall"):
-    _recall()
 if st.sidebar.button("Load ledger"):
     _load_ledger()
 
@@ -354,7 +347,7 @@ if durability_h >= 24:
 col_text, col_voice = st.columns([4, 1])
 
 with col_text:
-    with st.form("typed_chat"):
+    with st.form("typed_chat", clear_on_submit=True):
         typed_text = st.text_input("Enter a prompt here", key="typed_input")
         submitted = st.form_submit_button("Send")
     if submitted:
@@ -362,12 +355,9 @@ with col_text:
         if not text:
             st.warning("Enter some text first.")
         elif _maybe_handle_recall_query(text):
-            st.session_state.clear_typed = True
-            st.rerun()
+            pass
         elif _anchor(text):
             _chat_response(text, use_openai=True)
-            st.session_state.clear_typed = True
-            st.rerun()
 
 with col_voice:
     audio = st.audio_input("Hold to talk", key="voice_input")
