@@ -185,6 +185,62 @@ def _is_quote_request(text: str) -> bool:
     return normalized.startswith(PREFIXES) or KEYWORD_PATTERN.search(normalized) is not None
 
 
+QUOTE_LIST_PATTERN = re.compile(r"^\s*\d{1,2}[).:-]\s+")
+BULLET_QUOTE_PATTERN = re.compile(r"^\s*[-\u2022]\s+")
+
+
+def _strip_ledger_noise(text: str, *, user_only: bool = False) -> str:
+    if not text:
+        return text
+
+    cleaned: list[str] = []
+    skip_quote_list = False
+
+    for raw_line in text.splitlines():
+        line = raw_line.rstrip()
+        stripped = line.lstrip()
+        lowered = stripped.lower()
+
+        if not stripped:
+            cleaned.append("")
+            skip_quote_list = False
+            continue
+
+        if "ten exact quotes" in lowered:
+            # Previous quote-mode replies sometimes anchor verbatim – skip them.
+            skip_quote_list = True
+            continue
+
+        if skip_quote_list:
+            if QUOTE_LIST_PATTERN.match(stripped):
+                # Drop enumerated quote lines like `1. "..."`.
+                continue
+            if BULLET_QUOTE_PATTERN.match(stripped) and any(q in stripped for q in ('"', '“', '”')):
+                # Drop bullet-style quote residue when it clearly contains quoted text.
+                continue
+            skip_quote_list = False
+
+        assistant_prefixes = ("bot:", "assistant:", "system:", "model:")
+        if lowered.startswith(assistant_prefixes):
+            continue
+
+        if user_only:
+            non_user_prefixes = ("ai:", "llm:", "response:")
+            if lowered.startswith(non_user_prefixes):
+                continue
+
+        user_prefixes = ("you:", "user:")
+        if lowered.startswith(user_prefixes):
+            # Drop the explicit marker while keeping the actual speech.
+            cleaned.append(stripped.split(":", 1)[1].lstrip())
+            continue
+
+        cleaned.append(line)
+
+    candidate = "\n".join(cleaned).strip()
+    return candidate or text
+
+
 def _augment_prompt(user_question: str) -> str:
     try:
         resp = requests.get(
@@ -201,7 +257,7 @@ def _augment_prompt(user_question: str) -> str:
     if not memories:
         return user_question
 
-    full_context = memories[0].get("text", "").strip()
+    full_context = _strip_ledger_noise(memories[0].get("text", "").strip())
     if not full_context:
         return user_question
 
@@ -216,6 +272,38 @@ def _augment_prompt(user_question: str) -> str:
         )
     prompt_lines.append(f"User question: {user_question}")
     return "\n".join(prompt_lines)
+
+
+def _normalize_for_match(text: str) -> str:
+    return re.sub(r"\s+", " ", text or "").strip().lower()
+
+
+def _latest_user_transcript(current_request: str, *, limit: int = 5) -> str | None:
+    entries = _memory_lookup(limit=limit)
+    if not entries:
+        return None
+
+    normalized_request = _normalize_for_match(current_request)
+
+    for entry in entries:
+        text = entry.get("text", "")
+        if not text:
+            continue
+        normalized_text = _normalize_for_match(text)
+        if normalized_request and normalized_request in normalized_text:
+            continue
+        if "ten exact quotes" in normalized_text:
+            # Skip prior quote-mode responses that were anchored.
+            continue
+        sanitized = _strip_ledger_noise(text, user_only=True)
+        if normalized_request and normalized_request in _normalize_for_match(sanitized):
+            continue
+        if sanitized:
+            return sanitized
+
+    fallback = entries[0].get("text", "")
+    sanitized_fallback = _strip_ledger_noise(fallback, user_only=True)
+    return sanitized_fallback or fallback or None
 
 
 def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = False):
@@ -307,24 +395,14 @@ def _load_ledger():
 
 def _chat_response(prompt: str, use_openai=False):
     if _is_quote_request(prompt):
-        try:
-            resp = requests.get(
-                f"{API}/memories",
-                params={"entity": ENTITY, "limit": 1},
-                headers=HEADERS,
-                timeout=10,
-            )
-            resp.raise_for_status()
-            memories = resp.json()
-        except requests.RequestException:
-            memories = []
+        full_text = _latest_user_transcript(prompt)
 
-        if memories:
-            full_text = memories[0].get("text", "")
+        if full_text:
             llm_prompt = (
                 "Below is a verbatim transcript.  "
                 "Reply with TEN exact quotes (keep punctuation & capitalisation).  "
                 "Do not paraphrase.  "
+                "If the transcript contains assistant replies marked 'Bot:' or similar, ignore them and only quote the human speaker.  "
                 f"Transcript:\n{full_text}\n\n"
                 "Ten exact quotes:"
             )
