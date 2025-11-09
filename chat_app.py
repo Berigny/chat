@@ -1,5 +1,4 @@
 import audioop
-import audioop
 import base64
 import hashlib
 import io
@@ -186,12 +185,16 @@ use_openai_model = st.checkbox("Use OpenAI model")
 col_text, col_voice = st.columns([4, 1])
 
 with col_text:
-    typed_text = st.text_input("Enter a prompt here", key="typed_input")
-    if typed_text:
+    with st.form("typed_chat"):
+        typed_text = st.text_input("Enter a prompt here", key="typed_input")
+        submitted = st.form_submit_button("Send")
+    if submitted:
         text = typed_text.strip()
-        if text and _anchor(text):
+        if not text:
+            st.warning("Enter some text first.")
+        elif _anchor(text):
             _chat_response(text, use_openai=use_openai_model)
-            st.session_state.typed_input = "" # Clear input
+            st.session_state.clear_typed = True
 
 with col_voice:
     audio = st.audio_input("Hold to talk", key="voice_input")
