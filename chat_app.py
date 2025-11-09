@@ -235,23 +235,6 @@ if st.session_state.recall_payload:
 if st.session_state.ledger_state:
     st.sidebar.write("Ledger:", st.session_state.ledger_state)
 
-st.subheader("Chat History")
-for role, content in st.session_state.chat_history[-20:]:
-    st.markdown(f"**{role}:** {content}")
-st.divider()
-
-st.markdown(
-    """
-    <style>
-    .stApp {
-        display: flex;
-        flex-direction: column-reverse;
-    }
-    </style>
-    """,
-    unsafe_allow_html=True
-)
-
 use_openai_model = st.checkbox("Use OpenAI model")
 col_text, col_voice = st.columns([4, 1])
 
@@ -295,6 +278,9 @@ with col_voice:
                 except Exception as exc:
                     st.error(f"Transcription failed: {exc}")
 
+st.subheader("Chat History")
+for role, content in st.session_state.chat_history[-20:]:
+    st.markdown(f"**{role}:** {content}")
 st.divider()
 if st.button("Refresh ledger snapshot"):
     _load_ledger()
