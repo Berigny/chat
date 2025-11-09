@@ -306,13 +306,38 @@ def _load_ledger():
 
 
 def _chat_response(prompt: str, use_openai=False):
-    prompt = _augment_prompt(prompt)
+    if _is_quote_request(prompt):
+        try:
+            resp = requests.get(
+                f"{API}/memories",
+                params={"entity": ENTITY, "limit": 1},
+                headers=HEADERS,
+                timeout=10,
+            )
+            resp.raise_for_status()
+            memories = resp.json()
+        except requests.RequestException:
+            memories = []
+
+        if memories:
+            full_text = memories[0].get("text", "")
+            llm_prompt = (
+                "Below is a verbatim transcript.  "
+                "Reply with TEN exact quotes (keep punctuation & capitalisation).  "
+                "Do not paraphrase.  "
+                f"Transcript:\n{full_text}\n\n"
+                "Ten exact quotes:"
+            )
+        else:
+            llm_prompt = "No anchored text found – say so."
+    else:
+        llm_prompt = _augment_prompt(prompt)
     if use_openai:
         if not (OpenAI and OPENAI_API_KEY):
             st.warning("OpenAI API key missing.")
             return
         client = OpenAI(api_key=OPENAI_API_KEY)
-        messages = [{"role": "user", "content": prompt}]
+        messages = [{"role": "user", "content": llm_prompt}]
         response = client.chat.completions.create(model="gpt-3.5-turbo", messages=messages)
         full = response.choices[0].message.content
         st.session_state.chat_history.append(("Bot", full))
@@ -323,7 +348,7 @@ def _chat_response(prompt: str, use_openai=False):
     model = genai.GenerativeModel("gemini-2.0-flash")
     chat = model.start_chat(history=[{"role": "user", "parts": [h[1]]} for h in st.session_state.chat_history])
     chunks = []
-    for chunk in chat.send_message(prompt, stream=True):
+    for chunk in chat.send_message(llm_prompt, stream=True):
         chunks.append(chunk.text)
     full = "".join(chunks).strip()
     st.session_state.chat_history.append(("Bot", full))
