@@ -82,6 +82,10 @@ if "ledger_state" not in st.session_state:
     st.session_state.ledger_state = None
 if "recall_payload" not in st.session_state:
     st.session_state.recall_payload = None
+if "rolling_text" not in st.session_state:
+    st.session_state.rolling_text = []
+if "last_anchor_ts" not in st.session_state:
+    st.session_state.last_anchor_ts = time.time()
 
 
 def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
@@ -176,11 +180,16 @@ def _render_memories(entries):
         st.info(msg)
 
 
+def _is_quote_request(text: str) -> bool:
+    normalized = text.strip().lower()
+    return normalized.startswith(PREFIXES) or KEYWORD_PATTERN.search(normalized) is not None
+
+
 def _augment_prompt(user_question: str) -> str:
     try:
         resp = requests.get(
             f"{API}/memories",
-            params={"entity": ENTITY, "limit": 5},
+            params={"entity": ENTITY, "limit": 1},
             headers=HEADERS,
             timeout=10,
         )
@@ -192,18 +201,39 @@ def _augment_prompt(user_question: str) -> str:
     if not memories:
         return user_question
 
-    quotes = "\n".join(f"- {m.get('text','')}" for m in memories if m.get("text"))
-    if not quotes:
+    full_context = memories[0].get("text", "").strip()
+    if not full_context:
         return user_question
 
-    return (
-        "User asks for exact quotes.\n"
-        "Here are the user's own anchored statements:\n"
-        f"{quotes}\n\n"
-        "Reply with THREE verbatim extracts (keep punctuation, capitalisation, "
-        "and use quotation marks). Do not paraphrase.\n"
-        f"User question: {user_question}"
+    prompt_lines = [
+        "Anchored conversation context:",
+        full_context,
+        "",
+    ]
+    if _is_quote_request(user_question):
+        prompt_lines.append(
+            "The user may ask for exact quotes. Provide precise excerpts from the context when relevant, maintaining punctuation and casing."
+        )
+    prompt_lines.append(f"User question: {user_question}")
+    return "\n".join(prompt_lines)
+
+
+def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = False):
+    if user_text is None and bot_reply is None:
+        return
+    st.session_state.rolling_text.append(f"You: {user_text}\nBot: {bot_reply}")
+    window_s = 300
+    max_tokens = 2_000
+    full_block = "\n".join(st.session_state.rolling_text)
+    should_anchor = (
+        time.time() - st.session_state.last_anchor_ts > window_s
+        or len(full_block.split()) > max_tokens
+        or quote_mode
     )
+    if should_anchor:
+        if _anchor(full_block, record_chat=False):
+            st.session_state.rolling_text = []
+            st.session_state.last_anchor_ts = time.time()
 
 
 def _maybe_handle_recall_query(text: str) -> bool:
@@ -244,7 +274,7 @@ def _maybe_handle_recall_query(text: str) -> bool:
     return False
 
 
-def _anchor(text: str):
+def _anchor(text: str, *, record_chat: bool = True):
     factors = _hash_text(text)
     if not factors:
         st.warning("No alphabetical tokens detected; nothing anchored.")
@@ -256,7 +286,8 @@ def _anchor(text: str):
     except requests.HTTPError as exc:
         st.error(f"Anchor failed ({resp.status_code}): {resp.text}")
         return False
-    st.session_state.chat_history.append(("You", text))
+    if record_chat:
+        st.session_state.chat_history.append(("You", text))
     st.success("Anchored into ledger.")
     return True
 
@@ -299,18 +330,8 @@ def _chat_response(prompt: str, use_openai=False):
     return full or "(No response)"
 
 
-st.sidebar.header("Live Memory")
-if st.sidebar.button("Load ledger"):
-    _load_ledger()
-
-if st.session_state.recall_payload:
-    st.sidebar.write("Last recall:", st.session_state.recall_payload)
-if st.session_state.ledger_state:
-    st.sidebar.write("Ledger:", st.session_state.ledger_state)
-
 # ---------- investor KPI ----------
 st.sidebar.header("Investor KPI")
-col1, col2, col3 = st.sidebar.columns(3)
 
 # fetch once, with error handling
 try:
@@ -333,16 +354,28 @@ durability_h = (time.time() - oldest) / 3600
 tokens_saved = metrics.get("tokens_deduped", "N/A")
 ledger_integrity = metrics.get("ledger_integrity", 0.0)
 
-col1.metric("💰 Tokens Saved", tokens_saved)
-col2.metric("🔒 Integrity %", f"{ledger_integrity*100:.1f} %",
-delta=None, delta_color="normal")
-col3.metric("🧱 Durability h", f"{durability_h:.1f}")
+st.sidebar.metric("💰 Tokens Saved", tokens_saved)
+st.sidebar.metric("🔒 Integrity %", f"{ledger_integrity*100:.1f} %")
+st.sidebar.metric("🧱 Durability h", f"{durability_h:.1f}")
 
-# green/red colour
+status_notes = []
 if ledger_integrity >= 0.995:
-    col2.markdown("✅")
+    status_notes.append("🔒 Ledger integrity above target")
 if durability_h >= 24:
-    col3.markdown("✅")
+    status_notes.append("🧱 Durability exceeds 24h window")
+if status_notes:
+    for note in status_notes:
+        st.sidebar.caption(note)
+
+st.sidebar.divider()
+
+if st.sidebar.button("Load ledger"):
+    _load_ledger()
+
+if st.session_state.recall_payload:
+    st.sidebar.write("Last recall:", st.session_state.recall_payload)
+if st.session_state.ledger_state:
+    st.sidebar.write("Ledger:", st.session_state.ledger_state)
 
 col_text, col_voice = st.columns([4, 1])
 
@@ -356,8 +389,13 @@ with col_text:
             st.warning("Enter some text first.")
         elif _maybe_handle_recall_query(text):
             pass
-        elif _anchor(text):
-            _chat_response(text, use_openai=True)
+        else:
+            st.session_state.chat_history.append(("You", text))
+            quote_mode = _is_quote_request(text)
+            bot_reply = _chat_response(text, use_openai=True)
+            if bot_reply is None:
+                bot_reply = ""
+            _update_rolling_memory(text, bot_reply, quote_mode=quote_mode)
 
 with col_voice:
     audio = st.audio_input("Hold to talk", key="voice_input")
@@ -380,16 +418,16 @@ with col_voice:
                     st.write(f"Transcript: {text}")
                     if text and _maybe_handle_recall_query(text):
                         pass
-                    elif text and _anchor(text):
-                        _chat_response(text, use_openai=True)
+                    elif text:
+                        st.session_state.chat_history.append(("You", text))
+                        quote_mode = _is_quote_request(text)
+                        bot_reply = _chat_response(text, use_openai=True)
+                        if bot_reply is None:
+                            bot_reply = ""
+                        _update_rolling_memory(text, bot_reply, quote_mode=quote_mode)
                 except Exception as exc:
                     st.error(f"Transcription failed: {exc}")
 
 st.subheader("Chat History")
 for role, content in st.session_state.chat_history[-20:]:
     st.markdown(f"**{role}:** {content}")
-st.divider()
-if st.button("Refresh ledger snapshot"):
-    _load_ledger()
-if st.session_state.ledger_state:
-    st.json(st.session_state.ledger_state)
