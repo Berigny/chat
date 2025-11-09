@@ -319,19 +319,34 @@ if st.session_state.ledger_state:
 st.sidebar.header("Investor KPI")
 col1, col2, col3 = st.sidebar.columns(3)
 
-# fetch once
-metrics = requests.get(f"{API}/metrics", headers=HEADERS).json()
-memories = requests.get(f"{API}/memories", params={"entity": ENTITY, "limit": 1}).json()
-oldest = memories[-1]["timestamp"] / 1000 if memories else time.time()
-durability_h = (time.time() - oldest) / 3600
+# fetch once, with error handling
+try:
+    metrics_resp = requests.get(f"{API}/metrics", headers=HEADERS, timeout=5)
+    metrics_resp.raise_for_status()
+    metrics = metrics_resp.json()
+except (requests.RequestException, ValueError):
+    metrics = {"tokens_deduped": "N/A", "ledger_integrity": 0.0}
 
-col1.metric("💰 Tokens Saved", metrics["tokens_deduped"])
-col2.metric("🔒 Integrity %", f"{metrics['ledger_integrity']*100:.1f} %",
+try:
+    memories_resp = requests.get(f"{API}/memories", params={"entity": ENTITY, "limit": 1}, headers=HEADERS, timeout=5)
+    memories_resp.raise_for_status()
+    memories = memories_resp.json()
+except (requests.RequestException, ValueError):
+    memories = []
+
+# Safely access memories and metrics
+oldest = memories[-1].get("timestamp", time.time() * 1000) / 1000 if isinstance(memories, list) and memories else time.time()
+durability_h = (time.time() - oldest) / 3600
+tokens_saved = metrics.get("tokens_deduped", "N/A")
+ledger_integrity = metrics.get("ledger_integrity", 0.0)
+
+col1.metric("💰 Tokens Saved", tokens_saved)
+col2.metric("🔒 Integrity %", f"{ledger_integrity*100:.1f} %",
 delta=None, delta_color="normal")
 col3.metric("🧱 Durability h", f"{durability_h:.1f}")
 
 # green/red colour
-if metrics["ledger_integrity"] >= 0.995:
+if ledger_integrity >= 0.995:
     col2.markdown("✅")
 if durability_h >= 24:
     col3.markdown("✅")
