@@ -106,6 +106,36 @@ def _hash_text(text: str):
     return [{"prime": WORD_TO_PRIME.get(tok.lower(), FALLBACK_PRIME), "delta": 1} for tok in tokens][:30]
 
 
+def _augment_prompt(user_question: str) -> str:
+    try:
+        resp = requests.get(
+            f"{API}/memories",
+            params={"entity": ENTITY, "limit": 5},
+            headers=HEADERS,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        memories = resp.json()
+    except requests.RequestException:
+        return user_question
+
+    if not memories:
+        return user_question
+
+    quotes = "\n".join(f"- {m.get('text','')}" for m in memories if m.get("text"))
+    if not quotes:
+        return user_question
+
+    return (
+        "User asks for exact quotes.\n"
+        "Here are the user's own anchored statements:\n"
+        f"{quotes}\n\n"
+        "Reply with THREE verbatim extracts (keep punctuation, capitalisation, "
+        "and use quotation marks). Do not paraphrase.\n"
+        f"User question: {user_question}"
+    )
+
+
 def _maybe_handle_recall_query(text: str) -> bool:
     if CAL is None:
         return False
@@ -170,6 +200,7 @@ def _load_ledger():
 
 
 def _chat_response(prompt: str, use_openai=False):
+    prompt = _augment_prompt(prompt)
     if use_openai:
         if not (OpenAI and OPENAI_API_KEY):
             st.warning("OpenAI API key missing.")
