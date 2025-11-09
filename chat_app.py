@@ -127,7 +127,17 @@ def _load_ledger():
     st.session_state.ledger_state = resp.json() if resp.ok else {"error": resp.text}
 
 
-def _chat_response(prompt: str):
+def _chat_response(prompt: str, use_openai=False):
+    if use_openai:
+        resp = requests.post(f"{API}/openai/chat", json={"prompt": prompt}, headers=HEADERS, timeout=10)
+        try:
+            resp.raise_for_status()
+            full = resp.json().get("response", "(No response from OpenAI)")
+        except requests.HTTPError as exc:
+            full = f"OpenAI chat failed ({resp.status_code}): {resp.text}"
+        st.session_state.chat_history.append(("Bot", full))
+        return full
+
     if not (genai and GENAI_KEY):
         return "Gemini API key missing."
     model = genai.GenerativeModel("gemini-2.0-flash")
@@ -151,52 +161,23 @@ if st.session_state.recall_payload:
 if st.session_state.ledger_state:
     st.sidebar.write("Ledger:", st.session_state.ledger_state)
 
-col_voice, col_text = st.columns(2)
-with col_voice:
-    st.markdown("### Speak")
-    if recognizer is None:
-        st.warning("SpeechRecognition missing on this environment.")
-    else:
-        audio = st.audio_input("Hold to talk", key="voice_input")
-        if audio:
-            audio_bytes = audio.getvalue()
-            digest = hashlib.sha1(audio_bytes).hexdigest()
-            if digest == st.session_state.last_audio_digest:
-                st.info("Audio already processed.")
-            else:
-                st.session_state.last_audio_digest = digest
-                norm = _normalize_audio(audio_bytes)
-                with sr.AudioFile(norm) as source:
-                    audio_data = recognizer.record(source)
-                try:
-                    text = recognizer.recognize_google(audio_data)
-                    st.write(f"Transcript: {text}")
-                    if text and _anchor(text):
-                        _chat_response(text)
-                except sr.UnknownValueError:
-                    st.warning("Could not understand speech.")
-                except Exception as exc:
-                    st.error(f"Transcription failed: {exc}")
-
-with col_text:
-    st.markdown("### Type")
-    with st.form("typed_memory"):
-        typed_text = st.text_area("Memory prompt", key="typed_input")
-        submitted = st.form_submit_button("Send")
-        if submitted:
-            text = typed_text.strip()
-            if not text:
-                st.warning("Enter some text first.")
-            elif _anchor(text):
-                if st.checkbox("Ask Gemini about this entry", key=f"ask_{time.time()}"):
-                    reply = _chat_response(text)
-                    st.info(reply)
-                st.session_state.clear_typed = True
-
-st.divider()
 st.subheader("Chat History")
 for role, content in st.session_state.chat_history[-20:]:
     st.markdown(f"**{role}:** {content}")
+st.divider()
+
+with open("chat_input.html", "r") as f:
+    chat_input_html = f.read()
+
+chat_input = st.components.v1.html(chat_input_html, height=70)
+
+use_openai_model = st.checkbox("Use OpenAI model")
+
+if isinstance(chat_input, dict):
+    if chat_input.get('type') in ['text', 'voice']:
+        text = chat_input['content']
+        if text and _anchor(text):
+            _chat_response(text, use_openai=use_openai_model)
 
 st.divider()
 if st.button("Refresh ledger snapshot"):
