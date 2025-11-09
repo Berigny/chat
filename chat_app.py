@@ -10,11 +10,14 @@ import wave
 
 import requests
 import streamlit as st
-import speech_recognition as sr
 try:
     import google.generativeai as genai
 except ModuleNotFoundError:
     genai = None
+try:
+    from openai import OpenAI
+except ModuleNotFoundError:
+    OpenAI = None
 
 API = "https://dualsubstrate-commercial.fly.dev"
 ENTITY = "demo_user"
@@ -31,14 +34,11 @@ GENAI_KEY = _secret("API_KEY") or os.getenv("API_KEY")
 if genai and GENAI_KEY:
     genai.configure(api_key=GENAI_KEY)
 
+OPENAI_API_KEY = _secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+
 st.set_page_config(page_title="Ledger Chat", layout="centered")
 st.title("Ledger Chat with Persistent Memory")
 st.caption("Speak or type. Everything anchors to the DualSubstrate ledger.")
-
-recognizer = sr.Recognizer() if sr else None
-if recognizer:
-    recognizer.dynamic_energy_threshold = True
-    recognizer.energy_threshold = 120
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -58,7 +58,10 @@ if "recall_payload" not in st.session_state:
 
 
 def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
-    with wave.open(io.BytesIO(raw_bytes)) as wf:
+    # The OpenAI API expects a file with a name.
+    buf = io.BytesIO(raw_bytes)
+    buf.name = "input.wav"
+    with wave.open(buf, "rb") as wf:
         params = wf.getparams()
         audio = wf.readframes(params.nframes)
         sampwidth = params.sampwidth
@@ -129,12 +132,13 @@ def _load_ledger():
 
 def _chat_response(prompt: str, use_openai=False):
     if use_openai:
-        resp = requests.post(f"{API}/openai/chat", json={"prompt": prompt}, headers=HEADERS, timeout=10)
-        try:
-            resp.raise_for_status()
-            full = resp.json().get("response", "(No response from OpenAI)")
-        except requests.HTTPError as exc:
-            full = f"OpenAI chat failed ({resp.status_code}): {resp.text}"
+        if not (OpenAI and OPENAI_API_KEY):
+            st.warning("OpenAI API key missing.")
+            return
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        messages = [{"role": "user", "content": prompt}]
+        response = client.chat.completions.create(model="gpt-3.5-turbo", messages=messages)
+        full = response.choices[0].message.content
         st.session_state.chat_history.append(("Bot", full))
         return full
 
@@ -166,18 +170,52 @@ for role, content in st.session_state.chat_history[-20:]:
     st.markdown(f"**{role}:** {content}")
 st.divider()
 
-with open("chat_input.html", "r") as f:
-    chat_input_html = f.read()
-
-chat_input = st.components.v1.html(chat_input_html, height=70)
+st.markdown(
+    """
+    <style>
+    .stApp {
+        display: flex;
+        flex-direction: column-reverse;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 use_openai_model = st.checkbox("Use OpenAI model")
+col_text, col_voice = st.columns([4, 1])
 
-if isinstance(chat_input, dict):
-    if chat_input.get('type') in ['text', 'voice']:
-        text = chat_input['content']
+with col_text:
+    typed_text = st.text_input("Enter a prompt here", key="typed_input")
+    if typed_text:
+        text = typed_text.strip()
         if text and _anchor(text):
             _chat_response(text, use_openai=use_openai_model)
+            st.session_state.typed_input = "" # Clear input
+
+with col_voice:
+    audio = st.audio_input("Hold to talk", key="voice_input")
+    if audio:
+        audio_bytes = audio.getvalue()
+        digest = hashlib.sha1(audio_bytes).hexdigest()
+        if digest != st.session_state.last_audio_digest:
+            st.session_state.last_audio_digest = digest
+            norm = _normalize_audio(audio_bytes)
+            if not (OpenAI and OPENAI_API_KEY):
+                st.warning("OpenAI API key missing.")
+            else:
+                client = OpenAI(api_key=OPENAI_API_KEY)
+                try:
+                    transcript = client.audio.transcriptions.create(
+                        model="whisper-1",
+                        file=norm
+                    )
+                    text = transcript.text
+                    st.write(f"Transcript: {text}")
+                    if text and _anchor(text):
+                        _chat_response(text, use_openai=use_openai_model)
+                except Exception as exc:
+                    st.error(f"Transcription failed: {exc}")
 
 st.divider()
 if st.button("Refresh ledger snapshot"):
