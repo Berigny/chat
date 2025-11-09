@@ -21,6 +21,10 @@ try:
     import parsedatetime as pdt
 except ModuleNotFoundError:
     pdt = None
+try:
+    import dateparser
+except ModuleNotFoundError:
+    dateparser = None
 
 API = "https://dualsubstrate-commercial.fly.dev"
 ENTITY = "demo_user"
@@ -45,6 +49,9 @@ st.caption("Speak or type. Everything anchors to the DualSubstrate ledger.")
 
 TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
 CAL = pdt.Calendar() if pdt else None
+KEYWORD_PATTERN = re.compile(r"\b(quote|verbatim|exact|recall|retrieve|what did i say)\b", re.I)
+PREFIXES = ("/q", "@ledger", "::memory")
+MODE_OPTIONS = ["Chat", "Exact quotes", "Time search"]
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -106,6 +113,55 @@ def _hash_text(text: str):
     return [{"prime": WORD_TO_PRIME.get(tok.lower(), FALLBACK_PRIME), "delta": 1} for tok in tokens][:30]
 
 
+def _cosine(a, b):
+    if not a or not b or len(a) != len(b):
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = sum(x * x for x in a) ** 0.5
+    norm_b = sum(y * y for y in b) ** 0.5
+    if not norm_a or not norm_b:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _semantic_score(prompt: str) -> float:
+    if not (OpenAI and OPENAI_API_KEY):
+        return 0.0
+    try:
+        client = OpenAI(api_key=OPENAI_API_KEY)
+        target = "provide exact quotes from prior user statements"
+        emb_prompt = client.embeddings.create(model="text-embedding-3-small", input=prompt).data[0].embedding
+        emb_target = client.embeddings.create(model="text-embedding-3-small", input=target).data[0].embedding
+        return _cosine(emb_prompt, emb_target)
+    except Exception:
+        return 0.0
+
+
+def _memory_lookup(limit: int = 3, since: int | None = None):
+    params = {"entity": ENTITY, "limit": limit}
+    if since:
+        params["since"] = since
+    try:
+        resp = requests.get(f"{API}/memories", params=params, headers=HEADERS, timeout=10)
+        resp.raise_for_status()
+        return resp.json()
+    except requests.RequestException:
+        return []
+
+
+def _render_memories(entries):
+    if not entries:
+        st.info("No matching memories.")
+        return
+    for entry in entries:
+        stamp = entry.get("timestamp")
+        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp / 1000)) if stamp else "unknown time"
+        text = entry.get("text", "(no text)")
+        msg = f"{ts} — {text}"
+        st.session_state.chat_history.append(("Memory", msg))
+        st.info(msg)
+
+
 def _augment_prompt(user_question: str) -> str:
     try:
         resp = requests.get(
@@ -136,37 +192,43 @@ def _augment_prompt(user_question: str) -> str:
     )
 
 
-def _maybe_handle_recall_query(text: str) -> bool:
-    if CAL is None:
-        return False
-    match = TIME_PATTERN.search(text)
-    if not match:
-        return False
-    phrase = match.group(1)
-    parsed, status = CAL.parse(phrase)
-    if status == 0:
-        return False
-    ts_ms = int(time.mktime(parsed) * 1000)
-    resp = requests.get(
-        f"{API}/memories",
-        params={"entity": ENTITY, "since": ts_ms, "limit": 1},
-        headers=HEADERS,
-        timeout=10,
-    )
-    if not resp.ok:
-        st.warning(f"Recall failed: {resp.text}")
+def _maybe_handle_recall_query(text: str, mode: str) -> bool:
+    forced_mode = mode != "Chat"
+    prefix = text.strip().lower().startswith(PREFIXES)
+    keyword = KEYWORD_PATTERN.search(text) is not None
+    since_ms = None
+
+    parsed_datetime = None
+    parsed_epoch = None
+    if mode == "Time search" and dateparser:
+        parsed_datetime = dateparser.parse(text, settings={"PREFER_DATES_FROM": "past"})
+    elif CAL:
+        match = TIME_PATTERN.search(text)
+        if match:
+            parsed_tuple, status = CAL.parse(match.group(1))
+            if status != 0:
+                parsed_epoch = int(time.mktime(parsed_tuple) * 1000)
+                if dateparser:
+                    parsed_str = time.strftime("%Y-%m-%d %H:%M:%S", parsed_tuple)
+                    parsed_datetime = dateparser.parse(parsed_str)
+    if parsed_datetime:
+        since_ms = int(parsed_datetime.timestamp() * 1000)
+    elif parsed_epoch:
+        since_ms = parsed_epoch
+
+    semantic = _semantic_score(text)
+    prefix_score = 1.0 if prefix else 0.0
+    keyword_score = 1.0 if keyword else 0.0
+    time_score = 1.0 if since_ms else 0.0
+    scores = [keyword_score, time_score, semantic, prefix_score]
+    weights = [0.3, 0.4, 0.2, 0.1]
+    weighted_total = sum(s * w for s, w in zip(scores, weights))
+
+    if forced_mode or weighted_total > 0.45:
+        entries = _memory_lookup(limit=5 if forced_mode else 3, since=since_ms)
+        _render_memories(entries)
         return True
-    data = resp.json()
-    if data:
-        entry = data[0]
-        stamp = entry.get("timestamp", ts_ms)
-        human = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp / 1000))
-        msg = f"Memory @ {human}: {entry.get('text', '(no text)')}"
-        st.session_state.chat_history.append(("Memory", msg))
-        st.info(msg)
-    else:
-        st.info("Nothing found around that time.")
-    return True
+    return False
 
 
 def _anchor(text: str):
@@ -235,6 +297,7 @@ if st.session_state.recall_payload:
 if st.session_state.ledger_state:
     st.sidebar.write("Ledger:", st.session_state.ledger_state)
 
+mode_selection = st.radio("Mode", MODE_OPTIONS, horizontal=True)
 use_openai_model = st.checkbox("Use OpenAI model")
 col_text, col_voice = st.columns([4, 1])
 
@@ -246,7 +309,7 @@ with col_text:
         text = typed_text.strip()
         if not text:
             st.warning("Enter some text first.")
-        elif _maybe_handle_recall_query(text):
+        elif _maybe_handle_recall_query(text, mode_selection):
             st.session_state.clear_typed = True
         elif _anchor(text):
             _chat_response(text, use_openai=use_openai_model)
@@ -271,7 +334,7 @@ with col_voice:
                     )
                     text = transcript.text
                     st.write(f"Transcript: {text}")
-                    if text and _maybe_handle_recall_query(text):
+                    if text and _maybe_handle_recall_query(text, mode_selection):
                         pass
                     elif text and _anchor(text):
                         _chat_response(text, use_openai=use_openai_model)
