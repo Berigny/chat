@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Chat Input</title>
+    <style>
+        body {
+            font-family: sans-serif;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            background-color: #f0f2f6;
+        }
+        .chat-container {
+            width: 100%;
+            max-width: 800px;
+            position: fixed;
+            bottom: 20px;
+            margin: 0 auto;
+            left: 0;
+            right: 0;
+        }
+        .chat-input-area {
+            display: flex;
+            align-items: center;
+            background-color: #fff;
+            border-radius: 28px;
+            padding: 10px 20px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
+        .chat-input {
+            flex-grow: 1;
+            border: none;
+            outline: none;
+            font-size: 16px;
+            padding: 10px;
+        }
+        .mic-button {
+            background: none;
+            border: none;
+            cursor: pointer;
+            padding: 10px;
+            display: flex;
+            align-items: center;
+        }
+        .mic-icon {
+            width: 24px;
+            height: 24px;
+        }
+    </style>
+</head>
+<body>
+    <div class="chat-container">
+        <div class="chat-input-area">
+            <input type="text" id="chat-input" class="chat-input" placeholder="Enter a prompt here">
+            <button id="mic-button" class="mic-button">
+                <svg class="mic-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor">
+                    <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm5.3-3c0 3-2.54 5.1-5.3 5.1S6.7 14 6.7 11H5c0 3.41 2.72 6.23 6 6.72V21h2v-3.28c3.28-.49 6-3.31 6-6.72h-1.7z"/>
+                </svg>
+            </button>
+        </div>
+    </div>
+
+    <script>
+        const input = document.getElementById('chat-input');
+        const micButton = document.getElementById('mic-button');
+        let recognition = null;
+
+        input.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && input.value.trim() !== '') {
+                window.parent.postMessage({
+                    type: 'streamlit:setComponentValue',
+                    value: { type: 'text', content: input.value }
+                }, '*');
+                input.value = '';
+            }
+        });
+
+        if ('SpeechRecognition' in window || 'webkitSpeechRecognition' in window) {
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.lang = 'en-US';
+            recognition.interimResults = false;
+            recognition.maxAlternatives = 1;
+
+            recognition.onresult = (event) => {
+                const transcript = event.results[0][0].transcript;
+                window.parent.postMessage({
+                    type: 'streamlit:setComponentValue',
+                    value: { type: 'voice', content: transcript }
+                }, '*');
+            };
+
+            recognition.onerror = (event) => {
+                console.error('Speech recognition error:', event.error);
+            };
+
+            micButton.addEventListener('click', () => {
+                recognition.start();
+            });
+        } else {
+            micButton.style.display = 'none';
+        }
+    </script>
+</body>
+</html>
