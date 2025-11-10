@@ -590,10 +590,10 @@ def _render_app():
     css_chunks = [
         ".main-title {font-size:2rem !important;font-weight:400 !important;text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;}",
         ".stBottomBlockContainer {position:static !important;margin-top:0 !important;}",
-        ".stVerticalBlock:has(> .st-key-top_attach) {position:relative;display:flex;justify-content:center;align-items:center;gap:0;}",
+        ".stVerticalBlock:has(> .st-key-top_attach) {position:absolute; top: 0; left: 0; display:flex;justify-content:center;align-items:center;gap:0;}",
         ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_input {flex:1 1 auto;max-width:640px;}",
         ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_attach,.stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_mic {flex:0 0 auto;}",
-        ".st-key-top_attach {margin-right:-3.5rem;}",
+        ".st-key-top_attach {}",
         ".st-key-top_mic {margin-left:-3.5rem;}",
         "div[data-testid='stChatInput'] {position:static !important;margin:0.25rem auto 0;max-width:640px;}",
         "div[data-testid='stChatInput'] > div:first-child {position:relative;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.18);padding:0.75rem 4.5rem 0.75rem 3.25rem;background-color:#F1F2F6 !important;transition:border-color 0.2s ease, box-shadow 0.2s ease;}",
