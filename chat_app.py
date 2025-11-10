@@ -382,6 +382,29 @@ def _normalize_for_match(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip().lower()
 
 
+def _summarize_accessible_memories(limit: int, since: int | None = None) -> str | None:
+    entries = _memory_lookup(limit=limit, since=since)
+    if not entries:
+        return None
+    lines: list[str] = []
+    for entry in entries:
+        stamp = entry.get("timestamp")
+        human_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp / 1000)) if stamp else "unknown time"
+        text = _strip_ledger_noise((entry.get("text") or "").strip())
+        snippet = text[:320].replace("\n", " ")
+        if len(text) > len(snippet):
+            snippet = f"{snippet}…"
+        lines.append(f"{human_ts}: {snippet or '(no text)'}")
+    scope = (
+        f"since {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(since / 1000))}"
+        if since
+        else "from the latest anchors"
+    )
+    return f"I could not extract exact verbatim quotes for that query, but here is what I can access {scope}:\n" + "\n".join(
+        lines
+    )
+
+
 def _infer_relative_timestamp(text: str) -> int | None:
     if not text:
         return None
@@ -609,6 +632,11 @@ def _chat_response(
             if attachment_block:
                 llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
         else:
+            since_hint = _infer_relative_timestamp(prompt)
+            fallback_summary = _summarize_accessible_memories(target_count, since=since_hint)
+            if fallback_summary:
+                st.session_state.chat_history.append(("Bot", fallback_summary))
+                return fallback_summary
             llm_prompt = "No anchored text found – say so."
     else:
         llm_prompt = _augment_prompt(prompt, attachments=attachments)
