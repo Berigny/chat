@@ -870,10 +870,11 @@ def _reset_entity_factors(entity: str = ENTITY) -> bool:
 
 
 def _run_enrichment(entity: str = ENTITY, limit: int = 200, reset_first: bool = True):
+    fetch_limit = max(1, min(limit, 100))
     try:
         resp = requests.get(
             f"{API}/memories",
-            params={"entity": entity, "limit": limit},
+            params={"entity": entity, "limit": fetch_limit},
             headers=HEADERS,
             timeout=15,
         )
