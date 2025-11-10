@@ -535,14 +535,9 @@ with tab_about:
     with col_left:
         st.markdown(
             """
-            <style>
-            h2.about-heading {
-                font-size: 0.95rem !important;
-                font-weight: 400 !important;
-            }
-            </style>
+            
             <div class="about-col about-col-left">
-                <h2 class="about-heading">DualSubstrate ledger demo</h2>
+                <h2 class="about-heading" style="font-size: 0.95rem; font-weight: 400">DualSubstrate ledger demo</h2>
                 <p class="about-text">To test this DualSubstrate ledger demo speak or type. Everything anchors to the prime-based ledger. Tip: type /q or “what did I say at 7 pm” and I’ll quote you word-for-word from the prime-ledger. Anything else = normal chat.</p>
                 <hr>
             </div>
@@ -552,13 +547,8 @@ with tab_about:
     with col_right:
         st.markdown(
             """
-            <style>
-            h2.about-heading {
-                font-size: 0.95rem !important;
-                font-weight: 400 !important;
-            }            
             <div class="about-col about-col-right">
-                <h2 class="metrics-heading">Metrics</h2>
+                <div class="metrics-heading" style="font-size: 0.95rem; font-weight: 400">Metrics</div>
                 <p class="metrics-paragraph">Tokens Saved = words you never had to re-compute; Integrity = % of anchors that were unique (100 % = zero duplicates); Durability = hours your speech has survived restarts.</p>
             </div>
             """,
@@ -577,7 +567,7 @@ with tab_about:
     st.markdown("<hr class='full-divider'>", unsafe_allow_html=True)
     st.markdown(
         """
-        <div class="prime-heading">Prime-Ledger Snapshot</div>
+        <div class="prime-heading" style="font-size: 0.95rem; font-weight: 400">Prime-Ledger Snapshot</div>
         <p class="prime-text">A live, word-perfect copy of everything you’ve anchored - sealed in primes, mathematically identical forever.</p>
         """,
         unsafe_allow_html=True,
