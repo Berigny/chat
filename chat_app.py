@@ -60,36 +60,10 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-_TOAST_CONTAINER = None
-
-
-def _toast_target():
-    return _TOAST_CONTAINER or st
-
-
-def _info(message: str):
-    _toast_target().info(message)
-
-
-def _warning(message: str):
-    _toast_target().warning(message)
-
-
-def _error(message: str):
-    _toast_target().error(message)
-
-
-def _success(message: str):
-    _toast_target().success(message)
-
-
-_TOAST_CONTAINER = st.container()
-
 TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
 CAL = pdt.Calendar() if pdt else None
 KEYWORD_PATTERN = re.compile(r"\b(quote|verbatim|exact|recall|retrieve|what did i say)\b", re.I)
 PREFIXES = ("/q", "@ledger", "::memory")
-MODE_OPTIONS = ["Chat", "Exact quotes", "Time search"]
 
 if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
@@ -105,8 +79,6 @@ if "last_anchor_ts" not in st.session_state:
     st.session_state.last_anchor_ts = time.time()
 if "input_mode" not in st.session_state:
     st.session_state.input_mode = "text"
-if "memory_input" not in st.session_state:
-    st.session_state.memory_input = ""
 
 
 def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
@@ -190,7 +162,7 @@ def _memory_lookup(limit: int = 3, since: int | None = None):
 
 def _render_memories(entries):
     if not entries:
-        _info("No matching memories.")
+        st.session_state.chat_history.append(("Memory", "No matching memories."))
         return
     for entry in entries:
         stamp = entry.get("timestamp")
@@ -198,7 +170,6 @@ def _render_memories(entries):
         text = entry.get("text", "(no text)")
         msg = f"{ts} — {text}"
         st.session_state.chat_history.append(("Memory", msg))
-        _info(msg)
 
 
 def _is_quote_request(text: str) -> bool:
@@ -345,8 +316,7 @@ def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = Fa
             st.session_state.last_anchor_ts = time.time()
 
 
-def _maybe_handle_recall_query(text: str, mode: str = "Chat") -> bool:
-    forced_mode = mode != "Chat"
+def _maybe_handle_recall_query(text: str) -> bool:
     normalized = text.strip().lower()
     prefix = normalized.startswith(PREFIXES)
     keyword = KEYWORD_PATTERN.search(normalized) is not None
@@ -354,9 +324,9 @@ def _maybe_handle_recall_query(text: str, mode: str = "Chat") -> bool:
 
     parsed_datetime = None
     parsed_epoch = None
-    if mode == "Time search" and dateparser:
+    if dateparser:
         parsed_datetime = dateparser.parse(text, settings={"PREFER_DATES_FROM": "past"})
-    elif CAL:
+    if CAL and parsed_datetime is None:
         match = TIME_PATTERN.search(text)
         if match:
             parsed_tuple, status = CAL.parse(match.group(1))
@@ -365,8 +335,6 @@ def _maybe_handle_recall_query(text: str, mode: str = "Chat") -> bool:
                 if dateparser:
                     parsed_str = time.strftime("%Y-%m-%d %H:%M:%S", parsed_tuple)
                     parsed_datetime = dateparser.parse(parsed_str)
-    elif dateparser:
-        parsed_datetime = dateparser.parse(text, settings={"PREFER_DATES_FROM": "past"})
     if parsed_datetime:
         since_ms = int(parsed_datetime.timestamp() * 1000)
     elif parsed_epoch:
@@ -380,13 +348,8 @@ def _maybe_handle_recall_query(text: str, mode: str = "Chat") -> bool:
     weights = [0.3, 0.4, 0.2, 0.1]
     weighted_total = sum(s * w for s, w in zip(scores, weights))
 
-    if forced_mode:
-        entries = _memory_lookup(limit=5, since=since_ms)
-        _render_memories(entries)
-        return True
-
-    if weighted_total > 0.45:
-        entries = _memory_lookup(limit=3, since=since_ms)
+    if weighted_total > 0.45 or prefix:
+        entries = _memory_lookup(limit=5 if prefix else 3, since=since_ms)
         _render_memories(entries)
         return True
     return False
@@ -395,37 +358,33 @@ def _maybe_handle_recall_query(text: str, mode: str = "Chat") -> bool:
 def _anchor(text: str, *, record_chat: bool = True):
     factors = _hash_text(text)
     if not factors:
-        _warning("No alphabetical tokens detected; nothing anchored.")
+        st.warning("No alphabetical tokens detected; nothing anchored.")
         return False
     payload = {"entity": ENTITY, "factors": factors, "text": text}
     resp = requests.post(f"{API}/anchor", json=payload, headers=HEADERS, timeout=10)
     try:
         resp.raise_for_status()
     except requests.HTTPError as exc:
-        _error(f"Anchor failed ({resp.status_code}): {resp.text}")
+        st.error(f"Anchor failed ({resp.status_code}): {resp.text}")
         return False
     if record_chat:
         st.session_state.chat_history.append(("You", text))
-    _success("Anchored into ledger.")
+    st.success("Anchored into ledger.")
     return True
 
 
-def _process_memory_text(text: str, mode: str, use_openai: bool):
+def _process_memory_text(text: str, use_openai: bool):
     cleaned = (text or "").strip()
     if not cleaned:
-        _warning("Enter some text first.")
+        st.warning("Enter some text first.")
         return
-    if _maybe_handle_recall_query(cleaned, mode):
+    if _maybe_handle_recall_query(cleaned):
         return
     quote_mode = _is_quote_request(cleaned)
     bot_reply = _chat_response(cleaned, use_openai=use_openai)
     if bot_reply is None:
         bot_reply = ""
     _update_rolling_memory(cleaned, bot_reply, quote_mode=quote_mode)
-
-
-def _set_input_mode(mode: str):
-    st.session_state.input_mode = mode
 
 
 def _recall():
@@ -460,7 +419,7 @@ def _chat_response(prompt: str, use_openai=False):
         llm_prompt = _augment_prompt(prompt)
     if use_openai:
         if not (OpenAI and OPENAI_API_KEY):
-            _warning("OpenAI API key missing.")
+            st.warning("OpenAI API key missing.")
             return
         client = OpenAI(api_key=OPENAI_API_KEY)
         messages = [{"role": "user", "content": llm_prompt}]
@@ -510,43 +469,22 @@ durability_h = (time.time() - oldest) / 3600
 tokens_saved = metrics.get("tokens_deduped", "N/A")
 ledger_integrity = metrics.get("ledger_integrity", 0.0)
 
-mode_selection = st.radio("Mode", MODE_OPTIONS, horizontal=True)
-use_openai_model = st.checkbox("Use OpenAI model")
+icon_cols = st.columns([0.1, 0.1, 0.8])
+with icon_cols[0]:
+    if st.button("🎙️", help="Record voice memory"):
+        st.session_state.input_mode = "mic"
+with icon_cols[1]:
+    if st.button("📎", help="Attach a memory file"):
+        st.session_state.input_mode = "file"
+with icon_cols[2]:
+    st.caption("type, speak or attach a new memory")
 
-cols = st.columns([0.08, 0.74, 0.09, 0.09])
-with cols[0]:
-    st.button("✍️", help="Type a memory", on_click=lambda: _set_input_mode("text"))
-with cols[2]:
-    st.button("🎙️", help="Record a voice memory", on_click=lambda: _set_input_mode("mic"))
-with cols[3]:
-    st.button("📎", help="Attach a file", on_click=lambda: _set_input_mode("file"))
+prompt = st.chat_input("type, speak or attach a new memory")
+if prompt:
+    _process_memory_text(prompt, use_openai=True)
 
-with cols[1]:
-    if st.session_state.input_mode == "text":
-        lines = st.session_state.memory_input.count("\n") + 1
-        height = min(400, max(100, 40 + lines * 24))
-        st.text_area(
-            "type, speak or attach a new memory",
-            key="memory_input",
-            placeholder="type, speak or attach a new memory",
-            label_visibility="collapsed",
-            height=height,
-        )
-    else:
-        st.text_input(
-            "type, speak or attach a new memory",
-            placeholder="Tap ✍️, 🎙️, or 📎 to add a memory",
-            disabled=True,
-            label_visibility="collapsed",
-        )
-
-if st.session_state.input_mode == "text":
-    send_cols = st.columns([0.8, 0.2])
-    with send_cols[1]:
-        if st.button("Send memory", key="send_memory"):
-            _process_memory_text(st.session_state.memory_input, mode_selection, use_openai_model)
-            st.session_state.memory_input = ""
-elif st.session_state.input_mode == "mic":
+if st.session_state.input_mode == "mic":
+    st.info("Voice mode active – hold to record.")
     audio = st.audio_input("Hold to talk", key="voice_input")
     if audio:
         audio_bytes = audio.getvalue()
@@ -555,7 +493,7 @@ elif st.session_state.input_mode == "mic":
             st.session_state.last_audio_digest = digest
             norm = _normalize_audio(audio_bytes)
             if not (OpenAI and OPENAI_API_KEY):
-                _warning("OpenAI API key missing.")
+                st.warning("OpenAI API key missing.")
             else:
                 client = OpenAI(api_key=OPENAI_API_KEY)
                 try:
@@ -564,15 +502,18 @@ elif st.session_state.input_mode == "mic":
                         file=norm,
                     )
                     text = transcript.text
-                    _info(f"Transcript: {text}")
-                    _process_memory_text(text, mode_selection, use_openai_model)
+                    st.caption(f"Transcript: {text}")
+                    if text:
+                        _process_memory_text(text, use_openai=True)
+                        st.session_state.input_mode = "text"
                 except Exception as exc:
-                    _error(f"Transcription failed: {exc}")
+                    st.error(f"Transcription failed: {exc}")
+    if st.session_state.input_mode == "mic":
         st.session_state.input_mode = "text"
 elif st.session_state.input_mode == "file":
     uploaded = st.file_uploader("Attach a new memory", label_visibility="collapsed")
     if uploaded:
-        _info(f"Attached file: {uploaded.name}")
+        st.caption(f"Attached file: {uploaded.name}")
         st.session_state.input_mode = "text"
 
 tab_chat, tab_about = st.tabs(["Chat", "About DualSubstrate"])
