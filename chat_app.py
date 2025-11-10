@@ -593,7 +593,7 @@ def _render_app():
         ".stVerticalBlock:has(> .st-key-top_attach) {position:relative;display:flex;justify-content:center;align-items:center;gap:0;}",
         ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_input {flex:1 1 auto;}",
         ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_attach,.stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_mic {flex:0 0 auto;}",
-        ".st-key-top_attach {position: absolute; left:5px; z-index: 100; opacity: 0.5; bottom: 12px}",
+        ".st-key-top_attach {position: absolute; left:5px; z-index: 100; opacity: 0.5; bottom: 2px}",
         ".st-key-top_mic {position: absolute; right:30px !important; bottom: 2px; opacity: 0.5;}",
         ".st-key-top_attach > button {}",
         ".st-key-top_mic > button {}",
