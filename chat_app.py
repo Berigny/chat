@@ -135,9 +135,32 @@ def _hash_text(text: str):
 
 
 TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
+RELATIVE_NUMBER_PATTERN = re.compile(r"\b(\d+)\s+(minute|hour|day|week)s?\s+ago\b", re.IGNORECASE)
+RELATIVE_ARTICLE_PATTERN = re.compile(r"\b(an|a)\s+(minute|hour|day|week)\s+ago\b", re.IGNORECASE)
 CAL = pdt.Calendar() if pdt else None
 QUOTE_KEYWORD_PATTERN = re.compile(r"\b(quote|verbatim|exact)\b", re.I)
-RECALL_KEYWORD_PATTERN = re.compile(r"\b(recall|retrieve|what did i say)\b", re.I)
+RECALL_KEYWORD_PATTERN = re.compile(r"\b(recall|retrieve)\b", re.I)
+RECALL_PHRASES = (
+    "what did i say",
+    "what did we talk about",
+    "did we talk about",
+    "what did we discuss",
+    "did we discuss",
+    "what did we cover",
+    "did we cover",
+)
+RELATIVE_WORD_OFFSETS = {
+    "yesterday": 24 * 3600,
+    "last night": 12 * 3600,
+    "earlier today": 6 * 3600,
+    "this morning": 6 * 3600,
+    "this afternoon": 6 * 3600,
+    "this evening": 6 * 3600,
+    "an hour ago": 3600,
+    "an hour earlier": 3600,
+    "last week": 7 * 24 * 3600,
+}
+UNIT_TO_SECONDS = {"minute": 60, "hour": 3600, "day": 86400, "week": 7 * 86400}
 PREFIXES = ("/q", "@ledger", "::memory")
 _DIGIT_PATTERN = re.compile(r"\b\d+\b")
 _NUMBER_WORDS = {
@@ -359,6 +382,30 @@ def _normalize_for_match(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip().lower()
 
 
+def _infer_relative_timestamp(text: str) -> int | None:
+    if not text:
+        return None
+    lowered = text.lower()
+    now = time.time()
+    for phrase, seconds in RELATIVE_WORD_OFFSETS.items():
+        if phrase in lowered:
+            return int((now - seconds) * 1000)
+    match = RELATIVE_NUMBER_PATTERN.search(lowered)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2).lower().rstrip("s")
+        seconds = UNIT_TO_SECONDS.get(unit)
+        if seconds:
+            return int((now - amount * seconds) * 1000)
+    match = RELATIVE_ARTICLE_PATTERN.search(lowered)
+    if match:
+        unit = match.group(2).lower()
+        seconds = UNIT_TO_SECONDS.get(unit)
+        if seconds:
+            return int((now - seconds) * 1000)
+    return None
+
+
 def _ingest_attachment(uploaded_file) -> dict | None:
     if uploaded_file is None:
         return None
@@ -449,6 +496,7 @@ def _maybe_handle_recall_query(text: str) -> bool:
     normalized = text.strip().lower()
     prefix = normalized.startswith(PREFIXES)
     recall_keyword = RECALL_KEYWORD_PATTERN.search(normalized) is not None
+    recall_phrase = any(phrase in normalized for phrase in RECALL_PHRASES)
     since_ms = None
 
     parsed_datetime = None
@@ -468,21 +516,25 @@ def _maybe_handle_recall_query(text: str) -> bool:
         since_ms = int(parsed_datetime.timestamp() * 1000)
     elif parsed_epoch:
         since_ms = parsed_epoch
+    if since_ms is None:
+        relative = _infer_relative_timestamp(text)
+        if relative:
+            since_ms = relative
 
     semantic = _semantic_score(text)
     prefix_score = 1.0 if prefix else 0.0
-    keyword_score = 1.0 if recall_keyword else 0.0
+    keyword_score = 1.0 if (recall_keyword or recall_phrase) else 0.0
     time_score = 1.0 if since_ms else 0.0
     scores = [keyword_score, time_score, semantic, prefix_score]
     weights = [0.3, 0.4, 0.2, 0.1]
     weighted_total = sum(s * w for s, w in zip(scores, weights))
 
     requested = _extract_requested_count(text)
-    default_limit = _estimate_quote_count(text) if (recall_keyword or prefix) else 3
+    default_limit = _estimate_quote_count(text) if (recall_keyword or recall_phrase or prefix) else 3
     limit = requested if requested else default_limit
     limit = max(1, min(limit, 25))
 
-    should_recall = prefix or recall_keyword or since_ms is not None or weighted_total > 0.45
+    should_recall = prefix or recall_keyword or recall_phrase or since_ms is not None or weighted_total > 0.45
     if should_recall:
         entries = _memory_lookup(limit=limit, since=since_ms)
         _render_memories(entries)
