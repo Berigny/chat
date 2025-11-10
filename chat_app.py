@@ -599,7 +599,7 @@ def _render_app():
         ".st-key-top_mic > button {}",
         "div[data-testid='stChatInput'] {position:static !important;margin:0.25rem auto 0;}",
         "div[data-testid='stChatInput'] > div:first-child {position:relative;border:1px solid rgba(255,255,255,0.18);padding:1.5rem 4.5rem 1.5rem 3.25rem;transition:border-color 0.2s ease, box-shadow 0.2s ease;}",
-        "div[data-testid='stChatInput']:active-within > div:first-child {border-color:rgba(255,255,255,0.3);box-shadow:0 0 0 1px rgba(255,255,255,0.18);}",
+        "div[data-testid='stChatInput']:focus-within > div:first-child {border-color:rgba(255,255,255,0.3);box-shadow:0 0 0 1px rgba(255,255,255,0.18);}",
         "textarea[data-testid='stChatInputTextArea'] {max-height:250px!important; overflow-y:auto;padding-left:0 !important;padding-right:0 !important;}",
         "textarea[data-testid='stChatInputTextArea']:focus {min-height:250px !important;}",
         ".st-key-top_attach button div,.st-key-top_mic button div {display:none;}",
