@@ -3,6 +3,7 @@ import base64
 import hashlib
 import html
 import io
+import mimetypes
 import os
 import re
 import time
@@ -55,7 +56,7 @@ def _load_base64_image(name: str) -> str | None:
     except FileNotFoundError:
         return None
 
-def _process_memory_text(text: str, use_openai: bool):
+def _process_memory_text(text: str, use_openai: bool, *, attachments: list[dict] | None = None):
     cleaned = (text or "").strip()
     if not cleaned:
         st.warning("Enter some text first.")
@@ -63,100 +64,28 @@ def _process_memory_text(text: str, use_openai: bool):
     if _maybe_handle_recall_query(cleaned):
         return
     quote_mode = _is_quote_request(cleaned)
-    bot_reply = _chat_response(cleaned, use_openai=use_openai)
+    quote_count = _estimate_quote_count(cleaned) if quote_mode else None
+    if attachments:
+        for attachment in attachments:
+            preview = (attachment.get("text") or "").strip().replace("\n", " ")
+            short_preview = preview[:160]
+            if len(preview) > len(short_preview):
+                short_preview = f"{short_preview}…"
+            st.session_state.chat_history.append(
+                (
+                    "Attachment",
+                    f"{attachment.get('name', 'attachment')} → {short_preview}" if short_preview else attachment.get("name", "attachment"),
+                )
+            )
+    bot_reply = _chat_response(
+        cleaned,
+        use_openai=use_openai,
+        quote_count=quote_count,
+        attachments=attachments,
+    )
     if bot_reply is None:
         bot_reply = ""
     _update_rolling_memory(cleaned, bot_reply, quote_mode=quote_mode)
-
-st.set_page_config(page_title="Ledger Chat", layout="wide")
-logo_data = _load_base64_image("logo.png")
-send_icon = _load_base64_image("right-up.png")
-attach_icon = _load_base64_image("add.png")
-mic_icon = _load_base64_image("marketing.png")
-if logo_data:
-    st.markdown(
-        f"""
-        <div class="brand-logo" style="background-image:url('data:image/png;base64,{logo_data}')"></div>
-        """,
-        unsafe_allow_html=True,
-    )
-css_chunks = [
-    ".brand-logo {width:60px;height:30px;margin:0 auto 0.75rem;border-radius:3px;background-size:contain;background-repeat:no-repeat;background-position:center;}",
-    ".main-title {font-size:2rem !important;font-weight:400 !important;text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;}",
-    ".stBottomBlockContainer {position:static !important;margin-top:0 !important;}",
-    ".stVerticalBlock:has(> .st-key-top_attach) {position:relative;display:flex;justify-content:center;align-items:center;gap:0;}",
-    ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_input {flex:1 1 auto;max-width:640px;}",
-    ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_attach,.stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_mic {flex:0 0 auto;}",
-    ".st-key-top_attach {margin-right:-3.5rem;}",
-    ".st-key-top_mic {margin-left:-3.5rem;}",
-    "div[data-testid='stChatInput'] {position:static !important;margin:0.25rem auto 0;max-width:640px;}",
-    "div[data-testid='stChatInput'] > div:first-child {position:relative;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.18);padding:0.75rem 4.5rem 0.75rem 3.25rem;background-color:rgba(255,255,255,0.04);transition:border-color 0.2s ease, box-shadow 0.2s ease;}",
-    "div[data-testid='stChatInput']:focus-within > div:first-child {border-color:rgba(255,255,255,0.3);box-shadow:0 0 0 1px rgba(255,255,255,0.18);}",
-    "textarea[data-testid='stChatInputTextArea'] {min-height:52px !important;max-height:250px;overflow-y:auto;padding-left:0 !important;padding-right:0 !important;}",
-    "textarea[data-testid='stChatInputTextArea']:focus {min-height:250px !important;}",
-    ".st-key-top_attach button div,.st-key-top_mic button div {display:none;}",
-    ".st-key-top_attach button,.st-key-top_mic button {width:38px;height:38px;border-radius:0.75rem !important;background-color:rgba(255,255,255,0.08);background-repeat:no-repeat;background-position:center;background-size:24px 24px;border:1px solid rgba(255,255,255,0.14);transition:background-color 0.2s ease,border-color 0.2s ease;}",
-    ".st-key-top_attach button:hover,.st-key-top_mic button:hover {border-color:rgba(255,255,255,0.35);background-color:rgba(255,255,255,0.12);}",
-    "div[data-testid='stChatInput'] button[data-testid='stChatInputSubmitButton'] {width:44px;height:44px;border-radius:0.75rem !important;border:none;background-color:rgba(255,255,255,0.08);background-repeat:no-repeat;background-position:center;background-size:24px 24px;}",
-    "div[data-testid='stChatInput'] button[data-testid='stChatInputSubmitButton']:not(:disabled) {opacity:1;}",
-    "div[data-testid='stChatInput'] button[data-testid='stChatInputSubmitButton'] svg {display:none;}",
-    "div[data-testid='stChatInput'] button[data-testid='stChatInputSubmitButton']:disabled {opacity:0.5;}",
-]
-if attach_icon:
-    css_chunks.append(
-        f".st-key-top_attach button {{background-image:url('data:image/png;base64,{attach_icon}');}}"
-    )
-if mic_icon:
-    css_chunks.append(
-        f".st-key-top_mic button {{background-image:url('data:image/png;base64,{mic_icon}');}}"
-    )
-if send_icon:
-    css_chunks.append(
-        f"div[data-testid='stChatInput'] button[data-testid='stChatInputSubmitButton'] {{background-image:url('data:image/png;base64,{send_icon}');}}"
-    )
-style_block = "\n".join(css_chunks)
-st.markdown(
-    f"""
-    <style>
-    {style_block}
-    </style>
-    """,
-    unsafe_allow_html=True,
-)
-st.markdown('<h1 class="main-title">What needs remembering next?</h1>', unsafe_allow_html=True)
-
-TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
-CAL = pdt.Calendar() if pdt else None
-KEYWORD_PATTERN = re.compile(r"\b(quote|verbatim|exact|recall|retrieve|what did i say)\b", re.I)
-PREFIXES = ("/q", "@ledger", "::memory")
-
-if "chat_history" not in st.session_state:
-    st.session_state.chat_history = []
-if "last_audio_digest" not in st.session_state:
-    st.session_state.last_audio_digest = None
-if "ledger_state" not in st.session_state:
-    st.session_state.ledger_state = None
-if "recall_payload" not in st.session_state:
-    st.session_state.recall_payload = None
-if "rolling_text" not in st.session_state:
-    st.session_state.rolling_text = []
-if "last_anchor_ts" not in st.session_state:
-    st.session_state.last_anchor_ts = time.time()
-if "input_mode" not in st.session_state:
-    st.session_state.input_mode = "text"
-
-
-with st.container():
-    attach_clicked = st.button("Attach", key="top_attach", help="Attach a memory file", type="secondary")
-    prompt_top = st.chat_input("type, speak or attach a new memory", key="top_input")
-    mic_clicked = st.button("Mic", key="top_mic", help="Record voice memory", type="secondary")
-
-if attach_clicked:
-    st.session_state.input_mode = "file"
-if mic_clicked:
-    st.session_state.input_mode = "mic"
-if prompt_top:
-    _process_memory_text(prompt_top, use_openai=True)
 
 def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
     # The OpenAI API expects a file with a name.
@@ -181,6 +110,7 @@ def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
     if peak < 8000:
         audio = audioop.mul(audio, sampwidth, min(4.0, 20000 / peak))
     buf = io.BytesIO()
+    buf.name = "input.wav"
     with wave.open(buf, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
@@ -199,6 +129,40 @@ FALLBACK_PRIME = PRIME_ARRAY[0]
 def _hash_text(text: str):
     tokens = re.findall(r"[A-Za-z]+", text)
     return [{"prime": WORD_TO_PRIME.get(tok.lower(), FALLBACK_PRIME), "delta": 1} for tok in tokens][:30]
+
+
+TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
+CAL = pdt.Calendar() if pdt else None
+KEYWORD_PATTERN = re.compile(r"\b(quote|verbatim|exact|recall|retrieve|what did i say)\b", re.I)
+PREFIXES = ("/q", "@ledger", "::memory")
+_DIGIT_PATTERN = re.compile(r"\b\d+\b")
+_NUMBER_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
+_QUANTITY_HINTS = {
+    "a couple": 2,
+    "couple": 2,
+    "a few": 3,
+    "few": 3,
+    "handful": 4,
+    "some": 4,
+    "several": 6,
+    "many": 8,
+    "plenty": 8,
+    "all": 15,
+    "entire": 15,
+}
 
 
 def _cosine(a, b):
@@ -252,6 +216,39 @@ def _render_memories(entries):
 def _is_quote_request(text: str) -> bool:
     normalized = text.strip().lower()
     return normalized.startswith(PREFIXES) or KEYWORD_PATTERN.search(normalized) is not None
+
+
+def _extract_requested_count(text: str) -> int | None:
+    if not text:
+        return None
+
+    digits = [int(match) for match in _DIGIT_PATTERN.findall(text)]
+    if digits:
+        return digits[-1]
+
+    lowered = text.lower()
+    for phrase, value in _QUANTITY_HINTS.items():
+        if phrase in lowered:
+            return value
+
+    for word, value in _NUMBER_WORDS.items():
+        if re.search(rf"\b{re.escape(word)}\b", lowered):
+            return value
+
+    return None
+
+
+def _estimate_quote_count(text: str) -> int:
+    explicit = _extract_requested_count(text)
+    if explicit:
+        return max(1, min(explicit, 25))
+
+    lowered = (text or "").lower()
+    for phrase, value in _QUANTITY_HINTS.items():
+        if phrase in lowered:
+            return max(1, min(value, 25))
+
+    return 5
 
 
 QUOTE_LIST_PATTERN = re.compile(r"^\s*\d{1,2}[).:-]\s+")
@@ -310,7 +307,7 @@ def _strip_ledger_noise(text: str, *, user_only: bool = False) -> str:
     return candidate or text
 
 
-def _augment_prompt(user_question: str) -> str:
+def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None) -> str:
     try:
         resp = requests.get(
             f"{API}/memories",
@@ -339,12 +336,63 @@ def _augment_prompt(user_question: str) -> str:
         prompt_lines.append(
             "The user may ask for exact quotes. Provide precise excerpts from the context when relevant, maintaining punctuation and casing."
         )
+    if attachments:
+        prompt_lines.append("Relevant attachments:")
+        for attachment in attachments:
+            name = attachment.get("name", "attachment")
+            snippet = (attachment.get("text") or "").strip()
+            truncated = snippet[:1500]
+            if len(snippet) > len(truncated):
+                truncated = f"{truncated}\n… (truncated)"
+            prompt_lines.append(f"{name}:\n{truncated}")
+        prompt_lines.append("")
+
     prompt_lines.append(f"User question: {user_question}")
     return "\n".join(prompt_lines)
 
 
 def _normalize_for_match(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip().lower()
+
+
+def _ingest_attachment(uploaded_file) -> dict | None:
+    if uploaded_file is None:
+        return None
+
+    name = getattr(uploaded_file, "name", None) or "attachment"
+    mime = getattr(uploaded_file, "type", None) or mimetypes.guess_type(name)[0] or "application/octet-stream"
+
+    try:
+        data = uploaded_file.getvalue()
+    except AttributeError:
+        data = uploaded_file.read()
+
+    if not data:
+        return None
+
+    text: str | None = None
+    if mime.startswith("text/") or mime in {"application/json", "application/xml", "application/javascript"}:
+        for encoding in ("utf-8", "utf-16", "latin-1"):
+            try:
+                text = data.decode(encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+    if text is None:
+        try:
+            text = data.decode("utf-8", errors="ignore")
+        except Exception:
+            text = None
+
+    if text is None:
+        size_kb = len(data) / 1024
+        text = f"(Binary attachment of type {mime} ~{size_kb:.1f} KB could not be decoded to text.)"
+
+    max_chars = 8_000
+    if len(text) > max_chars:
+        text = f"{text[:max_chars]}\n… (truncated)"
+
+    return {"name": name, "mime": mime, "text": text}
 
 
 def _latest_user_transcript(current_request: str, *, limit: int = 5) -> str | None:
@@ -425,8 +473,13 @@ def _maybe_handle_recall_query(text: str) -> bool:
     weights = [0.3, 0.4, 0.2, 0.1]
     weighted_total = sum(s * w for s, w in zip(scores, weights))
 
+    requested = _extract_requested_count(text)
+    default_limit = _estimate_quote_count(text) if (keyword or prefix) else 3
+    limit = requested if requested else default_limit
+    limit = max(1, min(limit, 25))
+
     if weighted_total > 0.45 or prefix:
-        entries = _memory_lookup(limit=5 if prefix else 3, since=since_ms)
+        entries = _memory_lookup(limit=limit, since=since_ms)
         _render_memories(entries)
         return True
     return False
@@ -463,23 +516,47 @@ def _load_ledger():
     st.session_state.ledger_state = resp.json() if resp.ok else {"error": resp.text}
 
 
-def _chat_response(prompt: str, use_openai=False):
+def _chat_response(
+    prompt: str,
+    use_openai=False,
+    *,
+    quote_count: int | None = None,
+    attachments: list[dict] | None = None,
+):
+    attachment_block = ""
+    if attachments:
+        lines = ["Attachment context:"]
+        for attachment in attachments:
+            name = attachment.get("name", "attachment")
+            snippet = (attachment.get("text") or "").strip()
+            truncated = snippet[:1500]
+            if len(snippet) > len(truncated):
+                truncated = f"{truncated}\n… (truncated)"
+            lines.append(f"{name}:\n{truncated}")
+        attachment_block = "\n\n".join(lines)
+
     if _is_quote_request(prompt):
+        target_count = max(1, min((quote_count or _estimate_quote_count(prompt)), 25))
         full_text = _latest_user_transcript(prompt)
 
         if full_text:
+            plural = "quotes" if target_count != 1 else "quote"
             llm_prompt = (
                 "Below is a verbatim transcript.  "
-                "Reply with TEN exact quotes (keep punctuation & capitalisation).  "
+                f"Reply with {target_count} exact {plural} (keep punctuation & capitalisation).  "
                 "Do not paraphrase.  "
                 "If the transcript contains assistant replies marked 'Bot:' or similar, ignore them and only quote the human speaker.  "
                 f"Transcript:\n{full_text}\n\n"
-                "Ten exact quotes:"
+                f"Exact {plural}:"
             )
+            if attachment_block:
+                llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
         else:
             llm_prompt = "No anchored text found – say so."
     else:
-        llm_prompt = _augment_prompt(prompt)
+        llm_prompt = _augment_prompt(prompt, attachments=attachments)
+        if attachment_block and "Attachment context:" not in llm_prompt:
+            llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
     if use_openai:
         if not (OpenAI and OPENAI_API_KEY):
             st.warning("OpenAI API key missing.")
@@ -503,126 +580,246 @@ def _chat_response(prompt: str, use_openai=False):
     return full or "(No response)"
 
 
-# ---------- investor KPI ----------
-try:
-    metrics_resp = requests.get(f"{API}/metrics", headers=HEADERS, timeout=5)
-    metrics_resp.raise_for_status()
-    metrics = metrics_resp.json()
-except (requests.RequestException, ValueError):
-    metrics = {"tokens_deduped": "N/A", "ledger_integrity": 0.0}
+def _render_app():
+    st.set_page_config(page_title="Ledger Chat", layout="wide")
 
-try:
-    memories_resp = requests.get(
-        f"{API}/memories",
-        params={"entity": ENTITY, "limit": 1},
-        headers=HEADERS,
-        timeout=5,
+    logo_data = _load_base64_image("logo.png")
+    send_icon = _load_base64_image("right-up.png")
+    attach_icon = _load_base64_image("add.png")
+    mic_icon = _load_base64_image("marketing.png")
+
+    if logo_data:
+        st.markdown(
+            f"""
+            <div class="brand-logo" style="background-image:url('data:image/png;base64,{logo_data}')"></div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    css_chunks = [
+        ".brand-logo {width:60px;height:30px;margin:0 auto 0.75rem;border-radius:3px;background-size:contain;background-repeat:no-repeat;background-position:center;}",
+        ".main-title {font-size:2rem !important;font-weight:400 !important;text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;}",
+        ".stBottomBlockContainer {position:static !important;margin-top:0 !important;}",
+        ".stVerticalBlock:has(> .st-key-top_attach) {position:relative;display:flex;justify-content:center;align-items:center;gap:0;}",
+        ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_input {flex:1 1 auto;max-width:640px;}",
+        ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_attach,.stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_mic {flex:0 0 auto;}",
+        ".st-key-top_attach {margin-right:-3.5rem;}",
+        ".st-key-top_mic {margin-left:-3.5rem;}",
+        "div[data-testid='stChatInput'] {position:static !important;margin:0.25rem auto 0;max-width:640px;}",
+        "div[data-testid='stChatInput'] > div:first-child {position:relative;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.18);padding:0.75rem 4.5rem 0.75rem 3.25rem;background-color:rgba(255,255,255,0.04);transition:border-color 0.2s ease, box-shadow 0.2s ease;}",
+        "div[data-testid='stChatInput']:focus-within > div:first-child {border-color:rgba(255,255,255,0.3);box-shadow:0 0 0 1px rgba(255,255,255,0.18);}",
+        "textarea[data-testid='stChatInputTextArea'] {min-height:52px !important;max-height:250px;overflow-y:auto;padding-left:0 !important;padding-right:0 !important;}",
+        "textarea[data-testid='stChatInputTextArea']:focus {min-height:250px !important;}",
+        ".st-key-top_attach button div,.st-key-top_mic button div {display:none;}",
+        ".st-key-top_attach button,.st-key-top_mic button {width:38px;height:38px;border-radius:0.75rem !important;background-color:rgba(255,255,255,0.08);background-repeat:no-repeat;background-position:center;background-size:24px 24px;border:1px solid rgba(255,255,255,0.14);transition:background-color 0.2s ease,border-color 0.2s ease;}",
+        ".st-key-top_attach button:hover,.st-key-top_mic button:hover {border-color:rgba(255,255,255,0.35);background-color:rgba(255,255,255,0.12);}",
+        "div[data-testid='stChatInput'] button[data-testid='stChatInputSubmitButton'] {width:44px;height:44px;border-radius:0.75rem !important;border:none;background-color:rgba(255,255,255,0.08);background-repeat:no-repeat;background-position:center;background-size:24px 24px;}",
+        "div[data-testid='stChatInput'] button[data-testid='stChatInputSubmitButton']:not(:disabled) {opacity:1;}",
+        "div[data-testid='stChatInput'] button[data-testid='stChatInputSubmitButton'] svg {display:none;}",
+        "div[data-testid='stChatInput'] button[data-testid='stChatInputSubmitButton']:disabled {opacity:0.5;}",
+    ]
+
+    if attach_icon:
+        css_chunks.append(
+            f".st-key-top_attach button {{background-image:url('data:image/png;base64,{attach_icon}');}}"
+        )
+    if mic_icon:
+        css_chunks.append(
+            f".st-key-top_mic button {{background-image:url('data:image/png;base64,{mic_icon}');}}"
+        )
+    if send_icon:
+        css_chunks.append(
+            f"div[data-testid='stChatInput'] button[data-testid='stChatInputSubmitButton'] {{background-image:url('data:image/png;base64,{send_icon}');}}"
+        )
+
+    style_block = "\n".join(css_chunks)
+    st.markdown(
+        f"""
+        <style>
+        {style_block}
+        </style>
+        """,
+        unsafe_allow_html=True,
     )
-    memories_resp.raise_for_status()
-    memories = memories_resp.json()
-except (requests.RequestException, ValueError):
-    memories = []
+    st.markdown('<h1 class="main-title">What needs remembering next?</h1>', unsafe_allow_html=True)
 
-oldest = (
-    memories[-1].get("timestamp", time.time() * 1000) / 1000
-    if isinstance(memories, list) and memories
-    else time.time()
-)
-durability_h = (time.time() - oldest) / 3600
-tokens_saved = metrics.get("tokens_deduped", "N/A")
-ledger_integrity = metrics.get("ledger_integrity", 0.0)
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+    if "last_audio_digest" not in st.session_state:
+        st.session_state.last_audio_digest = None
+    if "ledger_state" not in st.session_state:
+        st.session_state.ledger_state = None
+    if "recall_payload" not in st.session_state:
+        st.session_state.recall_payload = None
+    if "rolling_text" not in st.session_state:
+        st.session_state.rolling_text = []
+    if "last_anchor_ts" not in st.session_state:
+        st.session_state.last_anchor_ts = time.time()
+    if "input_mode" not in st.session_state:
+        st.session_state.input_mode = "text"
+    if "top_input" not in st.session_state:
+        st.session_state["top_input"] = ""
+    if "pending_attachments" not in st.session_state:
+        st.session_state.pending_attachments = []
 
-if st.session_state.input_mode == "mic":
-    st.info("Voice mode active – hold to record.")
-    audio = st.audio_input("Hold to talk", key="voice_input")
-    if audio:
-        audio_bytes = audio.getvalue()
-        digest = hashlib.sha1(audio_bytes).hexdigest()
-        if digest != st.session_state.last_audio_digest:
-            st.session_state.last_audio_digest = digest
-            norm = _normalize_audio(audio_bytes)
-            if not (OpenAI and OPENAI_API_KEY):
-                st.warning("OpenAI API key missing.")
-            else:
-                client = OpenAI(api_key=OPENAI_API_KEY)
-                try:
-                    transcript = client.audio.transcriptions.create(
-                        model="whisper-1",
-                        file=norm,
-                    )
-                    text = transcript.text
-                    st.caption(f"Transcript: {text}")
-                    if text:
-                        _process_memory_text(text, use_openai=True)
-                        st.session_state.input_mode = "text"
-                except Exception as exc:
-                    st.error(f"Transcription failed: {exc}")
+    with st.container():
+        attach_clicked = st.button("Attach", key="top_attach", help="Attach a memory file", type="secondary")
+        prompt_top = st.chat_input("type, speak or attach a new memory", key="top_input")
+        mic_clicked = st.button("Mic", key="top_mic", help="Record voice memory", type="secondary")
+
+    if attach_clicked:
+        st.session_state.input_mode = "file"
+    if mic_clicked:
+        st.session_state.input_mode = "mic"
+
+    if prompt_top:
+        attachments = list(st.session_state.pending_attachments)
+        _process_memory_text(prompt_top, use_openai=True, attachments=attachments)
+        st.session_state.pending_attachments = []
+        # Streamlit clears chat inputs automatically after submission, so avoid
+        # writing to the widget-managed key here to prevent SessionState errors.
+
+    # ---------- investor KPI ----------
+    try:
+        metrics_resp = requests.get(f"{API}/metrics", headers=HEADERS, timeout=5)
+        metrics_resp.raise_for_status()
+        metrics = metrics_resp.json()
+    except (requests.RequestException, ValueError):
+        metrics = {"tokens_deduped": "N/A", "ledger_integrity": 0.0}
+
+    try:
+        memories_resp = requests.get(
+            f"{API}/memories",
+            params={"entity": ENTITY, "limit": 1},
+            headers=HEADERS,
+            timeout=5,
+        )
+        memories_resp.raise_for_status()
+        memories = memories_resp.json()
+    except (requests.RequestException, ValueError):
+        memories = []
+
+    oldest = (
+        memories[-1].get("timestamp", time.time() * 1000) / 1000
+        if isinstance(memories, list) and memories
+        else time.time()
+    )
+    durability_h = (time.time() - oldest) / 3600
+    tokens_saved = metrics.get("tokens_deduped", "N/A")
+    ledger_integrity = metrics.get("ledger_integrity", 0.0)
+
     if st.session_state.input_mode == "mic":
-        st.session_state.input_mode = "text"
-elif st.session_state.input_mode == "file":
-    uploaded = st.file_uploader("Attach a new memory", label_visibility="collapsed")
-    if uploaded:
-        st.caption(f"Attached file: {uploaded.name}")
-        st.session_state.input_mode = "text"
+        st.info("Voice mode active – hold to record.")
+        audio = st.audio_input("Hold to talk", key="voice_input")
+        if audio:
+            audio_bytes = audio.getvalue()
+            digest = hashlib.sha1(audio_bytes).hexdigest()
+            if digest != st.session_state.last_audio_digest:
+                st.session_state.last_audio_digest = digest
+                norm = _normalize_audio(audio_bytes)
+                if not (OpenAI and OPENAI_API_KEY):
+                    st.warning("OpenAI API key missing.")
+                else:
+                    client = OpenAI(api_key=OPENAI_API_KEY)
+                    try:
+                        transcript = client.audio.transcriptions.create(
+                            model="whisper-1",
+                            file=norm,
+                        )
+                        text = getattr(transcript, "text", None) or transcript.get("text") if isinstance(transcript, dict) else None
+                        if text:
+                            st.caption(f"Transcript: {text}")
+                            st.session_state.top_input = text
+                        else:
+                            st.warning("No transcript returned from Whisper.")
+                    except Exception as exc:
+                        st.error(f"Transcription failed: {exc}")
+        if st.session_state.input_mode == "mic":
+            st.session_state.input_mode = "text"
+    elif st.session_state.input_mode == "file":
+        uploaded = st.file_uploader("Attach a new memory", label_visibility="collapsed")
+        if uploaded:
+            attachment = _ingest_attachment(uploaded)
+            if attachment:
+                st.session_state.pending_attachments.append(attachment)
+                snippet_preview = (attachment.get("text") or "").strip()
+                preview = snippet_preview[:140].replace("\n", " ")
+                if len(snippet_preview) > 140:
+                    preview += "…"
+                st.caption(f"Attached {attachment['name']} ({attachment['mime']}). Preview: {preview}")
+            else:
+                st.warning("Could not read the uploaded attachment.")
+            st.session_state.input_mode = "text"
 
-tab_chat, tab_about = st.tabs(["Chat", "About DualSubstrate"])
+    tab_chat, tab_about = st.tabs(["Chat", "About DualSubstrate"])
 
-with tab_chat:
-    recent_history = list(reversed(st.session_state.chat_history[-20:]))
-    if recent_history:
-        entries = [
-            f"<div class='chat-entry'><strong>{html.escape(role)}:</strong> {html.escape(content)}</div>"
-            for role, content in recent_history
-        ]
-        stream_html = "<hr>".join(entries)
-    else:
-        stream_html = "<div class='chat-entry'>No chat history yet.</div>"
-    st.markdown(f"<div class='chat-stream'>{stream_html}</div>", unsafe_allow_html=True)
-    st.markdown("<hr class='full-divider'>", unsafe_allow_html=True)
+    with tab_chat:
+        recent_history = list(reversed(st.session_state.chat_history[-20:]))
+        if st.session_state.pending_attachments:
+            for attachment in st.session_state.pending_attachments:
+                preview = (attachment.get("text") or "").strip()
+                summary = preview[:200].replace("\n", " ")
+                if len(preview) > 200:
+                    summary += "…"
+                st.info(f"Attachment ready: {attachment['name']} – {summary}")
+        if recent_history:
+            entries = [
+                f"<div class='chat-entry'><strong>{html.escape(role)}:</strong> {html.escape(content)}</div>"
+                for role, content in recent_history
+            ]
+            stream_html = "<hr>".join(entries)
+        else:
+            stream_html = "<div class='chat-entry'>No chat history yet.</div>"
+        st.markdown(f"<div class='chat-stream'>{stream_html}</div>", unsafe_allow_html=True)
+        st.markdown("<hr class='full-divider'>", unsafe_allow_html=True)
 
-with tab_about:
-    col_left, col_right = st.columns(2)
-    with col_left:
-        st.markdown(
-            """
-            
-            <div class="about-col about-col-left">
-                <h2 class="about-heading" style="font-size: 01.2rem; font-weight: 400">DualSubstrate ledger demo</h2>
-                <p class="about-text">To test this DualSubstrate ledger demo speak or type. Everything anchors to the prime-based ledger. Tip: type /q or “what did I say at 7 pm” and I’ll quote you word-for-word from the prime-ledger. Anything else = normal chat.</p>
-                <hr>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.markdown(
-            """
-            <div class="prime-ledger-block">
-                <h2 class="prime-heading" style="font-size: 1.2rem; font-weight: 400">Prime-Ledger Snapshot</h2>
-                <p class="prime-text">A live, word-perfect copy of everything you’ve anchored - sealed in primes, mathematically identical forever.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        if st.button("Load ledger", key="load_ledger_about"):
-            _load_ledger()
-        if st.session_state.ledger_state:
-            st.json(st.session_state.ledger_state)
-    with col_right:
-        st.markdown(
-            """
-            <div class="about-col about-col-right">
-                <h2 class="metrics-heading" style="font-size: 1.25rem; font-weight: 400">Metrics</h2>
-                <p class="metrics-paragraph">Tokens Saved = words you never had to re-compute; Integrity = % of anchors that were unique (100 % = zero duplicates); Durability = hours your speech has survived restarts.</p>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-        st.markdown('<div class="metrics-row">', unsafe_allow_html=True)
-        metric_cols = st.columns(3)
-        with metric_cols[0]:
-            st.metric("Tokens Saved", tokens_saved)
-        with metric_cols[1]:
-            st.metric("Integrity %", f"{ledger_integrity*100:.1f} %")
-        with metric_cols[2]:
-            st.metric("Durability h", f"{durability_h:.1f}")
-        st.markdown('</div>', unsafe_allow_html=True)
+    with tab_about:
+        col_left, col_right = st.columns(2)
+        with col_left:
+            st.markdown(
+                """
+
+                <div class="about-col about-col-left">
+                    <h2 class="about-heading" style="font-size: 01.2rem; font-weight: 400">DualSubstrate ledger demo</h2>
+                    <p class="about-text">To test this DualSubstrate ledger demo speak or type. Everything anchors to the prime-based ledger. Tip: type /q or “what did I say at 7 pm” and I’ll quote you word-for-word from the prime-ledger. Anything else = normal chat.</p>
+                    <hr>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown(
+                """
+                <div class="prime-ledger-block">
+                    <h2 class="prime-heading" style="font-size: 1.2rem; font-weight: 400">Prime-Ledger Snapshot</h2>
+                    <p class="prime-text">A live, word-perfect copy of everything you’ve anchored - sealed in primes, mathematically identical forever.</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            if st.button("Load ledger", key="load_ledger_about"):
+                _load_ledger()
+            if st.session_state.ledger_state:
+                st.json(st.session_state.ledger_state)
+        with col_right:
+            st.markdown(
+                """
+                <div class="about-col about-col-right">
+                    <h2 class="metrics-heading" style="font-size: 1.25rem; font-weight: 400">Metrics</h2>
+                    <p class="metrics-paragraph">Tokens Saved = words you never had to re-compute; Integrity = % of anchors that were unique (100 % = zero duplicates); Durability = hours your speech has survived restarts.</p>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            st.markdown('<div class="metrics-row">', unsafe_allow_html=True)
+            metric_cols = st.columns(3)
+            with metric_cols[0]:
+                st.metric("Tokens Saved", tokens_saved)
+            with metric_cols[1]:
+                st.metric("Integrity %", f"{ledger_integrity*100:.1f} %")
+            with metric_cols[2]:
+                st.metric("Durability h", f"{durability_h:.1f}")
+            st.markdown('</div>', unsafe_allow_html=True)
+
+
+if __name__ == "__main__":
+    _render_app()
