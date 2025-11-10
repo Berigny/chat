@@ -54,6 +54,7 @@ OPENAI_API_KEY = _secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 ASSET_DIR = Path(__file__).parent
 
 DEFAULT_METRIC_FLOORS = {"tokens_deduped": 12500.0, "ledger_integrity": 0.97, "durability_h": 36.0}
+_RERUN_FN = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
 
 
 def _load_metric_floors():
@@ -417,6 +418,14 @@ def _coerce_float(value) -> float | None:
         return None
 
 
+def _trigger_rerun():
+    if _RERUN_FN:
+        try:
+            _RERUN_FN()
+        except RuntimeError:
+            pass
+
+
 def _extract_transcript_text(transcript) -> str | None:
     if not transcript:
         return None
@@ -751,7 +760,8 @@ def _chat_response(
 
     if _is_quote_request(prompt):
         target_count = max(1, min((quote_count or _estimate_quote_count(prompt)), 25))
-        full_text = _latest_user_transcript(prompt)
+        search_limit = max(target_count * 3, 15)
+        full_text = _latest_user_transcript(prompt, limit=search_limit)
 
         if full_text:
             plural = "quotes" if target_count != 1 else "quote"
@@ -767,7 +777,7 @@ def _chat_response(
                 llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
         else:
             since_hint = _infer_relative_timestamp(prompt)
-            fallback_summary = _summarize_accessible_memories(target_count, since=since_hint)
+            fallback_summary = _summarize_accessible_memories(max(target_count, 10), since=since_hint)
             if fallback_summary:
                 st.session_state.chat_history.append(("Bot", fallback_summary))
                 return fallback_summary
@@ -961,7 +971,7 @@ def _render_app():
                         if text:
                             st.caption(f"Transcript: {text}")
                             st.session_state.prefill_top_input = text
-                            st.experimental_rerun()
+                            _trigger_rerun()
                         else:
                             st.warning("No transcript returned from Whisper.")
                     except Exception as exc:
