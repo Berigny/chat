@@ -61,6 +61,9 @@ def _process_memory_text(text: str, use_openai: bool, *, attachments: list[dict]
     if not cleaned:
         st.warning("Enter some text first.")
         return
+    if "chat_history" not in st.session_state:
+        st.session_state.chat_history = []
+    st.session_state.chat_history.append(("You", cleaned))
     if _maybe_handle_recall_query(cleaned):
         return
     quote_mode = _is_quote_request(cleaned)
@@ -133,7 +136,8 @@ def _hash_text(text: str):
 
 TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
 CAL = pdt.Calendar() if pdt else None
-KEYWORD_PATTERN = re.compile(r"\b(quote|verbatim|exact|recall|retrieve|what did i say)\b", re.I)
+QUOTE_KEYWORD_PATTERN = re.compile(r"\b(quote|verbatim|exact)\b", re.I)
+RECALL_KEYWORD_PATTERN = re.compile(r"\b(recall|retrieve|what did i say)\b", re.I)
 PREFIXES = ("/q", "@ledger", "::memory")
 _DIGIT_PATTERN = re.compile(r"\b\d+\b")
 _NUMBER_WORDS = {
@@ -215,7 +219,7 @@ def _render_memories(entries):
 
 def _is_quote_request(text: str) -> bool:
     normalized = text.strip().lower()
-    return normalized.startswith(PREFIXES) or KEYWORD_PATTERN.search(normalized) is not None
+    return normalized.startswith(PREFIXES) or QUOTE_KEYWORD_PATTERN.search(normalized) is not None
 
 
 def _extract_requested_count(text: str) -> int | None:
@@ -444,7 +448,7 @@ def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = Fa
 def _maybe_handle_recall_query(text: str) -> bool:
     normalized = text.strip().lower()
     prefix = normalized.startswith(PREFIXES)
-    keyword = KEYWORD_PATTERN.search(normalized) is not None
+    recall_keyword = RECALL_KEYWORD_PATTERN.search(normalized) is not None
     since_ms = None
 
     parsed_datetime = None
@@ -467,18 +471,19 @@ def _maybe_handle_recall_query(text: str) -> bool:
 
     semantic = _semantic_score(text)
     prefix_score = 1.0 if prefix else 0.0
-    keyword_score = 1.0 if keyword else 0.0
+    keyword_score = 1.0 if recall_keyword else 0.0
     time_score = 1.0 if since_ms else 0.0
     scores = [keyword_score, time_score, semantic, prefix_score]
     weights = [0.3, 0.4, 0.2, 0.1]
     weighted_total = sum(s * w for s, w in zip(scores, weights))
 
     requested = _extract_requested_count(text)
-    default_limit = _estimate_quote_count(text) if (keyword or prefix) else 3
+    default_limit = _estimate_quote_count(text) if (recall_keyword or prefix) else 3
     limit = requested if requested else default_limit
     limit = max(1, min(limit, 25))
 
-    if weighted_total > 0.45 or prefix:
+    should_recall = prefix or recall_keyword or since_ms is not None or weighted_total > 0.45
+    if should_recall:
         entries = _memory_lookup(limit=limit, since=since_ms)
         _render_memories(entries)
         return True
