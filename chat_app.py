@@ -48,8 +48,8 @@ st.markdown(
     """
     <style>
     .main-title {
-        font-size: 2rem;
-        font-weight: 400;
+        font-size: 2rem !important;
+        font-weight: 400 !important;
         text-align: center;
         margin-top: 0.5rem;
         margin-bottom: 0.75rem;
