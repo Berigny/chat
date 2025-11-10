@@ -594,7 +594,7 @@ def _render_app():
         ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_input {flex:1 1 auto;max-width:640px;}",
         ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_attach,.stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_mic {flex:0 0 auto;}",
         ".st-key-top_attach {position: absolute; left:0}",
-        ".st-key-top_mic {position: absolute; right:0}",
+        ".st-key-top_mic {position: absolute; left:620px !important}",
         "div[data-testid='stChatInput'] {position:static !important;margin:0.25rem auto 0;max-width:640px;}",
         "div[data-testid='stChatInput'] > div:first-child {position:relative;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.18);padding:0.75rem 4.5rem 0.75rem 3.25rem;background-color:#F1F2F6 !important;transition:border-color 0.2s ease, box-shadow 0.2s ease;}",
         "div[data-testid='stChatInput']:focus-within > div:first-child {border-color:rgba(255,255,255,0.3);box-shadow:0 0 0 1px rgba(255,255,255,0.18);}",
