@@ -275,7 +275,7 @@ RELATIVE_NUMBER_PATTERN = re.compile(r"\b(\d+)\s+(minute|hour|day|week)s?\s+ago\
 RELATIVE_ARTICLE_PATTERN = re.compile(r"\b(an|a)\s+(minute|hour|day|week)\s+ago\b", re.IGNORECASE)
 CAL = pdt.Calendar() if pdt else None
 QUOTE_KEYWORD_PATTERN = re.compile(r"\b(quote|verbatim|exact)\b", re.I)
-RECALL_KEYWORD_PATTERN = re.compile(r"\b(recall|retrieve)\b", re.I)
+RECALL_KEYWORD_PATTERN = re.compile(r"\b(recall|retrieve|topics?|covered)\b", re.I)
 RECALL_PHRASES = (
     "what did i say",
     "what did we talk about",
@@ -284,6 +284,8 @@ RECALL_PHRASES = (
     "did we discuss",
     "what did we cover",
     "did we cover",
+    "what topics did we cover",
+    "what topics",
 )
 RELATIVE_WORD_OFFSETS = {
     "yesterday": 24 * 3600,
@@ -519,13 +521,18 @@ def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None
         resp.raise_for_status()
         memories = resp.json()
     except requests.RequestException:
-        return user_question
+        summary = _summarize_accessible_memories(5)
+        return f"{summary}\n\nUser question: {user_question}" if summary else user_question
 
     if not memories:
-        return user_question
+        summary = _summarize_accessible_memories(5)
+        return f"{summary}\n\nUser question: {user_question}" if summary else user_question
 
     full_context = _strip_ledger_noise(memories[0].get("text", "").strip())
     if not full_context:
+        summary = _summarize_accessible_memories(5)
+        if summary:
+            return f"{summary}\n\nUser question: {user_question}"
         return user_question
 
     prompt_lines = [
@@ -872,10 +879,8 @@ def _call_factor_extraction_llm(text: str) -> list[dict]:
 def _map_to_primes_with_agent(text: str) -> list[dict]:
     llm_factors = _call_factor_extraction_llm(text)
     if llm_factors:
-        st.write("LLM factors:", llm_factors)
         return llm_factors
     fallback = _extract_prime_factors(text)
-    st.write("Fallback factors:", fallback)
     return fallback
 
 
@@ -946,7 +951,6 @@ def _run_enrichment(entity: str = ENTITY, limit: int = 200, reset_first: bool = 
         if not factors:
             continue
         payload = {"entity": entity, "text": text, "factors": factors}
-        st.write("Enrichment payload:", payload)
         try:
             post_resp = requests.post(
                 f"{API}/anchor",
