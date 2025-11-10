@@ -506,6 +506,61 @@ def _ingest_attachment(uploaded_file) -> dict | None:
     return {"name": name, "mime": mime, "text": text}
 
 
+def _chunk_attachment_text(text: str, *, max_chars: int = 900) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
+    if not paragraphs:
+        paragraphs = [text]
+    chunks: list[str] = []
+    current = ""
+    for paragraph in paragraphs:
+        if not paragraph:
+            continue
+        candidate = f"{current}\n\n{paragraph}".strip() if current else paragraph
+        if len(candidate) <= max_chars:
+            current = candidate
+        else:
+            if current:
+                chunks.append(current)
+            if len(paragraph) <= max_chars:
+                current = paragraph
+            else:
+                for i in range(0, len(paragraph), max_chars):
+                    chunks.append(paragraph[i : i + max_chars])
+                current = ""
+    if current:
+        chunks.append(current)
+    return chunks
+
+
+def _anchor_attachment(attachment: dict):
+    name = attachment.get("name") or "attachment"
+    text = (attachment.get("text") or "").strip()
+    if not text:
+        st.session_state.chat_history.append(("Attachment", f"{name} contained no text to anchor."))
+        return
+    chunks = _chunk_attachment_text(text)
+    if not chunks:
+        st.session_state.chat_history.append(("Attachment", f"{name} contained no text to anchor."))
+        return
+    anchored = 0
+    total = len(chunks)
+    for idx, chunk in enumerate(chunks, 1):
+        payload = f"[Attachment: {name} | chunk {idx}/{total}]\n{chunk}"
+        if _anchor(payload, record_chat=False, notify=False):
+            anchored += 1
+        else:
+            st.warning(f"Failed to anchor chunk {idx} of {name}.")
+    status = (
+        f"Anchored {anchored}/{total} chunks from {name}."
+        if anchored
+        else f"Could not anchor {name} – see warnings above."
+    )
+    st.session_state.chat_history.append(("Attachment", status))
+
+
 def _latest_user_transcript(current_request: str, *, limit: int = 5) -> str | None:
     entries = _memory_lookup(limit=limit)
     if not entries:
@@ -602,7 +657,7 @@ def _maybe_handle_recall_query(text: str) -> bool:
     return False
 
 
-def _anchor(text: str, *, record_chat: bool = True):
+def _anchor(text: str, *, record_chat: bool = True, notify: bool = True):
     factors = _hash_text(text)
     if not factors:
         st.warning("No alphabetical tokens detected; nothing anchored.")
@@ -616,7 +671,8 @@ def _anchor(text: str, *, record_chat: bool = True):
         return False
     if record_chat:
         st.session_state.chat_history.append(("You", text))
-    st.success("Anchored into ledger.")
+    if notify:
+        st.success("Anchored into ledger.")
     return True
 
 
@@ -774,8 +830,14 @@ def _render_app():
         st.session_state.input_mode = "text"
     if "top_input" not in st.session_state:
         st.session_state["top_input"] = ""
+    if "prefill_top_input" not in st.session_state:
+        st.session_state.prefill_top_input = None
     if "pending_attachments" not in st.session_state:
         st.session_state.pending_attachments = []
+
+    if st.session_state.get("prefill_top_input"):
+        st.session_state["top_input"] = st.session_state.prefill_top_input
+        st.session_state.prefill_top_input = None
 
     with st.container():
         attach_clicked = st.button("Attach", key="top_attach", help="Attach a memory file", type="secondary")
@@ -844,7 +906,7 @@ def _render_app():
                         text = _extract_transcript_text(transcript)
                         if text:
                             st.caption(f"Transcript: {text}")
-                            st.session_state["top_input"] = text
+                            st.session_state.prefill_top_input = text
                         else:
                             st.warning("No transcript returned from Whisper.")
                     except Exception as exc:
@@ -856,6 +918,7 @@ def _render_app():
             attachment = _ingest_attachment(uploaded)
             if attachment:
                 st.session_state.pending_attachments.append(attachment)
+                _anchor_attachment(attachment)
                 snippet_preview = (attachment.get("text") or "").strip()
                 preview = snippet_preview[:140].replace("\n", " ")
                 if len(snippet_preview) > 140:
