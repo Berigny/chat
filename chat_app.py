@@ -536,7 +536,7 @@ with tab_about:
         st.markdown(
             """
             <div class="about-col about-col-left">
-                <div class="about-heading">DualSubstrate ledger demo</div>
+                <h2 class="about-heading">DualSubstrate ledger demo</h2>
                 <p class="about-text">To test this DualSubstrate ledger demo speak or type. Everything anchors to the prime-based ledger. Tip: type /q or “what did I say at 7 pm” and I’ll quote you word-for-word from the prime-ledger. Anything else = normal chat.</p>
                 <hr>
             </div>
