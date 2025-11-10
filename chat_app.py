@@ -382,6 +382,43 @@ def _normalize_for_match(text: str) -> str:
     return re.sub(r"\s+", " ", text or "").strip().lower()
 
 
+def _extract_transcript_text(transcript) -> str | None:
+    if not transcript:
+        return None
+    direct = getattr(transcript, "text", None)
+    if isinstance(direct, str) and direct.strip():
+        return direct.strip()
+    data = None
+    if isinstance(transcript, dict):
+        data = transcript
+    else:
+        for attr in ("model_dump", "dict", "to_dict"):
+            method = getattr(transcript, attr, None)
+            if callable(method):
+                try:
+                    candidate = method()
+                except TypeError:
+                    try:
+                        candidate = method({})
+                    except TypeError:
+                        continue
+                if isinstance(candidate, dict):
+                    data = candidate
+                    break
+    if data:
+        text = data.get("text")
+        if isinstance(text, str) and text.strip():
+            return text.strip()
+        segments = data.get("segments")
+        if isinstance(segments, list):
+            combined = " ".join(
+                seg.get("text", "").strip() for seg in segments if isinstance(seg, dict) and seg.get("text")
+            ).strip()
+            if combined:
+                return combined
+    return None
+
+
 def _summarize_accessible_memories(limit: int, since: int | None = None) -> str | None:
     entries = _memory_lookup(limit=limit, since=since)
     if not entries:
@@ -804,7 +841,7 @@ def _render_app():
                             model="whisper-1",
                             file=norm,
                         )
-                        text = getattr(transcript, "text", None) or transcript.get("text") if isinstance(transcript, dict) else None
+                        text = _extract_transcript_text(transcript)
                         if text:
                             st.caption(f"Transcript: {text}")
                             st.session_state["top_input"] = text
