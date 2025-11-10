@@ -817,6 +817,25 @@ def _normalize_factors_override(factors) -> list[dict]:
     return normalized
 
 
+def _flow_safe_factors(factors: list[dict]) -> list[dict]:
+    filtered: list[dict] = []
+    seen: set[int] = set()
+    for factor in factors:
+        prime = factor.get("prime")
+        if prime not in PRIME_ARRAY or prime in seen:
+            continue
+        delta = factor.get("delta", 1)
+        try:
+            entry = {"prime": int(prime), "delta": int(delta)}
+        except (TypeError, ValueError):
+            continue
+        filtered.append(entry)
+        seen.add(entry["prime"])
+    odds = [f for f in filtered if f["prime"] % 2 == 1]
+    evens = [f for f in filtered if f["prime"] % 2 == 0]
+    return odds + evens
+
+
 def _maybe_extract_agent_payload(raw_text: str) -> tuple[str, list[dict]] | None:
     cleaned = (raw_text or "").strip()
     if not cleaned.startswith("{") or "factors" not in cleaned:
@@ -1082,6 +1101,7 @@ def _maybe_handle_recall_query(text: str) -> bool:
 
 def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors_override: list[dict] | None = None):
     factors = factors_override or _extract_prime_factors(text)
+    factors = _flow_safe_factors(factors)
     if not factors:
         st.warning("No alphabetical tokens detected; nothing anchored.")
         return False
