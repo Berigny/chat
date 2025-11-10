@@ -593,7 +593,7 @@ def _render_app():
         ".stVerticalBlock:has(> .st-key-top_attach) {position:relative;display:flex;justify-content:center;align-items:center;gap:0; padding-right:20px;}",
         ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_input {flex:1 1 auto;max-width:640px;}",
         ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_attach,.stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_mic {flex:0 0 auto;}",
-        ".st-key-top_attach {position: absolute; left:40px}",
+        ".st-key-top_attach {position: absolute; left:40px; z-index: 100}",
         ".st-key-top_mic {position: absolute; left:620px !important}",
         "div[data-testid='stChatInput'] {position:static !important;margin:0.25rem auto 0;max-width:640px;}",
         "div[data-testid='stChatInput'] > div:first-child {position:relative;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.18);padding:0.75rem 4.5rem 0.75rem 3.25rem;background-color:#F1F2F6 !important;transition:border-color 0.2s ease, box-shadow 0.2s ease;}",
