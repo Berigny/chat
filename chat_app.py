@@ -43,6 +43,19 @@ if genai and GENAI_KEY:
 
 OPENAI_API_KEY = _secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 
+def _process_memory_text(text: str, use_openai: bool):
+    cleaned = (text or "").strip()
+    if not cleaned:
+        st.warning("Enter some text first.")
+        return
+    if _maybe_handle_recall_query(cleaned):
+        return
+    quote_mode = _is_quote_request(cleaned)
+    bot_reply = _chat_response(cleaned, use_openai=use_openai)
+    if bot_reply is None:
+        bot_reply = ""
+    _update_rolling_memory(cleaned, bot_reply, quote_mode=quote_mode)
+
 st.set_page_config(page_title="Ledger Chat", layout="wide")
 st.markdown(
     """
@@ -54,11 +67,18 @@ st.markdown(
         margin-top: 0.5rem;
         margin-bottom: 0.75rem;
     }
+    .stBottomBlockContainer {
+        margin-top: 1.5rem;
+    }
     </style>
     <h1 class="main-title">What needs remembering next?</h1>
     """,
     unsafe_allow_html=True,
 )
+
+placeholder_text = st.chat_input("type, speak or attach a new memory", key="top_input")
+if placeholder_text:
+    _process_memory_text(placeholder_text, use_openai=True)
 
 TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
 CAL = pdt.Calendar() if pdt else None
@@ -373,20 +393,6 @@ def _anchor(text: str, *, record_chat: bool = True):
     return True
 
 
-def _process_memory_text(text: str, use_openai: bool):
-    cleaned = (text or "").strip()
-    if not cleaned:
-        st.warning("Enter some text first.")
-        return
-    if _maybe_handle_recall_query(cleaned):
-        return
-    quote_mode = _is_quote_request(cleaned)
-    bot_reply = _chat_response(cleaned, use_openai=use_openai)
-    if bot_reply is None:
-        bot_reply = ""
-    _update_rolling_memory(cleaned, bot_reply, quote_mode=quote_mode)
-
-
 def _recall():
     resp = requests.get(f"{API}/retrieve?entity={ENTITY}", headers=HEADERS, timeout=10)
     if resp.ok:
@@ -529,6 +535,18 @@ with tab_chat:
     else:
         stream_html = "<div class='chat-entry'>No chat history yet.</div>"
     st.markdown(f"<div class='chat-stream'>{stream_html}</div>", unsafe_allow_html=True)
+    st.markdown("<hr class='full-divider'>", unsafe_allow_html=True)
+    st.markdown(
+        """
+        <h2 class="prime-heading" style="font-size: 1.2rem; font-weight: 400">Prime-Ledger Snapshot</h2>
+        <p class="prime-text">A live, word-perfect copy of everything you’ve anchored - sealed in primes, mathematically identical forever.</p>
+        """,
+        unsafe_allow_html=True,
+    )
+    if st.button("Load ledger", key="load_ledger_chat"):
+        _load_ledger()
+    if st.session_state.ledger_state:
+        st.json(st.session_state.ledger_state)
 
 with tab_about:
     col_left, col_right = st.columns(2)
@@ -563,16 +581,3 @@ with tab_about:
         with metric_cols[2]:
             st.metric("Durability h", f"{durability_h:.1f}")
         st.markdown('</div>', unsafe_allow_html=True)
-
-    st.markdown("<hr class='full-divider'>", unsafe_allow_html=True)
-    st.markdown(
-        """
-        <h2 class="prime-heading" style="font-size: 1.2rem; font-weight: 400">Prime-Ledger Snapshot</h2>
-        <p class="prime-text">A live, word-perfect copy of everything you’ve anchored - sealed in primes, mathematically identical forever.</p>
-        """,
-        unsafe_allow_html=True,
-    )
-    if st.button("Load ledger", key="load_ledger"):
-        _load_ledger()
-    if st.session_state.ledger_state:
-        st.json(st.session_state.ledger_state)
