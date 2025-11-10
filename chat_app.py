@@ -779,12 +779,11 @@ def _render_app():
                         text = getattr(transcript, "text", None) or transcript.get("text") if isinstance(transcript, dict) else None
                         if text:
                             st.caption(f"Transcript: {text}")
-                            st.session_state.top_input = text
+                            st.session_state["top_input"] = text
                         else:
                             st.warning("No transcript returned from Whisper.")
                     except Exception as exc:
                         st.error(f"Transcription failed: {exc}")
-        if st.session_state.input_mode == "mic":
             st.session_state.input_mode = "text"
     elif st.session_state.input_mode == "file":
         uploaded = st.file_uploader("Attach a new memory", label_visibility="collapsed")
