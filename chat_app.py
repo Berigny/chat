@@ -658,7 +658,7 @@ def _render_app():
     if "input_mode" not in st.session_state:
         st.session_state.input_mode = "text"
     if "top_input" not in st.session_state:
-        st.session_state.top_input = ""
+        st.session_state["top_input"] = ""
     if "pending_attachments" not in st.session_state:
         st.session_state.pending_attachments = []
 
@@ -676,7 +676,8 @@ def _render_app():
         attachments = list(st.session_state.pending_attachments)
         _process_memory_text(prompt_top, use_openai=True, attachments=attachments)
         st.session_state.pending_attachments = []
-        st.session_state.top_input = ""
+        # Streamlit clears chat inputs automatically after submission, so avoid
+        # writing to the widget-managed key here to prevent SessionState errors.
 
     # ---------- investor KPI ----------
     try:
