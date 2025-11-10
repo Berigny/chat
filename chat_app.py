@@ -902,7 +902,7 @@ def _render_app():
         ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_attach,.stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_mic {flex:0 0 auto;}",
         ".st-key-top_attach {position: absolute; left:5px; z-index: 100; opacity: 0.5; bottom: 2px}",
         ".st-key-top_mic {position: absolute; right:30px !important; bottom: 2px; opacity: 0.5;}",
-        ".st-key-top_attach > button {}",
+        ".st-emotion-cache-yd4u6l {border: red solid 1px}",
         ".st-key-top_mic > button {}",
         "div[data-testid='stChatInput'] {position:static !important;margin:0.25rem auto 0;}",
         "div[data-testid='stChatInput'] > div:first-child {position:relative;border:1px solid rgba(255,255,255,0.18);padding:1.5rem 4.5rem 1.5rem 3.25rem;transition:border-color 0.2s ease, box-shadow 0.2s ease;}",
