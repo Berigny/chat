@@ -825,17 +825,55 @@ def _maybe_extract_agent_payload(raw_text: str) -> tuple[str, list[dict]] | None
     return text, factors
 
 
+def _extract_json_object(raw: str) -> dict | None:
+    if not raw:
+        return None
+    trimmed = raw.strip()
+    if "{" not in trimmed:
+        return None
+    candidate = trimmed
+    if "```" in trimmed:
+        start = trimmed.find("{")
+        end = trimmed.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidate = trimmed[start : end + 1]
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+
+
+def _call_factor_extraction_llm(text: str) -> list[dict]:
+    if not text or not (genai and GENAI_KEY):
+        return []
+    prompt = (
+        "You extract ledger factors. "
+        "Given the transcript below, identify subject (prime 2), action (3), object (5), "
+        "location/channel (7), time/date (11), intent/outcome (13), context (17), sentiment/priority (19). "
+        "Only include a prime if the transcript clearly expresses that facet. "
+        "Return STRICT JSON with keys `text` (repeat the transcript) and `factors` "
+        "(an array of objects with `prime` and `delta`). Example: "
+        '{"text":"Met Priya","factors":[{"prime":2,"delta":1},{"prime":3,"delta":1}]}. '
+        f"Transcript:\n{text}"
+    )
+    try:
+        model = genai.GenerativeModel("gemini-2.0-flash")
+        response = model.generate_content(prompt)
+        raw = getattr(response, "text", None) or ""
+    except Exception:
+        return []
+    data = _extract_json_object(raw)
+    if not isinstance(data, dict):
+        return []
+    factors = _normalize_factors_override(data.get("factors"))
+    return factors
+
+
 def _map_to_primes_with_agent(text: str) -> list[dict]:
-    # Reuse heuristic mapper but avoid forcing every slot.
-    base = _extract_prime_factors(text)
-    deduped: list[dict] = []
-    seen = set()
-    for factor in base:
-        prime = factor.get("prime")
-        if prime in PRIME_ARRAY and prime not in seen:
-            deduped.append({"prime": prime, "delta": factor.get("delta", 1)})
-            seen.add(prime)
-    return deduped or [{"prime": FALLBACK_PRIME, "delta": 1}]
+    llm_factors = _call_factor_extraction_llm(text)
+    if llm_factors:
+        return llm_factors
+    return _extract_prime_factors(text)
 
 
 def _reset_entity_factors(entity: str = ENTITY) -> bool:
