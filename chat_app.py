@@ -601,11 +601,22 @@ def _ingest_attachment(uploaded_file) -> dict | None:
         size_kb = len(data) / 1024
         text = f"(Binary attachment of type {mime} ~{size_kb:.1f} KB could not be decoded to text.)"
 
+    text = _normalize_attachment_text(text)
     max_chars = 8_000
     if len(text) > max_chars:
         text = f"{text[:max_chars]}\n… (truncated)"
 
     return {"name": name, "mime": mime, "text": text}
+
+
+def _normalize_attachment_text(text: str) -> str:
+    text = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    # Replace single newlines (line-wrapped words) with spaces while keeping paragraph breaks.
+    text = re.sub(r"(?<!\n)\n(?!\n)", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
 
 
 def _chunk_attachment_text(text: str, *, max_chars: int = 900) -> list[str]:
