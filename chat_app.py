@@ -593,7 +593,7 @@ def _render_app():
         ".stVerticalBlock:has(> .st-key-top_attach) {position:relative;display:flex;justify-content:center;align-items:center;gap:0;}",
         ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_input {flex:1 1 auto;max-width:640px;}",
         ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_attach,.stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_mic {flex:0 0 auto;}",
-        ".st-key-top_attach {margin-right:-3.5rem;}",
+        ".st-key-top_attach {margin-right:-3.5rem; position: absolute; left:0}",
         ".st-key-top_mic {margin-left:-3.5rem;}",
         "div[data-testid='stChatInput'] {position:static !important;margin:0.25rem auto 0;max-width:640px;}",
         "div[data-testid='stChatInput'] > div:first-child {position:relative;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.18);padding:0.75rem 4.5rem 0.75rem 3.25rem;background-color:#F1F2F6 !important;transition:border-color 0.2s ease, box-shadow 0.2s ease;}",
@@ -611,7 +611,7 @@ def _render_app():
 
     if attach_icon:
         css_chunks.append(
-            f".st-key-top_attach button {{background-image:url('data:image/png;base64,{attach_icon}'); position: absolute; left: 0; z-index: 100;}}"
+            f".st-key-top_attach button {{background-image:url('data:image/png;base64,{attach_icon}');}}"
         )
     if mic_icon:
         css_chunks.append(
