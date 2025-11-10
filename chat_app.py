@@ -70,40 +70,60 @@ def _process_memory_text(text: str, use_openai: bool):
 
 st.set_page_config(page_title="Ledger Chat", layout="wide")
 logo_data = _load_base64_image("logo.png")
+send_icon = _load_base64_image("right-up.png")
+attach_icon = _load_base64_image("add.png")
+mic_icon = _load_base64_image("marketing.png")
 if logo_data:
     st.markdown(
         f"""
-        <div style="
-            width:90px;
-            height:30px;
-            margin:0 auto 0.5rem;
-            border-radius:5px;
-            background-image:url('data:image/png;base64,{logo_data}');
-            background-size:contain;
-            background-repeat:no-repeat;
-            background-position:center;
-        "></div>
+        <div class="brand-logo" style="background-image:url('data:image/png;base64,{logo_data}')"></div>
         """,
         unsafe_allow_html=True,
     )
+css_chunks = [
+    ".brand-logo {width:60px;height:30px;margin:0 auto 0.75rem;border-radius:3px;background-size:contain;background-repeat:no-repeat;background-position:center;}",
+    ".main-title {font-size:2rem !important;font-weight:400 !important;text-align:center;margin-top:0.5rem;margin-bottom:0.5rem;}",
+    ".stBottomBlockContainer {position:static !important;margin-top:0 !important;}",
+    ".stVerticalBlock:has(> .st-key-top_attach) {position:relative;display:flex;justify-content:center;align-items:center;gap:0;}",
+    ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_input {flex:1 1 auto;max-width:640px;}",
+    ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_attach,.stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_mic {flex:0 0 auto;}",
+    ".st-key-top_attach {margin-right:-3.5rem;}",
+    ".st-key-top_mic {margin-left:-3.5rem;}",
+    "div[data-testid='stChatInput'] {position:static !important;margin:0.25rem auto 0;max-width:640px;}",
+    "div[data-testid='stChatInput'] > div:first-child {position:relative;border-radius:0.75rem;border:1px solid rgba(255,255,255,0.18);padding:0.75rem 4.5rem 0.75rem 3.25rem;background-color:rgba(255,255,255,0.04);transition:border-color 0.2s ease, box-shadow 0.2s ease;}",
+    "div[data-testid='stChatInput']:focus-within > div:first-child {border-color:rgba(255,255,255,0.3);box-shadow:0 0 0 1px rgba(255,255,255,0.18);}",
+    "textarea[data-testid='stChatInputTextArea'] {min-height:52px !important;max-height:250px;overflow-y:auto;padding-left:0 !important;padding-right:0 !important;}",
+    "textarea[data-testid='stChatInputTextArea']:focus {min-height:250px !important;}",
+    ".st-key-top_attach button div,.st-key-top_mic button div {display:none;}",
+    ".st-key-top_attach button,.st-key-top_mic button {width:38px;height:38px;border-radius:0.75rem !important;background-color:rgba(255,255,255,0.08);background-repeat:no-repeat;background-position:center;background-size:24px 24px;border:1px solid rgba(255,255,255,0.14);transition:background-color 0.2s ease,border-color 0.2s ease;}",
+    ".st-key-top_attach button:hover,.st-key-top_mic button:hover {border-color:rgba(255,255,255,0.35);background-color:rgba(255,255,255,0.12);}",
+    "div[data-testid='stChatInput'] button[data-testid='stChatInputSubmitButton'] {width:44px;height:44px;border-radius:0.75rem !important;border:none;background-color:rgba(255,255,255,0.08);background-repeat:no-repeat;background-position:center;background-size:24px 24px;}",
+    "div[data-testid='stChatInput'] button[data-testid='stChatInputSubmitButton']:not(:disabled) {opacity:1;}",
+    "div[data-testid='stChatInput'] button[data-testid='stChatInputSubmitButton'] svg {display:none;}",
+    "div[data-testid='stChatInput'] button[data-testid='stChatInputSubmitButton']:disabled {opacity:0.5;}",
+]
+if attach_icon:
+    css_chunks.append(
+        f".st-key-top_attach button {{background-image:url('data:image/png;base64,{attach_icon}');}}"
+    )
+if mic_icon:
+    css_chunks.append(
+        f".st-key-top_mic button {{background-image:url('data:image/png;base64,{mic_icon}');}}"
+    )
+if send_icon:
+    css_chunks.append(
+        f"div[data-testid='stChatInput'] button[data-testid='stChatInputSubmitButton'] {{background-image:url('data:image/png;base64,{send_icon}');}}"
+    )
+style_block = "\n".join(css_chunks)
 st.markdown(
-    """
+    f"""
     <style>
-    .main-title {
-        font-size: 2rem !important;
-        font-weight: 400 !important;
-        text-align: center;
-        margin-top: 0.5rem;
-        margin-bottom: 0.75rem;
-    }
-    .stBottomBlockContainer {
-        margin-top: 1.5rem;
-    }
+    {style_block}
     </style>
-    <h1 class="main-title">What needs remembering next?</h1>
     """,
     unsafe_allow_html=True,
 )
+st.markdown('<h1 class="main-title">What needs remembering next?</h1>', unsafe_allow_html=True)
 
 TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
 CAL = pdt.Calendar() if pdt else None
@@ -126,26 +146,15 @@ if "input_mode" not in st.session_state:
     st.session_state.input_mode = "text"
 
 
-icon_cols = st.columns([0.08, 0.08, 0.08, 0.76])
-with icon_cols[0]:
-    mic_path = ASSET_DIR / "marketing.png"
-    if mic_path.exists():
-        st.image(str(mic_path), width=32)
-    if st.button("Mic", key="top_mic", help="Record voice memory"):
-        st.session_state.input_mode = "mic"
-with icon_cols[1]:
-    attach_path = ASSET_DIR / "add.png"
-    if attach_path.exists():
-        st.image(str(attach_path), width=32)
-    if st.button("Attach", key="top_attach", help="Attach a memory file"):
-        st.session_state.input_mode = "file"
-with icon_cols[2]:
-    send_path = ASSET_DIR / "right-up.png"
-    if send_path.exists():
-        st.image(str(send_path), width=32)
-    st.caption("Press Enter to send")
+with st.container():
+    attach_clicked = st.button("Attach", key="top_attach", help="Attach a memory file", type="secondary")
+    prompt_top = st.chat_input("type, speak or attach a new memory", key="top_input")
+    mic_clicked = st.button("Mic", key="top_mic", help="Record voice memory", type="secondary")
 
-prompt_top = st.chat_input("type, speak or attach a new memory", key="top_input")
+if attach_clicked:
+    st.session_state.input_mode = "file"
+if mic_clicked:
+    st.session_state.input_mode = "mic"
 if prompt_top:
     _process_memory_text(prompt_top, use_openai=True)
 
@@ -570,17 +579,6 @@ with tab_chat:
         stream_html = "<div class='chat-entry'>No chat history yet.</div>"
     st.markdown(f"<div class='chat-stream'>{stream_html}</div>", unsafe_allow_html=True)
     st.markdown("<hr class='full-divider'>", unsafe_allow_html=True)
-    st.markdown(
-        """
-        <h2 class="prime-heading" style="font-size: 1.2rem; font-weight: 400">Prime-Ledger Snapshot</h2>
-        <p class="prime-text">A live, word-perfect copy of everything you’ve anchored - sealed in primes, mathematically identical forever.</p>
-        """,
-        unsafe_allow_html=True,
-    )
-    if st.button("Load ledger", key="load_ledger_chat"):
-        _load_ledger()
-    if st.session_state.ledger_state:
-        st.json(st.session_state.ledger_state)
 
 with tab_about:
     col_left, col_right = st.columns(2)
@@ -596,6 +594,19 @@ with tab_about:
             """,
             unsafe_allow_html=True,
         )
+        st.markdown(
+            """
+            <div class="prime-ledger-block">
+                <h2 class="prime-heading" style="font-size: 1.2rem; font-weight: 400">Prime-Ledger Snapshot</h2>
+                <p class="prime-text">A live, word-perfect copy of everything you’ve anchored - sealed in primes, mathematically identical forever.</p>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        if st.button("Load ledger", key="load_ledger_about"):
+            _load_ledger()
+        if st.session_state.ledger_state:
+            st.json(st.session_state.ledger_state)
     with col_right:
         st.markdown(
             """
