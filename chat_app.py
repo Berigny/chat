@@ -1192,7 +1192,7 @@ def _render_app():
         ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_input {flex:1 1 auto;}",
         ".stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_attach,.stVerticalBlock:has(> .st-key-top_attach) > .st-key-top_mic {flex:0 0 auto;}",
         ".st-key-top_attach {position: absolute; left:5px; z-index: 100; opacity: 0.5; bottom: 2px}",
-        ".st-key-top_mic {position: absolute; right:30px !important; bottom: 2px; opacity: 0.5;}",
+        ".st-key-top_mic {position: absolute; right:40px !important; bottom: 2px; opacity: 0.5;}",
         ".exaa2ht0 div[data-baseweb='textarea'] {max-height:120px !important; min-height:120px !important;}",
         "div.exaa2ht1 {max-height:120px !important; min-height:120px !important;}",
         ".st-key-top_mic > button {}",
