@@ -217,6 +217,44 @@ _QUANTITY_HINTS = {
     "all": 15,
     "entire": 15,
 }
+_STOPWORDS = {
+    "what",
+    "which",
+    "tell",
+    "about",
+    "from",
+    "with",
+    "this",
+    "that",
+    "have",
+    "please",
+    "could",
+    "would",
+    "provide",
+    "quote",
+    "quotes",
+    "verbatim",
+    "verbatims",
+    "more",
+    "than",
+    "give",
+    "some",
+    "few",
+    "long",
+    "longer",
+    "explain",
+    "explanation",
+    "excerpts",
+    "document",
+    "paper",
+    "yesterday",
+    "today",
+    "ago",
+    "days",
+    "hours",
+    "please",
+    "kindly",
+}
 
 
 def _cosine(a, b):
@@ -426,6 +464,20 @@ def _trigger_rerun():
             pass
 
 
+def _keywords_from_prompt(text: str) -> list[str]:
+    tokens = re.findall(r"[A-Za-z]{4,}", (text or "").lower())
+    keywords: list[str] = []
+    seen = set()
+    for token in tokens:
+        if token in _STOPWORDS:
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        keywords.append(token)
+    return keywords
+
+
 def _extract_transcript_text(transcript) -> str | None:
     if not transcript:
         return None
@@ -617,6 +669,9 @@ def _latest_user_transcript(current_request: str, *, limit: int = 5) -> str | No
         return None
 
     normalized_request = _normalize_for_match(current_request)
+    keywords = _keywords_from_prompt(current_request)
+    best_keyword_match = None
+    best_general_match = None
 
     for entry in entries:
         text = entry.get("text", "")
@@ -631,8 +686,20 @@ def _latest_user_transcript(current_request: str, *, limit: int = 5) -> str | No
         sanitized = _strip_ledger_noise(text, user_only=True)
         if normalized_request and normalized_request in _normalize_for_match(sanitized):
             continue
-        if sanitized:
-            return sanitized
+        if not sanitized:
+            continue
+        sanitized_lower = sanitized.lower()
+        if keywords and any(keyword in sanitized_lower for keyword in keywords):
+            if not best_keyword_match or len(sanitized) > len(best_keyword_match):
+                best_keyword_match = sanitized
+            continue
+        if not best_general_match or len(sanitized) > len(best_general_match):
+            best_general_match = sanitized
+
+    if best_keyword_match:
+        return best_keyword_match
+    if best_general_match:
+        return best_general_match
 
     fallback = entries[0].get("text", "")
     sanitized_fallback = _strip_ledger_noise(fallback, user_only=True)
