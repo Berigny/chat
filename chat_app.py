@@ -611,7 +611,7 @@ def _render_app():
 
     if attach_icon:
         css_chunks.append(
-            f".st-key-top_attach button {{background-image:url('data:image/png;base64,{attach_icon}'); position: absolute; left: 0}}"
+            f".st-key-top_attach button {{background-image:url('data:image/png;base64,{attach_icon}'); position: absolute; left: 0; z-index: 100;}}"
         )
     if mic_icon:
         css_chunks.append(
