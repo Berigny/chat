@@ -54,3 +54,92 @@ Any retrieved transcript is sanitised before being forwarded to the LLM: assista
 system notes, bullet and numbered quote residues, and other quote-mode artefacts are
 stripped so the model only sees the human-authored passages. This keeps quote requests
 grounded in the original user speech instead of echoing past bot answers.
+
+## Prime-aware anchoring for external agents
+
+To ensure every external agent spreads factor weights across the full eight-prime topology,
+hand it the following framing before it begins logging memories:
+
+```
+You are using the DualSubstrate ledger. For each utterance, extract up to one entry for each slot:
+
+- Prime 2: subject or speaker (“Alice”, “I”)
+- Prime 3: primary action (“met”, “emailed”, “call”)
+- Prime 5: object or recipient (“Bob”, “the investor”)
+- Prime 7: location or channel (“NYC office”, “Zoom”)
+- Prime 11: time anchor (“today 7:01pm”, “tomorrow morning”)
+- Prime 13: intent or outcome (“hire them”, “ship release”)
+- Prime 17: supporting context (risks, blockers, dependencies)
+- Prime 19: sentiment/priority (“urgent”, “blocked”, “excited”)
+
+When you call POST /anchor, send a factors array containing every slot you filled:
+[
+  {"prime":2,"delta":1},
+  {"prime":3,"delta":1},
+  {"prime":5,"delta":1},
+  ...
+]
+If a slot has no info, omit it (or use delta 0). Include the raw transcript in text.
+
+After anchoring, call GET /memories?entity=demo_user&limit=20 to retrieve the exact strings you just logged.
+```
+
+### Ready-to-test script
+
+```bash
+curl -X POST https://dualsubstrate-commercial.fly.dev/anchor \
+  -H "x-api-key: demo-key" \
+  -H "Content-Type: application/json" \
+  -d '{
+        "entity":"demo_user",
+        "text":"Met Priya at the NYC office to finalize Tuesday’s launch plan.",
+        "factors":[
+          {"prime":2,"delta":1},
+          {"prime":3,"delta":1},
+          {"prime":5,"delta":1},
+          {"prime":7,"delta":1},
+          {"prime":11,"delta":1},
+          {"prime":13,"delta":1},
+          {"prime":19,"delta":1}
+        ]
+      }'
+```
+
+### Implementation notes
+
+- `/memories` now reflects the exact anchored strings and timestamps, so `/q` quote
+  requests can filter the JSON directly.
+- If you need automatic slot extraction, place a lightweight mapper (regex or spaCy)
+  ahead of the agent to pre-fill the prime assignments; the agent merely confirms or edits.
+- This framing keeps the ledger balanced across all primes and makes topic-specific
+  retrieval trivial, because every anchor contains structured who/what/where/when signals.
+
+## Möbius transform CTA
+
+The Fly engine exposes `/rotate`, which performs the quaternion pack/rotate/unpack cycle
+to regenerate the exponent lattice. You can call it directly:
+
+```bash
+curl -X POST https://dualsubstrate-commercial.fly.dev/rotate \
+  -H "x-api-key: demo-key" \
+  -H "Content-Type: application/json" \
+  -d '{"entity":"demo_user","axis":[0,0,1],"angle":1.0472}'
+```
+
+In the Streamlit UI we expose a `♾️ Möbius Transform` button beneath the Metrics card:
+
+```python
+if st.button("♾️ Möbius Transform", help="Reproject the exponent lattice"):
+    payload = {"entity": ENTITY, "axis": (0.0, 0.0, 1.0), "angle": 1.0472}
+    resp = requests.post(f"{API}/rotate", json=payload, headers=HEADERS, timeout=15)
+    resp.raise_for_status()
+    data = resp.json()
+    st.success(
+        f"Rotated lattice. Δenergy = {data['energy_cycles']}, "
+        f"checksum {data['original_checksum']} → {data['rotated_checksum']}."
+    )
+```
+
+Behind the scenes `/rotate` pulls the factor vector, runs the quaternion Möbius rotation,
+anchors the new vector via `anchor_batch`, and returns before/after checksums plus energy
+cycles. Triggering it from the CTA keeps the lattice fresh without shell access.

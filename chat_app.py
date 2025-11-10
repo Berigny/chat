@@ -1139,6 +1139,24 @@ def _render_app():
             with metric_cols[2]:
                 st.metric("Durability h", f"{durability_h:.1f}")
             st.markdown('</div>', unsafe_allow_html=True)
+            st.markdown("### Möbius lattice rotation")
+            if st.button("♾️ Möbius Transform", help="Reproject the exponent lattice"):
+                payload = {"entity": ENTITY, "axis": (0.0, 0.0, 1.0), "angle": 1.0472}
+                try:
+                    resp = requests.post(
+                        f"{API}/rotate",
+                        json=payload,
+                        headers=HEADERS,
+                        timeout=15,
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    st.success(
+                        f"Rotated lattice. Δenergy = {data.get('energy_cycles')}, "
+                        f"checksum {data.get('original_checksum')} → {data.get('rotated_checksum')}."
+                    )
+                except requests.RequestException as exc:
+                    st.error(f"Möbius rotation failed: {exc}")
 
 
 if __name__ == "__main__":
