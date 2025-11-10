@@ -1,4 +1,5 @@
 import audioop
+import base64
 import hashlib
 import html
 import io
@@ -6,6 +7,8 @@ import os
 import re
 import time
 import wave
+
+from pathlib import Path
 
 import requests
 import streamlit as st
@@ -42,6 +45,15 @@ if genai and GENAI_KEY:
     genai.configure(api_key=GENAI_KEY)
 
 OPENAI_API_KEY = _secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+ASSET_DIR = Path(__file__).parent
+
+
+def _load_base64_image(name: str) -> str | None:
+    path = ASSET_DIR / name
+    try:
+        return base64.b64encode(path.read_bytes()).decode()
+    except FileNotFoundError:
+        return None
 
 def _process_memory_text(text: str, use_openai: bool):
     cleaned = (text or "").strip()
@@ -57,6 +69,23 @@ def _process_memory_text(text: str, use_openai: bool):
     _update_rolling_memory(cleaned, bot_reply, quote_mode=quote_mode)
 
 st.set_page_config(page_title="Ledger Chat", layout="wide")
+logo_data = _load_base64_image("logo.png")
+if logo_data:
+    st.markdown(
+        f"""
+        <div style="
+            width:90px;
+            height:30px;
+            margin:0 auto 0.5rem;
+            border-radius:5px;
+            background-image:url('data:image/png;base64,{logo_data}');
+            background-size:contain;
+            background-repeat:no-repeat;
+            background-position:center;
+        "></div>
+        """,
+        unsafe_allow_html=True,
+    )
 st.markdown(
     """
     <style>
@@ -75,10 +104,6 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
-
-placeholder_text = st.chat_input("type, speak or attach a new memory", key="top_input")
-if placeholder_text:
-    _process_memory_text(placeholder_text, use_openai=True)
 
 TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
 CAL = pdt.Calendar() if pdt else None
@@ -100,6 +125,29 @@ if "last_anchor_ts" not in st.session_state:
 if "input_mode" not in st.session_state:
     st.session_state.input_mode = "text"
 
+
+icon_cols = st.columns([0.08, 0.08, 0.08, 0.76])
+with icon_cols[0]:
+    mic_path = ASSET_DIR / "marketing.png"
+    if mic_path.exists():
+        st.image(str(mic_path), width=32)
+    if st.button("Mic", key="top_mic", help="Record voice memory"):
+        st.session_state.input_mode = "mic"
+with icon_cols[1]:
+    attach_path = ASSET_DIR / "add.png"
+    if attach_path.exists():
+        st.image(str(attach_path), width=32)
+    if st.button("Attach", key="top_attach", help="Attach a memory file"):
+        st.session_state.input_mode = "file"
+with icon_cols[2]:
+    send_path = ASSET_DIR / "right-up.png"
+    if send_path.exists():
+        st.image(str(send_path), width=32)
+    st.caption("Press Enter to send")
+
+prompt_top = st.chat_input("type, speak or attach a new memory", key="top_input")
+if prompt_top:
+    _process_memory_text(prompt_top, use_openai=True)
 
 def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
     # The OpenAI API expects a file with a name.
@@ -474,20 +522,6 @@ oldest = (
 durability_h = (time.time() - oldest) / 3600
 tokens_saved = metrics.get("tokens_deduped", "N/A")
 ledger_integrity = metrics.get("ledger_integrity", 0.0)
-
-icon_cols = st.columns([0.1, 0.1, 0.8])
-with icon_cols[0]:
-    if st.button("🎙️", help="Record voice memory"):
-        st.session_state.input_mode = "mic"
-with icon_cols[1]:
-    if st.button("📎", help="Attach a memory file"):
-        st.session_state.input_mode = "file"
-with icon_cols[2]:
-    st.caption("type, speak or attach a new memory")
-
-prompt = st.chat_input("type, speak or attach a new memory")
-if prompt:
-    _process_memory_text(prompt, use_openai=True)
 
 if st.session_state.input_mode == "mic":
     st.info("Voice mode active – hold to record.")
