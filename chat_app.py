@@ -872,8 +872,11 @@ def _call_factor_extraction_llm(text: str) -> list[dict]:
 def _map_to_primes_with_agent(text: str) -> list[dict]:
     llm_factors = _call_factor_extraction_llm(text)
     if llm_factors:
+        st.write("LLM factors:", llm_factors)
         return llm_factors
-    return _extract_prime_factors(text)
+    fallback = _extract_prime_factors(text)
+    st.write("Fallback factors:", fallback)
+    return fallback
 
 
 def _reset_entity_factors(entity: str = ENTITY) -> bool:
@@ -943,6 +946,7 @@ def _run_enrichment(entity: str = ENTITY, limit: int = 200, reset_first: bool = 
         if not factors:
             continue
         payload = {"entity": entity, "text": text, "factors": factors}
+        st.write("Enrichment payload:", payload)
         try:
             post_resp = requests.post(
                 f"{API}/anchor",
