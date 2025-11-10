@@ -88,6 +88,12 @@ def _process_memory_text(text: str, use_openai: bool, *, attachments: list[dict]
     if not cleaned:
         st.warning("Enter some text first.")
         return
+    agent_payload = _maybe_extract_agent_payload(cleaned)
+    if agent_payload:
+        agent_text, factors_override = agent_payload
+        if _anchor(agent_text, record_chat=True, notify=True, factors_override=factors_override):
+            st.session_state.chat_history.append(("Agent", agent_text))
+        return
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
     st.session_state.chat_history.append(("You", cleaned))
@@ -151,14 +157,117 @@ def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
 
 
 PRIME_ARRAY = (2, 3, 5, 7, 11, 13, 17, 19)
-PRIME_WORDS = ("identity", "memory", "voice", "ledger", "trust", "security", "insight", "story")
-WORD_TO_PRIME = {w: p for w, p in zip(PRIME_WORDS, PRIME_ARRAY)}
 FALLBACK_PRIME = PRIME_ARRAY[0]
+SUBJECT_TOKENS = {"i", "me", "we", "us", "team", "our", "client", "customer"}
+ACTION_KEYWORDS = {
+    "met",
+    "meet",
+    "meeting",
+    "call",
+    "called",
+    "email",
+    "emailed",
+    "ship",
+    "shipped",
+    "launch",
+    "launched",
+    "plan",
+    "planned",
+    "review",
+    "reviewed",
+    "discuss",
+    "discussed",
+    "record",
+    "recorded",
+    "attach",
+    "attached",
+    "anchor",
+    "anchored",
+    "remember",
+    "ingest",
+    "ingested",
+}
+LOCATION_KEYWORDS = {
+    "office",
+    "hq",
+    "zoom",
+    "hangouts",
+    "teams",
+    "call",
+    "room",
+    "nyc",
+    "sf",
+    "london",
+    "paris",
+    "berlin",
+    "latam",
+}
+INTENT_KEYWORDS = {"so that", "so we can", "in order to", "to ensure", "to confirm", "goal", "intent"}
+CONTEXT_KEYWORDS = {"because", "due to", "blocked", "blocker", "dependency", "risk", "issue", "delay"}
+SENTIMENT_KEYWORDS = {
+    "urgent",
+    "critical",
+    "high priority",
+    "excited",
+    "happy",
+    "frustrated",
+    "worried",
+    "concerned",
+    "blocked",
+}
 
 
-def _hash_text(text: str):
-    tokens = re.findall(r"[A-Za-z]+", text)
-    return [{"prime": WORD_TO_PRIME.get(tok.lower(), FALLBACK_PRIME), "delta": 1} for tok in tokens][:30]
+def _extract_prime_factors(text: str) -> list[dict]:
+    if not text:
+        return [{"prime": FALLBACK_PRIME, "delta": 1}]
+    lowered = text.lower()
+    factors: list[dict] = []
+
+    def add_prime(prime: int):
+        if not any(f["prime"] == prime for f in factors):
+            factors.append({"prime": prime, "delta": 1})
+
+    tokens = set(re.findall(r"[a-z']+", lowered))
+    subject_hit = bool(SUBJECT_TOKENS & tokens)
+    if not subject_hit:
+        proper = re.search(r"\b[A-Z][a-z]+\b", text)
+        subject_hit = bool(proper)
+    if subject_hit:
+        add_prime(2)
+
+    action_hit = any(
+        kw in lowered for kw in ACTION_KEYWORDS
+    ) or bool(re.search(r"\b\w+(ed|ing)\b", lowered))
+    if action_hit:
+        add_prime(3)
+
+    object_hit = bool(re.search(r"\b(with|for|about|regarding)\s+[A-Za-z0-9_-]+", lowered))
+    if not object_hit:
+        object_hit = bool(re.search(r"\b[A-Z][a-z]+\b", text))
+    if object_hit:
+        add_prime(5)
+
+    location_hit = any(kw in lowered for kw in LOCATION_KEYWORDS) or bool(re.search(r"\b(at|in)\s+[A-Z][\w-]+", text))
+    if location_hit:
+        add_prime(7)
+
+    time_hit = bool(TIME_PATTERN.search(lowered)) or bool(_infer_relative_timestamp(text))
+    if time_hit:
+        add_prime(11)
+
+    intent_hit = any(phrase in lowered for phrase in INTENT_KEYWORDS) or bool(re.search(r"\bto\s+\w+", lowered))
+    if intent_hit:
+        add_prime(13)
+
+    context_hit = any(kw in lowered for kw in CONTEXT_KEYWORDS)
+    if context_hit:
+        add_prime(17)
+
+    sentiment_hit = any(kw in lowered for kw in SENTIMENT_KEYWORDS)
+    if sentiment_hit:
+        add_prime(19)
+
+    return factors or [{"prime": FALLBACK_PRIME, "delta": 1}]
 
 
 TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
@@ -662,7 +771,17 @@ def _anchor_attachment(attachment: dict):
     total = len(chunks)
     for idx, chunk in enumerate(chunks, 1):
         payload = f"[Attachment: {name} | chunk {idx}/{total}]\n{chunk}"
-        if _anchor(payload, record_chat=False, notify=False):
+        factors_override = [
+            {"prime": 2, "delta": 1},
+            {"prime": 3, "delta": 1},
+            {"prime": 5, "delta": 1},
+            {"prime": 7, "delta": 1},
+            {"prime": 11, "delta": 1},
+            {"prime": 13, "delta": 1},
+            {"prime": 17, "delta": 1},
+            {"prime": 19, "delta": 1},
+        ]
+        if _anchor(payload, record_chat=False, notify=False, factors_override=factors_override):
             anchored += 1
         else:
             st.warning(f"Failed to anchor chunk {idx} of {name}.")
@@ -672,6 +791,135 @@ def _anchor_attachment(attachment: dict):
         else f"Could not anchor {name} – see warnings above."
     )
     st.session_state.chat_history.append(("Attachment", status))
+
+
+def _normalize_factors_override(factors) -> list[dict]:
+    normalized: list[dict] = []
+    if not isinstance(factors, list):
+        return normalized
+    for item in factors:
+        if not isinstance(item, dict):
+            continue
+        prime = item.get("prime")
+        delta = item.get("delta", 1)
+        if prime in PRIME_ARRAY:
+            try:
+                normalized.append({"prime": int(prime), "delta": int(delta)})
+            except (TypeError, ValueError):
+                continue
+    return normalized
+
+
+def _maybe_extract_agent_payload(raw_text: str) -> tuple[str, list[dict]] | None:
+    cleaned = (raw_text or "").strip()
+    if not cleaned.startswith("{") or "factors" not in cleaned:
+        return None
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        return None
+    text = (payload.get("text") or "").strip()
+    factors = _normalize_factors_override(payload.get("factors"))
+    if not text or not factors:
+        return None
+    return text, factors
+
+
+def _map_to_primes_with_agent(text: str) -> list[dict]:
+    # Reuse heuristic mapper but avoid forcing every slot.
+    base = _extract_prime_factors(text)
+    deduped: list[dict] = []
+    seen = set()
+    for factor in base:
+        prime = factor.get("prime")
+        if prime in PRIME_ARRAY and prime not in seen:
+            deduped.append({"prime": prime, "delta": factor.get("delta", 1)})
+            seen.add(prime)
+    return deduped or [{"prime": FALLBACK_PRIME, "delta": 1}]
+
+
+def _reset_entity_factors(entity: str = ENTITY) -> bool:
+    try:
+        resp = requests.get(
+            f"{API}/ledger",
+            params={"entity": entity},
+            headers=HEADERS,
+            timeout=10,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        st.warning(f"Could not fetch ledger for reset: {exc}")
+        return False
+
+    data = resp.json()
+    factors = data.get("factors") if isinstance(data, dict) else None
+    if not isinstance(factors, list):
+        return False
+    reset_deltas: list[dict] = []
+    for entry in factors:
+        prime = entry.get("prime")
+        value = entry.get("value", 0)
+        if prime in PRIME_ARRAY and value:
+            try:
+                reset_deltas.append({"prime": int(prime), "delta": -int(value)})
+            except (TypeError, ValueError):
+                continue
+    if not reset_deltas:
+        return True
+    return _anchor("(Ledger reset before enrichment)", record_chat=False, notify=False, factors_override=reset_deltas)
+
+
+def _run_enrichment(entity: str = ENTITY, limit: int = 200, reset_first: bool = True):
+    try:
+        resp = requests.get(
+            f"{API}/memories",
+            params={"entity": entity, "limit": limit},
+            headers=HEADERS,
+            timeout=15,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        st.error(f"Failed to load memories: {exc}")
+        return
+
+    try:
+        payload = resp.json()
+    except ValueError:
+        payload = []
+    memories = payload if isinstance(payload, list) else []
+    if not memories:
+        st.info("No memories found to enrich.")
+        return
+
+    if reset_first:
+        _reset_entity_factors(entity)
+
+    enriched = 0
+    total = len(memories)
+    for entry in memories:
+        text = (entry.get("text") or "").strip()
+        if not text:
+            continue
+        factors = _map_to_primes_with_agent(text)
+        if not factors:
+            continue
+        payload = {"entity": entity, "text": text, "factors": factors}
+        try:
+            post_resp = requests.post(
+                f"{API}/anchor",
+                json=payload,
+                headers=HEADERS,
+                timeout=15,
+            )
+            if post_resp.ok:
+                enriched += 1
+            else:
+                st.warning(
+                    f"Failed to enrich entry at {entry.get('timestamp')}: {post_resp.text}"
+                )
+        except requests.RequestException as exc:
+            st.warning(f"Anchor failed for entry {entry.get('timestamp')}: {exc}")
+    st.success(f"Enriched {enriched}/{total} memories.")
 
 
 def _latest_user_transcript(current_request: str, *, limit: int = 5) -> str | None:
@@ -785,8 +1033,8 @@ def _maybe_handle_recall_query(text: str) -> bool:
     return False
 
 
-def _anchor(text: str, *, record_chat: bool = True, notify: bool = True):
-    factors = _hash_text(text)
+def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors_override: list[dict] | None = None):
+    factors = factors_override or _extract_prime_factors(text)
     if not factors:
         st.warning("No alphabetical tokens detected; nothing anchored.")
         return False
@@ -1142,7 +1390,7 @@ def _render_app():
             st.markdown('</div>', unsafe_allow_html=True)
             st.markdown("### Möbius lattice rotation")
             if st.button("♾️ Möbius Transform", help="Reproject the exponent lattice"):
-                payload = {"entity": ENTITY, "axis": (0.0, 0.0, 1.0), "angle": 1.0472}
+                payload = {"entity": ENTITY, "axis": [0.0, 0.0, 1.0], "angle": 1.0472}
                 try:
                     resp = requests.post(
                         f"{API}/rotate",
@@ -1156,8 +1404,15 @@ def _render_app():
                         f"Rotated lattice. Δenergy = {data.get('energy_cycles')}, "
                         f"checksum {data.get('original_checksum')} → {data.get('rotated_checksum')}."
                     )
+                    _load_ledger()
+                    if st.session_state.ledger_state:
+                        st.caption("Updated ledger snapshot after Möbius transform:")
+                        st.json(st.session_state.ledger_state)
                 except requests.RequestException as exc:
                     st.error(f"Möbius rotation failed: {exc}")
+            if st.button("Initiate Enrichment", help="Replay stored transcripts with richer prime coverage"):
+                with st.spinner("Enriching memories…"):
+                    _run_enrichment()
 
 
 if __name__ == "__main__":
