@@ -1,5 +1,4 @@
 import audioop
-import base64
 import hashlib
 import html
 import io
@@ -47,6 +46,15 @@ OPENAI_API_KEY = _secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
 st.set_page_config(page_title="Ledger Chat", layout="wide")
 st.markdown(
     """
+    <style>
+    .main-title {
+        font-size: 2rem;
+        font-weight: 400;
+        text-align: center;
+        margin-top: 0.5rem;
+        margin-bottom: 0.75rem;
+    }
+    </style>
     <h1 class="main-title">What needs remembering next?</h1>
     """,
     unsafe_allow_html=True,
@@ -77,154 +85,6 @@ def _success(message: str):
 
 _TOAST_CONTAINER = st.container()
 
-# Custom CSS for styling the input box and surrounding elements
-st.markdown(
-    """
-<style>
-    .main-title {
-        font-size: 2rem;
-        font-weight: 400;
-        margin-bottom: 1.5rem;
-    }
-
-    .memory-wrapper {
-        border: 1px solid rgba(49, 51, 63, 0.2);
-        border-radius: 1.75rem;
-        padding: 0.75rem 1rem;
-        background: rgba(250, 250, 250, 0.7);
-        backdrop-filter: blur(4px);
-        transition: box-shadow 0.2s ease;
-    }
-
-    .memory-wrapper:hover {
-        box-shadow: 0 12px 24px rgba(15, 23, 42, 0.12);
-    }
-
-    .memory-wrapper form {
-        margin: 0;
-    }
-
-    .memory-wrapper .stTextArea textarea {
-        border: none;
-        box-shadow: none;
-        background: transparent;
-        min-height: 3.2rem;
-        max-height: 400px;
-        padding: 0;
-        font-size: 1rem;
-        line-height: 1.6;
-        resize: vertical;
-        overflow-y: auto;
-    }
-
-    .memory-wrapper .stTextArea textarea:focus {
-        min-height: 8rem;
-    }
-
-    .memory-wrapper .stTextArea > div > div {
-        border: none !important;
-        box-shadow: none !important;
-        background: transparent !important;
-    }
-
-    .memory-wrapper .stTextArea textarea::placeholder {
-        color: rgba(49, 51, 63, 0.6);
-    }
-
-    .memory-wrapper .stButton > button {
-        width: 100%;
-        height: 3rem;
-        border-radius: 1.5rem;
-        border: 1px solid transparent;
-        background: transparent;
-        color: rgba(49, 51, 63, 0.7);
-        font-size: 1.25rem;
-        transition: background 0.2s ease;
-    }
-
-    .memory-wrapper .stButton > button:hover {
-        background: rgba(49, 51, 63, 0.08);
-    }
-
-    .chat-stream {
-        font-size: 0.95rem;
-        line-height: 1.55;
-    }
-
-    .chat-entry {
-        padding: 0.25rem 0;
-    }
-
-    .chat-stream hr {
-        border: 0;
-        border-top: 1px solid rgba(49, 51, 63, 0.12);
-        margin: 0.75rem 0;
-    }
-
-    .about-col {
-        padding: 0 1.25rem;
-    }
-
-    .about-col-right {
-        border-left: 1px solid rgba(49, 51, 63, 0.12);
-    }
-
-    .about-heading {
-        font-weight: 400;
-        font-size: 1.5rem;
-        margin-bottom: 0.75rem;
-    }
-
-    .about-text {
-        font-size: 0.95rem;
-        line-height: 1.6;
-    }
-
-    .metrics-heading {
-        font-size: 1.25rem;
-        font-weight: 400;
-        margin: 1rem 0 0.5rem;
-    }
-
-    .metrics-paragraph {
-        font-size: 1.25rem;
-        line-height: 1.6;
-        margin-bottom: 1rem;
-    }
-
-    .metrics-row div[data-testid="stHorizontalBlock"] {
-        gap: 1rem;
-    }
-
-    .metrics-row .stMetric {
-        border-radius: 1rem;
-        padding: 0.75rem;
-        background: rgba(250, 250, 250, 0.7);
-        box-shadow: inset 0 0 0 1px rgba(49, 51, 63, 0.1);
-    }
-
-    .full-divider {
-        border: 0;
-        border-top: 1px solid rgba(49, 51, 63, 0.12);
-        margin: 2rem 0 1.5rem;
-    }
-
-    .prime-heading {
-        font-weight: 400;
-        font-size: 1.5rem;
-        margin-bottom: 0.75rem;
-    }
-
-    .prime-text {
-        font-size: 0.95rem;
-        line-height: 1.6;
-        margin-bottom: 1rem;
-    }
-</style>
-""",
-    unsafe_allow_html=True,
-)
-
 TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
 CAL = pdt.Calendar() if pdt else None
 KEYWORD_PATTERN = re.compile(r"\b(quote|verbatim|exact|recall|retrieve|what did i say)\b", re.I)
@@ -235,8 +95,6 @@ if "chat_history" not in st.session_state:
     st.session_state.chat_history = []
 if "last_audio_digest" not in st.session_state:
     st.session_state.last_audio_digest = None
-if "typed_input" not in st.session_state:
-    st.session_state.typed_input = ""
 if "ledger_state" not in st.session_state:
     st.session_state.ledger_state = None
 if "recall_payload" not in st.session_state:
@@ -245,10 +103,10 @@ if "rolling_text" not in st.session_state:
     st.session_state.rolling_text = []
 if "last_anchor_ts" not in st.session_state:
     st.session_state.last_anchor_ts = time.time()
-if "show_file_uploader" not in st.session_state:
-    st.session_state.show_file_uploader = False
-if "show_audio_recorder" not in st.session_state:
-    st.session_state.show_audio_recorder = False
+if "input_mode" not in st.session_state:
+    st.session_state.input_mode = "text"
+if "memory_input" not in st.session_state:
+    st.session_state.memory_input = ""
 
 
 def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
@@ -487,16 +345,18 @@ def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = Fa
             st.session_state.last_anchor_ts = time.time()
 
 
-def _maybe_handle_recall_query(text: str) -> bool:
-    prefix = text.strip().lower().startswith(PREFIXES)
-    keyword = KEYWORD_PATTERN.search(text) is not None
+def _maybe_handle_recall_query(text: str, mode: str = "Chat") -> bool:
+    forced_mode = mode != "Chat"
+    normalized = text.strip().lower()
+    prefix = normalized.startswith(PREFIXES)
+    keyword = KEYWORD_PATTERN.search(normalized) is not None
     since_ms = None
 
     parsed_datetime = None
     parsed_epoch = None
-    if dateparser:
+    if mode == "Time search" and dateparser:
         parsed_datetime = dateparser.parse(text, settings={"PREFER_DATES_FROM": "past"})
-    if CAL:
+    elif CAL:
         match = TIME_PATTERN.search(text)
         if match:
             parsed_tuple, status = CAL.parse(match.group(1))
@@ -505,6 +365,8 @@ def _maybe_handle_recall_query(text: str) -> bool:
                 if dateparser:
                     parsed_str = time.strftime("%Y-%m-%d %H:%M:%S", parsed_tuple)
                     parsed_datetime = dateparser.parse(parsed_str)
+    elif dateparser:
+        parsed_datetime = dateparser.parse(text, settings={"PREFER_DATES_FROM": "past"})
     if parsed_datetime:
         since_ms = int(parsed_datetime.timestamp() * 1000)
     elif parsed_epoch:
@@ -517,6 +379,11 @@ def _maybe_handle_recall_query(text: str) -> bool:
     scores = [keyword_score, time_score, semantic, prefix_score]
     weights = [0.3, 0.4, 0.2, 0.1]
     weighted_total = sum(s * w for s, w in zip(scores, weights))
+
+    if forced_mode:
+        entries = _memory_lookup(limit=5, since=since_ms)
+        _render_memories(entries)
+        return True
 
     if weighted_total > 0.45:
         entries = _memory_lookup(limit=3, since=since_ms)
@@ -541,6 +408,24 @@ def _anchor(text: str, *, record_chat: bool = True):
         st.session_state.chat_history.append(("You", text))
     _success("Anchored into ledger.")
     return True
+
+
+def _process_memory_text(text: str, mode: str, use_openai: bool):
+    cleaned = (text or "").strip()
+    if not cleaned:
+        _warning("Enter some text first.")
+        return
+    if _maybe_handle_recall_query(cleaned, mode):
+        return
+    quote_mode = _is_quote_request(cleaned)
+    bot_reply = _chat_response(cleaned, use_openai=use_openai)
+    if bot_reply is None:
+        bot_reply = ""
+    _update_rolling_memory(cleaned, bot_reply, quote_mode=quote_mode)
+
+
+def _set_input_mode(mode: str):
+    st.session_state.input_mode = mode
 
 
 def _recall():
@@ -625,68 +510,44 @@ durability_h = (time.time() - oldest) / 3600
 tokens_saved = metrics.get("tokens_deduped", "N/A")
 ledger_integrity = metrics.get("ledger_integrity", 0.0)
 
-with st.container():
-    st.markdown('<div class="memory-wrapper">', unsafe_allow_html=True)
-    with st.form("memory_form", clear_on_submit=False):
-        cols = st.columns([0.08, 0.76, 0.08, 0.08])
-        with cols[0]:
-            attach_clicked = st.form_submit_button(
-                "+", use_container_width=True, help="Attach a file"
-            )
-        with cols[1]:
-            st.text_area(
-                "Memory input",
-                key="typed_input",
-                placeholder="type, speak or attach a new memory",
-                label_visibility="collapsed",
-            )
-        with cols[2]:
-            mic_clicked = st.form_submit_button(
-                "🎙", use_container_width=True, help="Record audio"
-            )
-        with cols[3]:
-            send_clicked = st.form_submit_button(
-                "➤", use_container_width=True, help="Send memory"
-            )
-    st.markdown("</div>", unsafe_allow_html=True)
+mode_selection = st.radio("Mode", MODE_OPTIONS, horizontal=True)
+use_openai_model = st.checkbox("Use OpenAI model")
 
-typed_text = st.session_state.typed_input
-if send_clicked:
-    text = typed_text.strip()
-    if not text:
-        _warning("Enter some text first.")
-    elif _maybe_handle_recall_query(text):
-        pass
+cols = st.columns([0.08, 0.74, 0.09, 0.09])
+with cols[0]:
+    st.button("✍️", help="Type a memory", on_click=lambda: _set_input_mode("text"))
+with cols[2]:
+    st.button("🎙️", help="Record a voice memory", on_click=lambda: _set_input_mode("mic"))
+with cols[3]:
+    st.button("📎", help="Attach a file", on_click=lambda: _set_input_mode("file"))
+
+with cols[1]:
+    if st.session_state.input_mode == "text":
+        lines = st.session_state.memory_input.count("\n") + 1
+        height = min(400, max(100, 40 + lines * 24))
+        st.text_area(
+            "type, speak or attach a new memory",
+            key="memory_input",
+            placeholder="type, speak or attach a new memory",
+            label_visibility="collapsed",
+            height=height,
+        )
     else:
-        st.session_state.chat_history.append(("You", text))
-        quote_mode = _is_quote_request(text)
-        bot_reply = _chat_response(text, use_openai=True)
-        if bot_reply is None:
-            bot_reply = ""
-        _update_rolling_memory(text, bot_reply, quote_mode=quote_mode)
-    st.session_state.show_file_uploader = False
-    st.session_state.show_audio_recorder = False
-    st.session_state.typed_input = ""
-elif attach_clicked:
-    st.session_state.show_file_uploader = not st.session_state.show_file_uploader
-    if st.session_state.show_file_uploader:
-        st.session_state.show_audio_recorder = False
-elif mic_clicked:
-    st.session_state.show_audio_recorder = not st.session_state.show_audio_recorder
-    if st.session_state.show_audio_recorder:
-        st.session_state.show_file_uploader = False
+        st.text_input(
+            "type, speak or attach a new memory",
+            placeholder="Tap ✍️, 🎙️, or 📎 to add a memory",
+            disabled=True,
+            label_visibility="collapsed",
+        )
 
-if st.session_state.show_file_uploader:
-    uploaded = st.file_uploader(
-        "Attach a new memory",
-        key="memory_upload",
-        label_visibility="collapsed",
-    )
-    if uploaded:
-        st.caption(f"Attached file: {uploaded.name}")
-
-if st.session_state.show_audio_recorder:
-    audio = st.audio_input("Hold to record", key="voice_input")
+if st.session_state.input_mode == "text":
+    send_cols = st.columns([0.8, 0.2])
+    with send_cols[1]:
+        if st.button("Send memory", key="send_memory"):
+            _process_memory_text(st.session_state.memory_input, mode_selection, use_openai_model)
+            st.session_state.memory_input = ""
+elif st.session_state.input_mode == "mic":
+    audio = st.audio_input("Hold to talk", key="voice_input")
     if audio:
         audio_bytes = audio.getvalue()
         digest = hashlib.sha1(audio_bytes).hexdigest()
@@ -703,18 +564,16 @@ if st.session_state.show_audio_recorder:
                         file=norm,
                     )
                     text = transcript.text
-                    st.write(f"Transcript: {text}")
-                    if text and _maybe_handle_recall_query(text):
-                        pass
-                    elif text:
-                        st.session_state.chat_history.append(("You", text))
-                        quote_mode = _is_quote_request(text)
-                        bot_reply = _chat_response(text, use_openai=True)
-                        if bot_reply is None:
-                            bot_reply = ""
-                        _update_rolling_memory(text, bot_reply, quote_mode=quote_mode)
+                    _info(f"Transcript: {text}")
+                    _process_memory_text(text, mode_selection, use_openai_model)
                 except Exception as exc:
                     _error(f"Transcription failed: {exc}")
+        st.session_state.input_mode = "text"
+elif st.session_state.input_mode == "file":
+    uploaded = st.file_uploader("Attach a new memory", label_visibility="collapsed")
+    if uploaded:
+        _info(f"Attached file: {uploaded.name}")
+        st.session_state.input_mode = "text"
 
 tab_chat, tab_about = st.tabs(["Chat", "About DualSubstrate"])
 
