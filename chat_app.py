@@ -9,7 +9,7 @@ import os
 import re
 import time
 import wave
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from pathlib import Path
 
@@ -152,6 +152,16 @@ DEFAULT_PRIME_SCHEMA = {
 }
 DEFAULT_PRIME_SYMBOLS = {prime: meta["name"] for prime, meta in DEFAULT_PRIME_SCHEMA.items()}
 PRIME_ARRAY = tuple(DEFAULT_PRIME_SCHEMA.keys())
+PRIME_WEIGHTS = {
+    2: 1.5,
+    3: 1.5,
+    5: 1.5,
+    7: 1.5,
+    11: 1.0,
+    13: 1.0,
+    17: 1.0,
+    19: 1.0,
+}
 PRIME_SCHEMA = _load_prime_schema(DEFAULT_ENTITY)
 if not PRIME_SCHEMA:
     PRIME_SCHEMA = DEFAULT_PRIME_SCHEMA.copy()
@@ -367,11 +377,147 @@ def _extract_prime_factors(text: str) -> list[dict]:
     return factors or [{"prime": FALLBACK_PRIME, "delta": 1}]
 
 
+def _encode_prime_signature(text: str) -> dict[int, float]:
+    signature: dict[int, float] = {}
+    for factor in _extract_prime_factors(text):
+        prime = factor.get("prime")
+        delta = factor.get("delta", 0)
+        if not isinstance(prime, int):
+            continue
+        weight = PRIME_WEIGHTS.get(prime, 1.0)
+        signature[prime] = signature.get(prime, 0.0) + float(delta) * weight
+    return signature
+
+
+def _prime_topological_distance(query_sig: dict[int, float], memory_sig: dict[int, float]) -> float:
+    if not query_sig and not memory_sig:
+        return 0.0
+    distance = 0.0
+    all_primes = set(query_sig.keys()) | set(memory_sig.keys())
+    for prime in all_primes:
+        query_val = query_sig.get(prime, 0.0)
+        memory_val = memory_sig.get(prime, 0.0)
+        weight = PRIME_WEIGHTS.get(prime, 1.0)
+        if query_val > 0 and memory_val == 0:
+            distance += abs(query_val) * weight * 2.0
+        else:
+            distance += abs(query_val - memory_val) * weight
+    return distance
+
+
+def _is_user_content(text: str) -> bool:
+    normalized = (text or "").strip().lower()
+    if len(normalized) < 20:
+        return False
+    markers = (
+        "bot:",
+        "assistant:",
+        "ledger recall:",
+        "ten exact quotes",
+        "no stored memories matched",
+        "exact quotes:",
+        "transcript:",
+    )
+    return not any(marker in normalized for marker in markers)
+
+
+def _select_lawful_context(
+    query: str,
+    *,
+    limit: int = 5,
+    time_window_hours: int = 72,
+    since: int | None = None,
+    until: int | None = None,
+) -> list[dict]:
+    entity = _get_entity()
+    if not entity:
+        return []
+
+    query_signature = _encode_prime_signature(query)
+    window_start = since
+    if window_start is None:
+        window_start = int((time.time() - time_window_hours * 3600) * 1000)
+
+    fetch_limit = min(100, max(limit * 4, 20))
+    raw_memories = _memory_lookup(limit=fetch_limit, since=window_start)
+
+    if until is not None:
+        raw_memories = [
+            entry
+            for entry in raw_memories
+            if entry.get("timestamp") and entry["timestamp"] <= until
+        ]
+
+    scored_memories: list[dict] = []
+    now = time.time()
+    for entry in raw_memories:
+        raw_text = entry.get("text", "")
+        sanitized = _strip_ledger_noise(raw_text)
+        if not sanitized or not _is_user_content(sanitized):
+            continue
+        memory_signature = _encode_prime_signature(sanitized)
+        distance = _prime_topological_distance(query_signature, memory_signature)
+        timestamp = entry.get("timestamp")
+        age_hours = (now - (timestamp / 1000)) / 3600 if timestamp else 0.0
+        recency_boost = max(0.0, 1.0 - (age_hours / 24.0)) * 0.3
+        scored_memories.append(
+            {
+                "entry": entry,
+                "score": distance - recency_boost,
+                "signature": memory_signature,
+                "sanitized": sanitized,
+            }
+        )
+
+    scored_memories.sort(key=lambda item: item["score"])
+
+    selected: list[dict] = []
+    covered_primes: set[int] = set()
+    seen_keys: set[tuple] = set()
+
+    def _entry_key(entry: dict) -> tuple:
+        return (entry.get("timestamp"), entry.get("text"))
+
+    for item in scored_memories:
+        if len(selected) >= limit:
+            break
+        entry = item["entry"]
+        key = _entry_key(entry)
+        if key in seen_keys:
+            continue
+        memory_primes = set(item["signature"].keys())
+        if memory_primes - covered_primes or len(selected) < 2:
+            entry_copy = dict(entry)
+            entry_copy["_sanitized_text"] = item["sanitized"]
+            selected.append(entry_copy)
+            covered_primes.update(memory_primes)
+            seen_keys.add(key)
+
+    if len(selected) < limit:
+        for item in scored_memories:
+            if len(selected) >= limit:
+                break
+            entry = item["entry"]
+            key = _entry_key(entry)
+            if key in seen_keys:
+                continue
+            entry_copy = dict(entry)
+            entry_copy["_sanitized_text"] = item["sanitized"]
+            selected.append(entry_copy)
+            seen_keys.add(key)
+
+    return selected
+
+
 TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
 RELATIVE_NUMBER_PATTERN = re.compile(r"\b(\d+)\s+(minute|hour|day|week)s?\s+ago\b", re.IGNORECASE)
 RELATIVE_ARTICLE_PATTERN = re.compile(r"\b(an|a)\s+(minute|hour|day|week)\s+ago\b", re.IGNORECASE)
 LAST_RANGE_PATTERN = re.compile(r"\blast\s+(\d+)\s+(minute|hour|day|week)s?\b", re.IGNORECASE)
 PAST_RANGE_PATTERN = re.compile(r"\bpast\s+(\d+)\s+(minute|hour|day|week)s?\b", re.IGNORECASE)
+TIME_RANGE_PATTERN = re.compile(
+    r"(?:yesterday|today)\s+between\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?",
+    re.IGNORECASE,
+)
 CAL = pdt.Calendar() if pdt else None
 QUOTE_KEYWORD_PATTERN = re.compile(r"\b(quote|verbatim|exact)\b", re.I)
 RECALL_KEYWORD_PATTERN = re.compile(r"\b(recall|retrieve|topics?|covered|definitions?)\b", re.I)
@@ -638,71 +784,74 @@ def _strip_ledger_noise(text: str, *, user_only: bool = False) -> str:
     return candidate or text
 
 
-def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None) -> str:
-    entity = _get_entity()
-    if not entity:
-        return user_question
-    keywords = _keywords_from_prompt(user_question)
-    try:
-        resp = requests.get(
-            f"{API}/memories",
-            params={"entity": entity, "limit": 1},
-            headers=HEADERS,
-            timeout=10,
-        )
-        resp.raise_for_status()
-        memories = resp.json()
-    except requests.RequestException:
-        summary = _summarize_accessible_memories(5)
-        return f"{summary}\n\nUser question: {user_question}" if summary else user_question
-
-    if not memories:
-        summary = _summarize_accessible_memories(5, keywords=keywords)
-        return f"{summary}\n\nUser question: {user_question}" if summary else user_question
-
-    full_context = _strip_ledger_noise(memories[0].get("text", "").strip())
-    if not full_context:
-        summary = _summarize_accessible_memories(5, keywords=keywords)
-        if summary:
-            return f"{summary}\n\nUser question: {user_question}"
-        return user_question
-
-    capabilities = st.session_state.get("capabilities_block")
-    prompt_lines = []
-    if capabilities:
-        prompt_lines.extend([capabilities, ""])
-    prompt_lines.extend(
-        [
-            "Anchored conversation context:",
-            full_context,
-            "",
-        ]
+def _build_lawful_augmentation_prompt(
+    user_question: str,
+    *,
+    attachments: list[dict] | None = None,
+    since: int | None = None,
+    until: int | None = None,
+) -> str:
+    context_memories = _select_lawful_context(
+        user_question,
+        limit=5,
+        time_window_hours=72,
+        since=since,
+        until=until,
     )
-    prompt_lines.append(_prime_semantics_block())
-    prompt_lines.append("")
-    context_block = _memory_context_block(limit=5, keywords=keywords)
-    if context_block:
-        prompt_lines.extend(["Recent ledger memories:", context_block, ""])
-    chat_block = _recent_chat_block()
+
+    prompt_lines = [
+        "You are answering based on a structured memory ledger. Below are relevant pieces of information, ordered by their "
+        "semantic relationship to the question. Synthesize a coherent answer that respects the connections between these "
+        "snippets. Do not mention the structure itself—just provide the answer."
+    ]
+
+    if context_memories:
+        prompt_lines.append("")
+        prompt_lines.append("Context from memory ledger:")
+        for entry in context_memories:
+            sanitized = entry.get("_sanitized_text") or _strip_ledger_noise((entry.get("text") or "").strip())
+            if not sanitized:
+                continue
+            stamp = entry.get("timestamp")
+            if stamp:
+                ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp / 1000))
+                prompt_lines.append(f"[{ts}] {sanitized}")
+            else:
+                prompt_lines.append(f"- {sanitized}")
+    else:
+        summary = _summarize_accessible_memories(5, since=since)
+        if summary:
+            prompt_lines.append("")
+            prompt_lines.append(summary)
+
+    chat_block = _recent_chat_block(max_entries=3)
     if chat_block:
-        prompt_lines.extend(["Recent chat summary:", chat_block, ""])
-    if _is_quote_request(user_question):
-        prompt_lines.append(
-            "The user may ask for exact quotes. Provide precise excerpts from the context when relevant, maintaining punctuation and casing."
-        )
+        prompt_lines.append("")
+        prompt_lines.append("Recent conversation:")
+        prompt_lines.append(chat_block)
+
     if attachments:
-        prompt_lines.append("Relevant attachments:")
+        prompt_lines.append("")
+        prompt_lines.append("Attachments:")
         for attachment in attachments:
             name = attachment.get("name", "attachment")
-            snippet = (attachment.get("text") or "").strip()
-            truncated = snippet[:1500]
-            if len(snippet) > len(truncated):
-                truncated = f"{truncated}\n… (truncated)"
-            prompt_lines.append(f"{name}:\n{truncated}")
-        prompt_lines.append("")
+            snippet = (attachment.get("text") or "").strip()[:500]
+            if snippet:
+                prompt_lines.append(f"{name}: {snippet}")
 
-    prompt_lines.append(f"User question: {user_question}")
+    prompt_lines.append("")
+    prompt_lines.append(f"Question: {user_question}")
     return "\n".join(prompt_lines)
+
+
+def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None) -> str:
+    start_ms, end_ms = _parse_time_range(user_question)
+    return _build_lawful_augmentation_prompt(
+        user_question,
+        attachments=attachments,
+        since=start_ms,
+        until=end_ms,
+    )
 
 
 def _normalize_for_match(text: str) -> str:
@@ -911,6 +1060,48 @@ def _build_capabilities_block() -> str:
     if recent_chat:
         lines.extend(["", "Recent chat summary:", recent_chat])
     return "\n".join(lines)
+
+
+def _parse_time_range(text: str) -> tuple[int | None, int | None]:
+    if not text:
+        return None, None
+    match = TIME_RANGE_PATTERN.search(text)
+    if not match:
+        return None, None
+
+    lowered = text.lower()
+    now = datetime.now()
+    base_date = now - timedelta(days=1) if "yesterday" in lowered else now
+
+    try:
+        start_hour = int(match.group(1))
+        start_minute = int(match.group(2) or 0)
+        start_ampm = (match.group(3) or "").lower()
+        end_hour = int(match.group(4))
+        end_minute = int(match.group(5) or 0)
+        end_ampm = (match.group(6) or "").lower()
+
+        if not start_ampm and end_ampm:
+            start_ampm = end_ampm
+        if start_ampm == "pm" and start_hour != 12:
+            start_hour += 12
+        if start_ampm == "am" and start_hour == 12:
+            start_hour = 0
+        if not end_ampm and start_ampm:
+            end_ampm = start_ampm
+        if end_ampm == "pm" and end_hour != 12:
+            end_hour += 12
+        if end_ampm == "am" and end_hour == 12:
+            end_hour = 0
+
+        start_dt = base_date.replace(hour=start_hour % 24, minute=start_minute, second=0, microsecond=0)
+        end_dt = base_date.replace(hour=end_hour % 24, minute=end_minute, second=0, microsecond=0)
+        if end_dt <= start_dt:
+            end_dt += timedelta(days=1)
+
+        return int(start_dt.timestamp() * 1000), int(end_dt.timestamp() * 1000)
+    except Exception:
+        return None, None
 
 
 def _infer_relative_timestamp(text: str) -> int | None:
@@ -1319,46 +1510,61 @@ def _run_enrichment(limit: int = 200, reset_first: bool = True):
 
 
 def _latest_user_transcript(current_request: str, *, limit: int = 5) -> str | None:
-    entries = _memory_lookup(limit=limit)
+    start_ms, end_ms = _parse_time_range(current_request)
+    context_candidates = _select_lawful_context(
+        current_request,
+        limit=max(1, limit),
+        time_window_hours=48,
+        since=start_ms,
+        until=end_ms,
+    )
+    for entry in context_candidates:
+        sanitized = _strip_ledger_noise(
+            entry.get("_sanitized_text") or entry.get("text", ""),
+            user_only=True,
+        )
+        if sanitized:
+            return sanitized
+
+    entries = _memory_lookup(limit=max(1, limit * 2))
     if not entries:
         return None
 
-    normalized_request = _normalize_for_match(current_request)
-    keywords = _keywords_from_prompt(current_request)
-    best_keyword_match = None
-    best_general_match = None
-
+    user_entries: list[tuple[int, str]] = []
     for entry in entries:
         text = entry.get("text", "")
         if not text:
             continue
-        normalized_text = _normalize_for_match(text)
-        if normalized_request and normalized_request in normalized_text:
-            continue
-        if "ten exact quotes" in normalized_text:
-            # Skip prior quote-mode responses that were anchored.
+        normalized = text.lower()
+        if any(
+            marker in normalized
+            for marker in (
+                "ten exact quotes",
+                "bot:",
+                "assistant:",
+                "ledger recall:",
+                "no stored memories matched",
+                "exact quotes:",
+                "transcript:",
+            )
+        ):
             continue
         sanitized = _strip_ledger_noise(text, user_only=True)
-        if normalized_request and normalized_request in _normalize_for_match(sanitized):
-            continue
         if not sanitized:
             continue
-        sanitized_lower = sanitized.lower()
-        if keywords and any(keyword in sanitized_lower for keyword in keywords):
-            if not best_keyword_match or len(sanitized) > len(best_keyword_match):
-                best_keyword_match = sanitized
+        lowered = sanitized.lower()
+        tokens = lowered.split()
+        if not tokens:
             continue
-        if not best_general_match or len(sanitized) > len(best_general_match):
-            best_general_match = sanitized
+        if any(token in tokens[:10] for token in ["i", "we", "our", "what", "how", "why"]):
+            timestamp = entry.get("timestamp") or 0
+            user_entries.append((int(timestamp), sanitized))
 
-    if best_keyword_match:
-        return best_keyword_match
-    if best_general_match:
-        return best_general_match
+    if not user_entries:
+        return None
 
-    fallback = entries[0].get("text", "")
-    sanitized_fallback = _strip_ledger_noise(fallback, user_only=True)
-    return sanitized_fallback or fallback or None
+    user_entries.sort(key=lambda item: item[0], reverse=True)
+    return user_entries[0][1]
 
 
 def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = False):
@@ -1388,7 +1594,15 @@ def _maybe_handle_recall_query(text: str) -> bool:
     if not recall_phrase and "what" in normalized and "have we" in normalized:
         recall_phrase = True
     since_ms = None
+    end_ms = None
     keywords = _keywords_from_prompt(text)
+
+    recent_context_refs = {"that", "this", "it", "the paper", "the topic", "our conversation"}
+    is_follow_up = (
+        len(normalized.split()) < 15
+        and any(ref in normalized for ref in recent_context_refs)
+        and bool(st.session_state.get("chat_history"))
+    )
 
     words = text.split()
     if len(words) > 120 and not prefix:
@@ -1420,10 +1634,16 @@ def _maybe_handle_recall_query(text: str) -> bool:
             if seconds:
                 since_ms = int((time.time() - amount * seconds) * 1000)
 
+    start_range, end_range = _parse_time_range(text)
+    if start_range is not None:
+        since_ms = start_range if since_ms is None else min(since_ms, start_range)
+    if end_range is not None:
+        end_ms = end_range
+
     semantic = _semantic_score(text)
     prefix_score = 1.0 if prefix else 0.0
     keyword_score = 1.0 if (recall_keyword or recall_phrase) else 0.0
-    time_score = 1.0 if since_ms else 0.0
+    time_score = 1.0 if (since_ms or end_ms) else 0.0
     scores = [keyword_score, time_score, semantic, prefix_score]
     weights = [0.3, 0.4, 0.2, 0.1]
     weighted_total = sum(s * w for s, w in zip(scores, weights))
@@ -1433,10 +1653,25 @@ def _maybe_handle_recall_query(text: str) -> bool:
     limit = requested if requested else default_limit
     limit = max(1, min(limit, 25))
 
-    should_recall = prefix or recall_keyword or recall_phrase or since_ms is not None or weighted_total > 0.45
+    should_recall = (
+        prefix
+        or recall_keyword
+        or recall_phrase
+        or is_follow_up
+        or since_ms is not None
+        or end_ms is not None
+        or weighted_total > 0.45
+    )
     if should_recall:
         fetch_limit = min(100, max(limit * 4, 20))
-        entries = _filter_memories(_memory_lookup(limit=fetch_limit, since=since_ms), keywords)
+        raw_entries = _memory_lookup(limit=fetch_limit, since=since_ms)
+        if end_ms is not None:
+            raw_entries = [
+                entry
+                for entry in raw_entries
+                if entry.get("timestamp") and entry["timestamp"] <= end_ms
+            ]
+        entries = _filter_memories(raw_entries, keywords)
         if not entries:
             focus = ", ".join(keywords[:3]) if keywords else "requested topic"
             st.session_state.chat_history.append(("Bot", f"No stored memories matched the {focus}."))
@@ -1569,6 +1804,16 @@ def _chat_response(
         full_text = _latest_user_transcript(prompt, limit=search_limit)
 
         if full_text:
+            cleaned_transcript = full_text.strip()
+            if len(cleaned_transcript) < 50:
+                message = f"No transcript found for '{prompt[:30]}…' in recent memories."
+                st.session_state.chat_history.append(("Bot", message))
+                return message
+            head_tokens = re.findall(r"[a-z']+", cleaned_transcript.lower()[:200])
+            if not any(token in {"i", "me", "we", "our", "us"} for token in head_tokens):
+                message = "Found content but it doesn't appear to be user-authored."
+                st.session_state.chat_history.append(("Bot", message))
+                return message
             plural = "quotes" if target_count != 1 else "quote"
             llm_prompt = (
                 "Use only the ledger snippets provided. If insufficient, admit no record exists.\n\n"
