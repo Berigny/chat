@@ -483,6 +483,15 @@ _STOPWORDS = {
     "topics",
 }
 
+_RECALL_SKIP_PREFIXES = (
+    "what information have we been discussing",
+    "what information do we have",
+    "what did we talk about",
+    "can you provide",
+    "what topics did we cover",
+    "what information have we been",
+)
+
 
 def _cosine(a, b):
     if not a or not b or len(a) != len(b):
@@ -846,6 +855,8 @@ def _filter_memories(entries: list[dict], keywords: list[str] | None = None) -> 
     for entry in entries:
         text = (entry.get("text") or "").lower()
         if not text:
+            continue
+        if any(text.startswith(prefix) for prefix in _RECALL_SKIP_PREFIXES):
             continue
         score = sum(text.count(k) for k in normalized_keywords)
         if score:
