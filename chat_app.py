@@ -1196,15 +1196,13 @@ def _maybe_handle_recall_query(text: str) -> bool:
 
     if parsed_datetime:
         since_ms = int(parsed_datetime.timestamp() * 1000)
-    else:
-        # Fallback to parsedatetime for human-readable times like "7 pm".
-        if CAL:
-            parsed_tuple, status = CAL.parse(text)
-            if status != 0:
-                # Convert parsed time to a full datetime object for today.
-                now = datetime.now()
-                dt = datetime(now.year, now.month, now.day, *parsed_tuple[:3])
-                since_ms = int(dt.timestamp() * 1000)
+    elif CAL:
+        parsed_tuple, status = CAL.parse(text)
+        if status != 0:
+            try:
+                since_ms = int(time.mktime(parsed_tuple) * 1000)
+            except (OverflowError, ValueError):
+                since_ms = None
 
     if since_ms is None:
         relative = _infer_relative_timestamp(text)
