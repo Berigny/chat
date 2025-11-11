@@ -631,9 +631,12 @@ def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None
     ]
     prompt_lines.append(_prime_semantics_block())
     prompt_lines.append("")
-    context_block = _memory_context_block(limit=3)
+    context_block = _memory_context_block(limit=5)
     if context_block:
         prompt_lines.extend(["Recent ledger memories:", context_block, ""])
+    chat_block = _recent_chat_block()
+    if chat_block:
+        prompt_lines.extend(["Recent chat summary:", chat_block, ""])
     if _is_quote_request(user_question):
         prompt_lines.append(
             "The user may ask for exact quotes. Provide precise excerpts from the context when relevant, maintaining punctuation and casing."
@@ -770,6 +773,24 @@ def _memory_context_block(limit: int = 3, since: int | None = None) -> str:
             snippet += "…"
         snippets.append(f"- {snippet}")
     return "\n".join(snippets)
+
+
+def _recent_chat_block(max_entries: int = 8) -> str:
+    history = st.session_state.get("chat_history") or []
+    if not history:
+        return ""
+    lines: list[str] = []
+    for role, content in history[-max_entries:]:
+        if role not in {"You", "Agent", "Attachment", "Memory"}:
+            continue
+        snippet = (content or "").strip()
+        if not snippet:
+            continue
+        snippet = snippet.replace("\n", " ")
+        if len(snippet) > 200:
+            snippet = f"{snippet[:200]}…"
+        lines.append(f"{role}: {snippet}")
+    return "\n".join(lines)
 
 
 def _infer_relative_timestamp(text: str) -> int | None:
@@ -962,11 +983,17 @@ def _flow_safe_factors(factors: list[dict]) -> list[dict]:
 
 
 def _flow_safe_sequence(factors: list[dict]) -> list[dict]:
+    filtered = _flow_safe_factors(factors)
     safe = []
-    for factor in _flow_safe_factors(factors):
-        safe.append(factor)
-        safe.append({"prime": factor["prime"], "delta": factor["delta"]})
-    return safe or [{"prime": FALLBACK_PRIME, "delta": 1}, {"prime": FALLBACK_PRIME, "delta": 1}]
+    last_prime = None
+    for factor in filtered:
+        prime = factor["prime"]
+        safe.append({"prime": prime, "delta": factor["delta"]})
+        safe.append({"prime": prime, "delta": factor["delta"]})
+        last_prime = prime
+    if not safe:
+        safe = [{"prime": FALLBACK_PRIME, "delta": 1}, {"prime": FALLBACK_PRIME, "delta": 1}]
+    return safe
 
 
 def _maybe_extract_agent_payload(raw_text: str) -> tuple[str, list[dict]] | None:
