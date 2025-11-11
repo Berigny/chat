@@ -1501,10 +1501,11 @@ def _chat_response(
             lines.append(f"{name}:\n{truncated}")
         attachment_block = "\n\n".join(lines)
 
-    if _is_quote_request(prompt):
+    time_hint = _infer_relative_timestamp(prompt)
+    is_quote = _is_quote_request(prompt)
+    if is_quote:
         target_count = max(1, min((quote_count or _estimate_quote_count(prompt)), 25))
         search_limit = max(target_count * 3, 15)
-        time_hint = _infer_relative_timestamp(prompt)
         full_text = _latest_user_transcript(prompt, limit=search_limit)
 
         if full_text:
@@ -1521,9 +1522,7 @@ def _chat_response(
             if attachment_block:
                 llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
         else:
-            fallback_summary = _summarize_accessible_memories(
-                max(target_count, 10), since=time_hint, keywords=keywords
-            )
+            fallback_summary = _summarize_accessible_memories(max(target_count, 10), since=time_hint, keywords=keywords)
             if fallback_summary:
                 st.session_state.chat_history.append(("Bot", fallback_summary))
                 return fallback_summary
@@ -1531,6 +1530,7 @@ def _chat_response(
         context_block = _memory_context_block(limit=max(5, target_count), since=time_hint, keywords=keywords)
         if context_block:
             llm_prompt = f"{context_block}\n\n{llm_prompt}"
+    else:
     else:
         llm_prompt = _augment_prompt(prompt, attachments=attachments)
         if attachment_block and "Attachment context:" not in llm_prompt:
