@@ -1039,7 +1039,13 @@ def _memory_context_block(limit: int = 3, since: int | None = None, *, keywords:
 
 
 def _filter_memories(entries: list[dict], keywords: list[str] | None = None) -> list[dict]:
+    print("[FILTER] input entries:", len(entries), "keywords:", keywords)
+    for idx, e in enumerate(entries[:5]):
+        txt = (e.get("text") or "")[:120] + "…"
+        print(f"[FILTER] entry {idx} text: {txt}")
+        print(f"[FILTER] entry {idx} keys: {list(e.keys())}")
     if not keywords:
+        print("[FILTER] no keywords → return as-is")
         return entries
     normalized_keywords = [k.lower() for k in keywords if len(k) >= 3]
     if not normalized_keywords:
@@ -1631,6 +1637,10 @@ def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = Fa
 
 
 def _maybe_handle_recall_query(text: str) -> bool:
+    print("=" * 60)
+    print("[RECALL] query:", text)
+    extracted_keywords = _keywords_from_prompt(text)
+    print("[RECALL] keywords extracted:", extracted_keywords)
     normalized = text.strip().lower()
     prefix = normalized.startswith(PREFIXES)
     recall_keyword = RECALL_KEYWORD_PATTERN.search(normalized) is not None
@@ -1640,7 +1650,7 @@ def _maybe_handle_recall_query(text: str) -> bool:
         recall_phrase = True
     since_ms = None
     end_ms = None
-    keywords = _keywords_from_prompt(text)
+    keywords = extracted_keywords
 
     recent_context_refs = {"that", "this", "it", "the paper", "the topic", "our conversation"}
     is_follow_up = (
@@ -1707,6 +1717,8 @@ def _maybe_handle_recall_query(text: str) -> bool:
         or end_ms is not None
         or weighted_total > 0.45
     )
+    entries: list[dict] = []
+    handled = False
     if should_recall:
         fetch_limit = min(100, max(limit * 4, 20))
         raw_entries = _memory_lookup(limit=fetch_limit, since=since_ms)
@@ -1720,17 +1732,24 @@ def _maybe_handle_recall_query(text: str) -> bool:
         if not entries:
             focus = ", ".join(keywords[:3]) if keywords else "requested topic"
             st.session_state.chat_history.append(("Bot", f"No stored memories matched the {focus}."))
-            return True
-        entry = entries[0]
-        stamp = entry.get("timestamp")
-        prefix = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp / 1000)) if stamp else "unknown time"
-        text = _strip_ledger_noise((entry.get("text") or "").strip())
-        snippet = text[:320].replace("\n", " ")
-        if len(text) > len(snippet):
-            snippet += "…"
-        st.session_state.chat_history.append(("Bot", f"{prefix} — {snippet}"))
-        return True
-    return False
+            handled = True
+        else:
+            entry = entries[0]
+            stamp = entry.get("timestamp")
+            prefix = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp / 1000)) if stamp else "unknown time"
+            text = _strip_ledger_noise((entry.get("text") or "").strip())
+            snippet = text[:320].replace("\n", " ")
+            if len(text) > len(snippet):
+                snippet += "…"
+            st.session_state.chat_history.append(("Bot", f"{prefix} — {snippet}"))
+            handled = True
+    print("[RECALL] should_recall =", should_recall, "weighted_total =", weighted_total)
+    if should_recall:
+        print("[RECALL] final entries after filter:", len(entries))
+        if not entries:
+            print("[RECALL] → empty list, will show 'No stored memories matched'")
+    print("=" * 60)
+    return handled
 
 
 def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors_override: list[dict] | None = None):
