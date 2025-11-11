@@ -86,7 +86,6 @@ METRIC_FLOORS = {**DEFAULT_METRIC_FLOORS, **_load_metric_floors()}
 
 def _fetch_prime_schema(entity: str | None) -> dict[int, dict]:
     target = entity or DEFAULT_ENTITY
-    """Network-first, fallback to baked defaults, always returns a dict."""
     try:
         resp = requests.get(f"{API}/schema", params={"entity": target}, headers=HEADERS, timeout=5)
         resp.raise_for_status()
