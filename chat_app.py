@@ -150,6 +150,7 @@ DEFAULT_PRIME_SCHEMA = {
     17: {"name": "Relatedness", "tier": "S2", "mnemonic": "system"},
     19: {"name": "Mastery", "tier": "S2", "mnemonic": "standard"},
 }
+DEFAULT_PRIME_SYMBOLS = {prime: meta["name"] for prime, meta in DEFAULT_PRIME_SCHEMA.items()}
 PRIME_ARRAY = tuple(DEFAULT_PRIME_SCHEMA.keys())
 PRIME_SCHEMA = _load_prime_schema(DEFAULT_ENTITY)
 if not PRIME_SCHEMA:
