@@ -769,7 +769,10 @@ def _extract_transcript_text(transcript) -> str | None:
 
 
 def _summarize_accessible_memories(limit: int, since: int | None = None, *, keywords: list[str] | None = None) -> str | None:
-    entries = _memory_lookup(limit=limit, since=since)
+    fetch_limit = limit
+    if keywords:
+        fetch_limit = min(100, max(limit * 4, 20))
+    entries = _memory_lookup(limit=fetch_limit, since=since)
     if not entries:
         return "Ledger currently has no stored memories yet."
     lines: list[str] = []
@@ -805,7 +808,10 @@ def _summarize_accessible_memories(limit: int, since: int | None = None, *, keyw
 
 
 def _memory_context_block(limit: int = 3, since: int | None = None, *, keywords: list[str] | None = None) -> str:
-    entries = _memory_lookup(limit=limit, since=since)
+    fetch_limit = limit
+    if keywords:
+        fetch_limit = min(100, max(limit * 4, 20))
+    entries = _memory_lookup(limit=fetch_limit, since=since)
     snippets: list[str] = []
     normalized_keywords = [k.lower() for k in (keywords or []) if len(k) >= 3]
     for entry in entries:
@@ -1407,7 +1413,8 @@ def _maybe_handle_recall_query(text: str) -> bool:
 
     should_recall = prefix or recall_keyword or recall_phrase or since_ms is not None or weighted_total > 0.45
     if should_recall:
-        entries = _filter_memories(_memory_lookup(limit=limit, since=since_ms), keywords)
+        fetch_limit = min(100, max(limit * 4, 20))
+        entries = _filter_memories(_memory_lookup(limit=fetch_limit, since=since_ms), keywords)
         if not entries:
             focus = ", ".join(keywords[:3]) if keywords else "requested topic"
             st.session_state.chat_history.append(("Bot", f"No stored memories matched the {focus}."))
