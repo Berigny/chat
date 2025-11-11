@@ -823,10 +823,12 @@ def _memory_context_block(limit: int = 3, since: int | None = None, *, keywords:
             continue
         if normalized_keywords and not any(k in lowered for k in normalized_keywords):
             continue
+        source = entry.get("meta", {}).get("source") or entry.get("name") or entry.get("attachment") or ""
         snippet = text[:240].replace("\n", " ")
         if len(text) > len(snippet):
             snippet += "…"
-        snippets.append(f"- {snippet}")
+        label = f" ({source})" if source else ""
+        snippets.append(f"- {snippet}{label}")
     if not snippets and keywords:
         focus = ", ".join(keywords[:3])
         return f"- No ledger memories matched the topic ({focus})."
@@ -836,15 +838,24 @@ def _memory_context_block(limit: int = 3, since: int | None = None, *, keywords:
 def _filter_memories(entries: list[dict], keywords: list[str] | None = None) -> list[dict]:
     if not keywords:
         return entries
+    normalized_keywords = [k.lower() for k in keywords if len(k) >= 3]
+    if not normalized_keywords:
+        return entries
     filtered = []
     normalized_keywords = [k.lower() for k in keywords if len(k) >= 3]
     for entry in entries:
         text = (entry.get("text") or "").lower()
         if not text:
             continue
-        if any(k in text for k in normalized_keywords):
+        score = sum(text.count(k) for k in normalized_keywords)
+        if score:
+            entry["_match_score"] = score
             filtered.append(entry)
-    return filtered or entries
+    if filtered:
+        filtered.sort(key=lambda e: (-(e.get("_match_score", 1)), -e.get("timestamp", 0)))
+    for entry in filtered:
+        entry.pop("_match_score", None)
+    return filtered
 
 
 def _recent_chat_block(max_entries: int = 8) -> str:
