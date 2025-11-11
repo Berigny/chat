@@ -1423,14 +1423,18 @@ def _maybe_handle_demo_mode():
     _reset_chat_state(clear_query=True)
 
 
+def _get_digest(key: str, fallback: str | None = None) -> str | None:
+    return _secret(key) or os.getenv(key) or fallback
+
+
 DEMO_USERS = {
     "Developer": {
         "entity": "Demo_dev",
-        "digest": _secret("DEMO_DEV_DIGEST"),
+        "digest": _get_digest("DEMO_DEV_DIGEST", "92bfc5adfab78a72"),
     },
     "Demo user": {
         "entity": "Demo_new",
-        "digest": _secret("DEMO_NEW_DIGEST"),
+        "digest": _get_digest("DEMO_NEW_DIGEST", "6f6850b5f086fb49"),
     },
 }
 
