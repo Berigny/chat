@@ -1426,11 +1426,11 @@ def _maybe_handle_demo_mode():
 DEMO_USERS = {
     "Developer": {
         "entity": "Demo_dev",
-        "digest": "92bfc5adfab78a72",
+        "digest": _secret("DEMO_DEV_DIGEST"),
     },
     "Demo user": {
         "entity": "Demo_new",
-        "digest": "6f6850b5f086fb49",
+        "digest": _secret("DEMO_NEW_DIGEST"),
     },
 }
 
