@@ -36,6 +36,9 @@ try:
 except ModuleNotFoundError:
     dateparser = None
 
+from validators import validate_prime_sequence
+from prime_tagger import tag_primes
+
 API = "https://dualsubstrate-commercial.fly.dev"
 DEFAULT_ENTITY = "demo_user"
 
@@ -232,147 +235,15 @@ def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
     return buf
 
 
-SUBJECT_TOKENS = {"i", "me", "we", "us", "team", "our", "client", "customer"}
-ACTION_KEYWORDS = {
-    "met",
-    "meet",
-    "meeting",
-    "call",
-    "called",
-    "email",
-    "emailed",
-    "ship",
-    "shipped",
-    "launch",
-    "launched",
-    "plan",
-    "planned",
-    "review",
-    "reviewed",
-    "discuss",
-    "discussed",
-    "record",
-    "recorded",
-    "attach",
-    "attached",
-    "anchor",
-    "anchored",
-    "remember",
-    "ingest",
-    "ingested",
-}
-LOCATION_KEYWORDS = {
-    "office",
-    "hq",
-    "zoom",
-    "hangouts",
-    "teams",
-    "call",
-    "room",
-    "nyc",
-    "sf",
-    "london",
-    "paris",
-    "berlin",
-    "latam",
-}
-INTENT_KEYWORDS = {"so that", "so we can", "in order to", "to ensure", "to confirm", "goal", "intent"}
-CONTEXT_KEYWORDS = {"because", "due to", "blocked", "blocker", "dependency", "risk", "issue", "delay"}
-SENTIMENT_KEYWORDS = {
-    "urgent",
-    "critical",
-    "high priority",
-    "excited",
-    "happy",
-    "frustrated",
-    "worried",
-    "concerned",
-    "blocked",
-}
 
-
-# prime_tagger – deterministic keyword/rules for now
-TIER_S1 = {2, 3, 5, 7}
-TIER_S2 = {11, 13, 17, 19}
-PRIME_KEYWORDS = {
-    2: SUBJECT_TOKENS,
-    3: ACTION_KEYWORDS,
-    5: {"with", "for", "about", "regarding"},
-    7: LOCATION_KEYWORDS,
-    11: {"tomorrow", "yesterday", "today", "am", "pm"},
-    13: {"so that", "in order to", "to ensure"},
-    17: CONTEXT_KEYWORDS,
-    19: SENTIMENT_KEYWORDS,
-}
-
-
-def tag_primes(text: str, schema: dict[int, dict]) -> list[int]:
-    lowered = text.lower()
-    scored: dict[int, float] = {}
-    for prime, kws in PRIME_KEYWORDS.items():
-        hits = sum(1 for w in kws if w in lowered)
-        if hits:
-            scored[prime] = hits
-    # keep only primes present in current schema
-    return [p for p in scored if p in schema]
-
-
-def _extract_prime_factors(text: str) -> list[dict]:
-    if not text:
-        return [{"prime": FALLBACK_PRIME, "delta": 1}]
-    lowered = text.lower()
-    factors: list[dict] = []
-
-    def add_prime(prime: int):
-        if not any(f["prime"] == prime for f in factors):
-            factors.append({"prime": prime, "delta": 1})
-
-    tokens = set(re.findall(r"[a-z']+", lowered))
-    subject_hit = bool(SUBJECT_TOKENS & tokens)
-    if not subject_hit:
-        proper = re.search(r"\b[A-Z][a-z]+\b", text)
-        subject_hit = bool(proper)
-    if subject_hit:
-        add_prime(2)
-
-    action_hit = any(
-        kw in lowered for kw in ACTION_KEYWORDS
-    ) or bool(re.search(r"\b\w+(ed|ing)\b", lowered))
-    if action_hit:
-        add_prime(3)
-
-    object_hit = bool(re.search(r"\b(with|for|about|regarding)\s+[A-Za-z0-9_-]+", lowered))
-    if not object_hit:
-        object_hit = bool(re.search(r"\b[A-Z][a-z]+\b", text))
-    if object_hit:
-        add_prime(5)
-
-    location_hit = any(kw in lowered for kw in LOCATION_KEYWORDS) or bool(re.search(r"\b(at|in)\s+[A-Z][\w-]+", text))
-    if location_hit:
-        add_prime(7)
-
-    time_hit = bool(TIME_PATTERN.search(lowered)) or bool(_infer_relative_timestamp(text))
-    if time_hit:
-        add_prime(11)
-
-    intent_hit = any(phrase in lowered for phrase in INTENT_KEYWORDS) or bool(re.search(r"\bto\s+\w+", lowered))
-    if intent_hit:
-        add_prime(13)
-
-    context_hit = any(kw in lowered for kw in CONTEXT_KEYWORDS)
-    if context_hit:
-        add_prime(17)
-
-    sentiment_hit = any(kw in lowered for kw in SENTIMENT_KEYWORDS)
-    if sentiment_hit:
-        add_prime(19)
-
-    return factors or [{"prime": FALLBACK_PRIME, "delta": 1}]
 
 
 def _encode_prime_signature(text: str) -> dict[int, float]:
     signature: dict[int, float] = {}
-    for factor in _extract_prime_factors(text):
+    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+    primes = tag_primes(text, schema)
+    factors = [{"prime": p, "delta": 1} for p in primes]
+    for factor in factors:
         prime = factor.get("prime")
         delta = factor.get("delta", 0)
         if not isinstance(prime, int):
@@ -1440,15 +1311,15 @@ def _map_to_primes_with_agent(text: str) -> list[dict]:
     llm_factors = _call_factor_extraction_llm(text)
     if llm_factors:
         return llm_factors
-    fallback = _extract_prime_factors(text)
-    return fallback
+    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+    primes = tag_primes(text, schema)
+    if not primes:
+        return [{"prime": FALLBACK_PRIME, "delta": 1}]
+    return [{"prime": p, "delta": 1} for p in primes]
 
 
 def _tag_text_with_schema(text: str) -> list[dict]:
-    factors = _map_to_primes_with_agent(text)
-    if factors:
-        return factors
-    return _extract_prime_factors(text)
+    return _map_to_primes_with_agent(text)
 
 
 def _reset_entity_factors() -> bool:
@@ -1769,21 +1640,25 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
 
     schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
     if factors_override:
-        primes = [f["prime"] for f in factors_override if "prime" in f]
+        factors = factors_override
     else:
         primes = tag_primes(text, schema)
-    factors = _flow_safe_sequence(primes)
+        factors = _flow_safe_sequence(primes)
 
-    for seq in factors:
-        payload = {"entity": entity, "factors": seq, "text": text if seq == factors[0] else None}
-        try:
-            resp = requests.post(f"{API}/anchor", json=payload, headers=HEADERS, timeout=5)
-            resp.raise_for_status()
-        except Exception as e:
-            st.session_state.last_anchor_error = str(e)
-            st.session_state.capabilities_block = _build_capabilities_block()
-            st.error(f"Anchor failed: {e}")
-            return False
+    if not validate_prime_sequence(factors, schema):
+        st.error("Anchor failed: Invalid prime sequence.")
+        st.session_state.last_anchor_error = "Invalid prime sequence"
+        return False
+
+    payload = {"entity": entity, "factors": factors, "text": text}
+    try:
+        resp = requests.post(f"{API}/anchor", json=payload, headers=HEADERS, timeout=5)
+        resp.raise_for_status()
+    except requests.RequestException as e:
+        st.session_state.last_anchor_error = str(e)
+        st.session_state.capabilities_block = _build_capabilities_block()
+        st.error(f"Anchor failed: {e}")
+        return False
 
     st.session_state.last_anchor_error = None
     st.session_state.capabilities_block = _build_capabilities_block()
