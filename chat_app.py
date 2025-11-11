@@ -472,6 +472,15 @@ _STOPWORDS = {
     "hours",
     "please",
     "kindly",
+    "talk",
+    "talked",
+    "talking",
+    "discuss",
+    "discussed",
+    "discussion",
+    "information",
+    "topic",
+    "topics",
 }
 
 
@@ -516,7 +525,7 @@ def _memory_lookup(limit: int = 3, since: int | None = None):
 
 def _render_memories(entries):
     if not entries:
-        st.session_state.chat_history.append(("Memory", "No matching memories."))
+        st.session_state.chat_history.append(("Memory", "Ledger recall: no matching memories."))
         return
     for entry in entries:
         stamp = entry.get("timestamp")
@@ -816,6 +825,20 @@ def _memory_context_block(limit: int = 3, since: int | None = None, *, keywords:
         focus = ", ".join(keywords[:3])
         return f"- No ledger memories matched the topic ({focus})."
     return "\n".join(snippets)
+
+
+def _filter_memories(entries: list[dict], keywords: list[str] | None = None) -> list[dict]:
+    if not keywords:
+        return entries
+    filtered = []
+    normalized_keywords = [k.lower() for k in keywords if len(k) >= 3]
+    for entry in entries:
+        text = (entry.get("text") or "").lower()
+        if not text:
+            continue
+        if any(k in text for k in normalized_keywords):
+            filtered.append(entry)
+    return filtered or entries
 
 
 def _recent_chat_block(max_entries: int = 8) -> str:
@@ -1384,11 +1407,22 @@ def _maybe_handle_recall_query(text: str) -> bool:
 
     should_recall = prefix or recall_keyword or recall_phrase or since_ms is not None or weighted_total > 0.45
     if should_recall:
-        entries = _memory_lookup(limit=limit, since=since_ms)
-        _render_memories(entries)
-        summary = _memory_context_block(limit=limit, since=since_ms, keywords=keywords)
-        if summary:
-            st.session_state.chat_history.append(("Bot", f"Here is what the ledger shows:\n{summary}"))
+        entries = _filter_memories(_memory_lookup(limit=limit, since=since_ms), keywords)
+        if not entries:
+            focus = ", ".join(keywords[:3]) if keywords else "requested topic"
+            st.session_state.chat_history.append(("Bot", f"No stored memories matched the {focus}."))
+            return True
+        summary_lines = []
+        for entry in entries[:limit]:
+            stamp = entry.get("timestamp")
+            prefix = (
+                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp / 1000)) if stamp else "unknown time"
+            )
+            text = _strip_ledger_noise((entry.get("text") or "").strip())
+            snippet = text[:220].replace("\n", " ") + ("…" if len(text) > 220 else "")
+            summary_lines.append(f"{prefix} — {snippet}")
+        summary_text = "\n".join(summary_lines)
+        st.session_state.chat_history.append(("Bot", f"Ledger recall:\n{summary_text}"))
         return True
     return False
 
