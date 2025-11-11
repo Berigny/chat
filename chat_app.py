@@ -84,11 +84,8 @@ def _load_metric_floors():
 METRIC_FLOORS = {**DEFAULT_METRIC_FLOORS, **_load_metric_floors()}
 
 
-def _load_prime_schema(entity: str | None = None) -> dict[int, str]:
+def _load_prime_schema(entity: str | None = None) -> dict[int, dict]:
     target = entity or DEFAULT_ENTITY
-    entity = _get_entity()
-    if not entity:
-        return {}
     try:
         resp = requests.get(
             f"{API}/schema",
@@ -98,15 +95,22 @@ def _load_prime_schema(entity: str | None = None) -> dict[int, str]:
         )
         resp.raise_for_status()
         data = resp.json()
-        symbols = {}
+        schema: dict[int, dict] = {}
         if isinstance(data, dict):
             for entry in data.get("primes", []):
                 prime = entry.get("prime")
-                label = entry.get("symbol") or entry.get("label")
-                if isinstance(prime, int):
-                    symbols[prime] = label or f"Prime {prime}"
-        if symbols:
-            return symbols
+                if not isinstance(prime, int):
+                    continue
+                schema[prime] = {
+                    "name": entry.get("name") or entry.get("symbol") or entry.get("label") or f"Prime {prime}",
+                    "tier": entry.get("tier") or entry.get("band") or "",
+                    "mnemonic": entry.get("mnemonic") or "",
+                    "description": entry.get("description") or entry.get("summary") or "",
+                }
+        if schema:
+            if isinstance(prime, int):
+                pass
+            return schema
     except requests.RequestException:
         pass
     try:
@@ -120,35 +124,54 @@ def _load_prime_schema(entity: str | None = None) -> dict[int, str]:
         data = resp.json()
     except requests.RequestException:
         data = None
-    symbols = {}
+    schema = {}
     if isinstance(data, dict):
         for entry in data.get("factors", []):
             prime = entry.get("prime")
-            label = entry.get("symbol") or entry.get("label")
-            if isinstance(prime, int):
-                symbols[prime] = label or f"Prime {prime}"
-    return symbols
+            if not isinstance(prime, int):
+                continue
+            schema[prime] = {
+                "name": entry.get("symbol") or entry.get("label") or f"Prime {prime}",
+                "tier": entry.get("tier") or "",
+                "mnemonic": entry.get("mnemonic") or "",
+                "description": entry.get("description") or "",
+            }
+    if schema:
+        return schema
+    return DEFAULT_PRIME_SCHEMA.copy()
 
-DEFAULT_PRIME_SYMBOLS = {
-    2: "Novelty",
-    3: "Uniqueness",
-    5: "Connection",
-    7: "Action",
-    11: "Relatedness",
-    13: "Mastery",
-    17: "Potential",
-    19: "Autonomy",
+DEFAULT_PRIME_SCHEMA = {
+    2: {"name": "Novelty", "tier": "S!", "mnemonic": "spark"},
+    3: {"name": "Uniqueness", "tier": "S!", "mnemonic": "spec"},
+    5: {"name": "Connection", "tier": "S!", "mnemonic": "stitch"},
+    7: {"name": "Action", "tier": "S!", "mnemonic": "step"},
+    11: {"name": "Potential", "tier": "S2", "mnemonic": "seed"},
+    13: {"name": "Autonomy", "tier": "S2", "mnemonic": "silo"},
+    17: {"name": "Relatedness", "tier": "S2", "mnemonic": "system"},
+    19: {"name": "Mastery", "tier": "S2", "mnemonic": "standard"},
 }
-PRIME_ARRAY = tuple(DEFAULT_PRIME_SYMBOLS.keys())
-PRIME_SYMBOLS = _load_prime_schema(DEFAULT_ENTITY) or DEFAULT_PRIME_SYMBOLS
+PRIME_ARRAY = tuple(DEFAULT_PRIME_SCHEMA.keys())
+PRIME_SCHEMA = _load_prime_schema(DEFAULT_ENTITY)
+if not PRIME_SCHEMA:
+    PRIME_SCHEMA = DEFAULT_PRIME_SCHEMA.copy()
+PRIME_SYMBOLS = {prime: data["name"] for prime, data in PRIME_SCHEMA.items()}
 FALLBACK_PRIME = PRIME_ARRAY[0]
 
 
 def _prime_semantics_block() -> str:
-    symbols = st.session_state.get("prime_symbols", PRIME_SYMBOLS)
+    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
     lines = ["Prime semantics:"]
     for prime in PRIME_ARRAY:
-        lines.append(f"{prime} = {symbols.get(prime, f'Prime {prime}')}")
+        meta = schema.get(prime, DEFAULT_PRIME_SCHEMA.get(prime, {}))
+        name = meta.get("name", f"Prime {prime}")
+        tier = meta.get("tier", "")
+        mnemonic = meta.get("mnemonic", "")
+        descriptor = meta.get("description", "")
+        detail = ", ".join(filter(None, [tier, mnemonic, descriptor]))
+        if detail:
+            lines.append(f"{prime} ({name}) = {detail}")
+        else:
+            lines.append(f"{prime} ({name})")
     return "\n".join(lines)
 
 def _load_base64_image(name: str) -> str | None:
@@ -796,7 +819,7 @@ def _recent_chat_block(max_entries: int = 8) -> str:
         if len(snippet) > 200:
             snippet = f"{snippet[:200]}…"
         lines.append(f"{role}: {snippet}")
-    return "\n".join(lines)
+    return "\n".join(lines) if lines else None
 
 
 def _build_capabilities_block() -> str:
@@ -956,7 +979,7 @@ def _anchor_attachment(attachment: dict):
     total = len(chunks)
     for idx, chunk in enumerate(chunks, 1):
         payload = f"[Attachment: {name} | chunk {idx}/{total}]\n{chunk}"
-        factors_override = _map_to_primes_with_agent(chunk) or _extract_prime_factors(chunk)
+        factors_override = _tag_text_with_schema(chunk)
         if _anchor(payload, record_chat=False, notify=False, factors_override=factors_override):
             anchored += 1
         else:
@@ -1070,8 +1093,11 @@ def _extract_json_object(raw: str) -> dict | None:
 def _call_factor_extraction_llm(text: str) -> list[dict]:
     if not text or not (genai and GENAI_KEY):
         return []
-    symbols = st.session_state.get("prime_symbols", PRIME_SYMBOLS)
-    schema_lines = "\n".join(f"{prime} = {symbols.get(prime, f'Prime {prime}')}" for prime in PRIME_ARRAY)
+    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+    schema_lines = "\n".join(
+        f"{prime} ({meta.get('name', f'Prime {prime}')}) = {meta.get('tier', '')} {meta.get('mnemonic', '')} {meta.get('description', '')}".strip()
+        for prime, meta in schema.items()
+    )
     prompt = (
         "You extract ledger factors. "
         "Given the transcript below, identify subject (prime 2), action (3), object (5), "
@@ -1103,6 +1129,13 @@ def _map_to_primes_with_agent(text: str) -> list[dict]:
         return llm_factors
     fallback = _extract_prime_factors(text)
     return fallback
+
+
+def _tag_text_with_schema(text: str) -> list[dict]:
+    factors = _map_to_primes_with_agent(text)
+    if factors:
+        return factors
+    return _extract_prime_factors(text)
 
 
 def _reset_entity_factors() -> bool:
@@ -1186,7 +1219,7 @@ def _run_enrichment(limit: int = 200, reset_first: bool = True):
         text = (entry.get("text") or "").strip()
         if not text:
             continue
-        factors = _map_to_primes_with_agent(text)
+        factors = _tag_text_with_schema(text)
         if not factors:
             continue
         batches = _flow_safe_batches(factors)
@@ -1392,11 +1425,12 @@ def _load_ledger():
         data = resp.json()
         factors = data.get("factors") if isinstance(data, dict) else None
         if isinstance(factors, list):
-            symbols = st.session_state.get("prime_symbols", PRIME_SYMBOLS)
+            schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
             for item in factors:
                 prime = item.get("prime")
                 if isinstance(prime, int):
-                    item["symbol"] = symbols.get(prime, f"Prime {prime}")
+                    meta = schema.get(prime, DEFAULT_PRIME_SCHEMA.get(prime, {}))
+                    item["symbol"] = meta.get("name", f"Prime {prime}")
         st.session_state.ledger_state = data
     else:
         st.session_state.ledger_state = {"error": resp.text}
@@ -1408,14 +1442,21 @@ def _render_ledger_state(data):
     if isinstance(data, dict):
         factors = data.get("factors")
         if isinstance(factors, list) and factors:
-            rows = [
-                {
-                    "Prime": f"{item.get('prime')} ({item.get('symbol') or PRIME_SYMBOLS.get(item.get('prime'), f'Prime {item.get('prime')}')})",
-                    "Value": item.get("value", 0),
-                }
-                for item in factors
-                if item.get("prime") in PRIME_ARRAY
-            ]
+            schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+            rows = []
+            for item in factors:
+                prime = item.get("prime")
+                if prime not in PRIME_ARRAY:
+                    continue
+                meta = schema.get(prime, DEFAULT_PRIME_SCHEMA.get(prime, {}))
+                label = meta.get("name", f"Prime {prime}")
+                tier = meta.get("tier", "")
+                rows.append(
+                    {
+                        "Prime": f"{prime} ({label}{' | ' + tier if tier else ''})",
+                        "Value": item.get("value", 0),
+                    }
+                )
             if rows:
                 st.table(rows)
                 return
@@ -1584,7 +1625,10 @@ def _handle_login():
         else:
             st.toast("Ledger reset failed.", icon="⚠️")
         st.session_state.login_time = time.time()
-    st.session_state.prime_symbols = _load_prime_schema(user_data["entity"]) or DEFAULT_PRIME_SYMBOLS
+    st.session_state.prime_schema = _load_prime_schema(user_data["entity"])
+    st.session_state.prime_symbols = {
+        prime: meta.get("name", f"Prime {prime}") for prime, meta in st.session_state.prime_schema.items()
+    }
     st.session_state.capabilities_block = _build_capabilities_block()
 
 
@@ -1603,8 +1647,13 @@ def _render_login_form():
 def _render_app():
     st.set_page_config(page_title="Ledger Chat", layout="wide")
 
+    if "prime_schema" not in st.session_state:
+        st.session_state.prime_schema = _load_prime_schema(_get_entity())
     if "prime_symbols" not in st.session_state:
-        st.session_state.prime_symbols = PRIME_SYMBOLS
+        st.session_state.prime_symbols = {
+            prime: meta.get("name", f"Prime {prime}")
+            for prime, meta in (st.session_state.prime_schema or PRIME_SCHEMA).items()
+        }
     if "last_anchor_error" not in st.session_state:
         st.session_state.last_anchor_error = None
     if "capabilities_block" not in st.session_state:
