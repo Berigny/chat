@@ -924,16 +924,7 @@ def _anchor_attachment(attachment: dict):
     total = len(chunks)
     for idx, chunk in enumerate(chunks, 1):
         payload = f"[Attachment: {name} | chunk {idx}/{total}]\n{chunk}"
-        factors_override = [
-            {"prime": 2, "delta": 1},
-            {"prime": 3, "delta": 1},
-            {"prime": 5, "delta": 1},
-            {"prime": 7, "delta": 1},
-            {"prime": 11, "delta": 1},
-            {"prime": 13, "delta": 1},
-            {"prime": 17, "delta": 1},
-            {"prime": 19, "delta": 1},
-        ]
+        factors_override = _map_to_primes_with_agent(chunk) or _extract_prime_factors(chunk)
         if _anchor(payload, record_chat=False, notify=False, factors_override=factors_override):
             anchored += 1
         else:
@@ -994,6 +985,21 @@ def _flow_safe_sequence(factors: list[dict]) -> list[dict]:
     if not safe:
         safe = [{"prime": FALLBACK_PRIME, "delta": 1}, {"prime": FALLBACK_PRIME, "delta": 1}]
     return safe
+
+
+def _flow_safe_batches(factors: list[dict]) -> list[list[dict]]:
+    filtered = _flow_safe_factors(factors)
+    if not filtered:
+        filtered = [{"prime": FALLBACK_PRIME, "delta": 1}]
+    batches: list[list[dict]] = []
+    for factor in filtered:
+        batches.append(
+            [
+                {"prime": factor["prime"], "delta": factor["delta"]},
+                {"prime": factor["prime"], "delta": factor["delta"]},
+            ]
+        )
+    return batches
 
 
 def _maybe_extract_agent_payload(raw_text: str) -> tuple[str, list[dict]] | None:
@@ -1098,19 +1104,19 @@ def _reset_entity_factors() -> bool:
                 continue
     if not reset_deltas:
         return True
-    payload = {"entity": entity, "factors": _flow_safe_sequence(reset_deltas)}
-    try:
-        resp = requests.post(
-            f"{API}/anchor",
-            json=payload,
-            headers=HEADERS,
-            timeout=10,
-        )
-        resp.raise_for_status()
-        return True
-    except requests.RequestException as exc:
-        st.warning(f"Ledger reset failed: {exc}")
-        return False
+    for seq in _flow_safe_batches(reset_deltas):
+        try:
+            resp = requests.post(
+                f"{API}/anchor",
+                json={"entity": entity, "factors": seq},
+                headers=HEADERS,
+                timeout=10,
+            )
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            st.warning(f"Ledger reset failed: {exc}")
+            return False
+    return True
 
 
 def _run_enrichment(limit: int = 200, reset_first: bool = True):
@@ -1151,23 +1157,33 @@ def _run_enrichment(limit: int = 200, reset_first: bool = True):
         factors = _map_to_primes_with_agent(text)
         if not factors:
             continue
-        safe_factors = _flow_safe_sequence(factors)
-        payload = {"entity": entity, "text": text, "factors": safe_factors}
-        try:
-            post_resp = requests.post(
-                f"{API}/anchor",
-                json=payload,
-                headers=HEADERS,
-                timeout=15,
-            )
-            if post_resp.ok:
-                enriched += 1
-            else:
-                st.warning(
-                    f"Failed to enrich entry at {entry.get('timestamp')}: {post_resp.text}"
+        batches = _flow_safe_batches(factors)
+        success = True
+        for idx_batch, seq in enumerate(batches):
+            payload = {
+                "entity": entity,
+                "text": text if idx_batch == 0 else None,
+                "factors": seq,
+            }
+            try:
+                post_resp = requests.post(
+                    f"{API}/anchor",
+                    json=payload,
+                    headers=HEADERS,
+                    timeout=15,
                 )
-        except requests.RequestException as exc:
-            st.warning(f"Anchor failed for entry {entry.get('timestamp')}: {exc}")
+                if not post_resp.ok:
+                    st.warning(
+                        f"Failed to enrich entry at {entry.get('timestamp')}: {post_resp.text}"
+                    )
+                    success = False
+                    break
+            except requests.RequestException as exc:
+                st.warning(f"Anchor failed for entry {entry.get('timestamp')}: {exc}")
+                success = False
+                break
+        if success:
+            enriched += 1
     st.success(f"Enriched {enriched}/{total} memories.")
 
 
@@ -1297,17 +1313,18 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
         st.error("No active entity; cannot anchor.")
         return False
     factors = factors_override or _extract_prime_factors(text)
-    factors = _flow_safe_factors(factors)
-    if not factors:
+    batches = _flow_safe_batches(factors)
+    if not batches:
         st.warning("No alphabetical tokens detected; nothing anchored.")
         return False
-    payload = {"entity": entity, "factors": _flow_safe_sequence(factors), "text": text}
-    try:
-        resp = requests.post(f"{API}/anchor", json=payload, headers=HEADERS, timeout=10)
-        resp.raise_for_status()
-    except requests.HTTPError as exc:
-        st.error(f"Anchor failed ({resp.status_code}): {resp.text}")
-        return False
+    for idx, seq in enumerate(batches):
+        payload = {"entity": entity, "factors": seq, "text": text if idx == 0 else None}
+        try:
+            resp = requests.post(f"{API}/anchor", json=payload, headers=HEADERS, timeout=10)
+            resp.raise_for_status()
+        except requests.HTTPError as exc:
+            st.error(f"Anchor failed ({resp.status_code}): {resp.text}")
+            return False
     if record_chat:
         st.session_state.chat_history.append(("You", text))
     if notify:
