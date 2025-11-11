@@ -673,9 +673,54 @@ def _memory_lookup(limit: int = 3, since: int | None = None):
     try:
         resp = requests.get(f"{API}/memories", params=params, headers=HEADERS, timeout=10)
         resp.raise_for_status()
-        return resp.json()
-    except requests.RequestException:
+        data = resp.json()
+        if isinstance(data, list):
+            print("[DEBUG] /memories returned:", data[:3])
+            if any(isinstance(item, dict) and item.get("text") for item in data):
+                return data
+        else:
+            print("[DEBUG] /memories unexpected payload:", data)
+    except requests.RequestException as exc:
+        print("[DEBUG] /memories error:", exc)
+
+    try:
+        resp = requests.get(
+            f"{API}/ledger",
+            params={"entity": entity},
+            headers=HEADERS,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        ledger_payload = resp.json()
+    except requests.RequestException as exc:
+        print("[DEBUG] /ledger fallback failed:", exc)
         return []
+
+    factors = []
+    if isinstance(ledger_payload, dict):
+        factors = ledger_payload.get("factors") or []
+
+    now_ms = int(time.time() * 1000)
+    synthetic: list[dict] = []
+    for entry in factors:
+        if len(synthetic) >= max(1, limit):
+            break
+        if not isinstance(entry, dict):
+            continue
+        prime = entry.get("prime")
+        value = entry.get("value", 0)
+        if prime in PRIME_ARRAY and value:
+            synthetic.append(
+                {
+                    "timestamp": now_ms,
+                    "text": f"(Ledger factor) Prime {prime} = {value}",
+                    "meta": {"source": "ledger"},
+                }
+            )
+
+    if synthetic:
+        print("[DEBUG] Fallback memories constructed:", synthetic[:3])
+    return synthetic
 
 
 def _render_memories(entries):
@@ -1491,16 +1536,16 @@ def _run_enrichment(limit: int = 200, reset_first: bool = True):
                     f"{API}/anchor",
                     json=payload,
                     headers=HEADERS,
-                    timeout=15,
+                    timeout=5,
                 )
                 if not post_resp.ok:
                     st.warning(
-                        f"Failed to enrich entry at {entry.get('timestamp')}: {post_resp.text}"
+                        f"Skip enrichment for {entry.get('timestamp')}: {post_resp.text}"
                     )
                     success = False
                     break
             except requests.RequestException as exc:
-                st.warning(f"Anchor failed for entry {entry.get('timestamp')}: {exc}")
+                st.warning(f"Skip enrichment for {entry.get('timestamp')}: {exc}")
                 success = False
                 break
         if success:
