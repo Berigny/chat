@@ -1430,6 +1430,7 @@ def _chat_response(
     attachments: list[dict] | None = None,
 ):
     attachment_block = ""
+    capabilities_block = st.session_state.get("capabilities_block")
     if attachments:
         lines = ["Attachment context:"]
         for attachment in attachments:
@@ -1634,8 +1635,8 @@ def _render_app():
         "div[data-testid='stChatInput'] > div:first-child {position:relative;border:1px solid rgba(255,255,255,0.18);padding:1.5rem 4.5rem 1.5rem 3.25rem;transition:border-color 0.2s ease, box-shadow 0.2s ease;}",
         "div[data-testid='stChatInput']:focus-within > div:first-child {border-color:rgba(255,255,255,0.3);box-shadow:0 0 0 1px rgba(255,255,255,0.18);}",
         "textarea[data-testid='stChatInputTextArea'] {max-height:120px!important; overflow: none !important; padding-left:0 !important;padding-right:0 !important; padding-top: 25px}",
-        "textarea[data-testid='stChatInputTextArea']:focus {min-height:120px !important;}",
-        "div.stElementContainer .st-bw {height: 4.5rem !important;}",
+        "textarea[data-testid='stChatInputTextArea'] {min-height:120px !important;}",
+        "div.stElementContainer .st-bw {}",
         ".st-key-top_attach button div,.st-key-top_mic button div {display:none;}",
         ".st-key-top_attach button,.st-key-top_mic button {width:38px;height:38px;background-color:rgba(255,255,255,0.08);background-repeat:no-repeat;background-position:center;background-size:24px 24px;border:1px solid rgba(255,255,255,0.14);transition:background-color 0.2s ease,border-color 0.2s ease;}",
         ".st-key-top_attach button:hover,.st-key-top_mic button:hover {border-color:rgba(255,255,255,0.35);background-color:rgba(255,255,255,0.12);}",
