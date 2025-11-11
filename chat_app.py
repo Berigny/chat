@@ -9,6 +9,7 @@ import os
 import re
 import time
 import wave
+from datetime import datetime
 
 from pathlib import Path
 
@@ -36,7 +37,12 @@ except ModuleNotFoundError:
     dateparser = None
 
 API = "https://dualsubstrate-commercial.fly.dev"
-ENTITY = "demo_user"
+
+
+def _get_entity() -> str | None:
+    return st.session_state.get("entity")
+
+
 def _secret(key: str):
     try:
         return st.secrets.get(key)
@@ -77,7 +83,10 @@ def _load_metric_floors():
 METRIC_FLOORS = {**DEFAULT_METRIC_FLOORS, **_load_metric_floors()}
 
 
-def _load_prime_schema(entity: str = ENTITY) -> dict[int, str]:
+def _load_prime_schema() -> dict[int, str]:
+    entity = _get_entity()
+    if not entity:
+        return {}
     try:
         resp = requests.get(
             f"{API}/schema",
@@ -117,6 +126,7 @@ def _load_prime_schema(entity: str = ENTITY) -> dict[int, str]:
             if isinstance(prime, int):
                 symbols[prime] = label or f"Prime {prime}"
     return symbols
+
 DEFAULT_PRIME_SYMBOLS = {
     2: "Novelty",
     3: "Uniqueness",
@@ -128,14 +138,14 @@ DEFAULT_PRIME_SYMBOLS = {
     19: "Autonomy",
 }
 PRIME_ARRAY = tuple(DEFAULT_PRIME_SYMBOLS.keys())
-PRIME_SYMBOLS = _load_prime_schema() or DEFAULT_PRIME_SYMBOLS
+PRIME_SYMBOLS = DEFAULT_PRIME_SYMBOLS
 FALLBACK_PRIME = PRIME_ARRAY[0]
 
 
 def _prime_semantics_block() -> str:
     lines = ["Prime semantics:"]
     for prime in PRIME_ARRAY:
-        lines.append(f"{prime} = {PRIME_SYMBOLS.get(prime, f'Prime {prime}')}")
+        lines.append(f"{prime} = {st.session_state.prime_symbols.get(prime, f'Prime {prime}')}")
     return "\n".join(lines)
 
 def _load_base64_image(name: str) -> str | None:
@@ -463,7 +473,10 @@ def _semantic_score(prompt: str) -> float:
 
 
 def _memory_lookup(limit: int = 3, since: int | None = None):
-    params = {"entity": ENTITY, "limit": limit}
+    entity = _get_entity()
+    if not entity:
+        return []
+    params = {"entity": entity, "limit": limit}
     if since:
         params["since"] = since
     try:
@@ -581,10 +594,13 @@ def _strip_ledger_noise(text: str, *, user_only: bool = False) -> str:
 
 
 def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None) -> str:
+    entity = _get_entity()
+    if not entity:
+        return user_question
     try:
         resp = requests.get(
             f"{API}/memories",
-            params={"entity": ENTITY, "limit": 1},
+            params={"entity": entity, "limit": 1},
             headers=HEADERS,
             timeout=10,
         )
@@ -1000,7 +1016,10 @@ def _map_to_primes_with_agent(text: str) -> list[dict]:
     return fallback
 
 
-def _reset_entity_factors(entity: str = ENTITY) -> bool:
+def _reset_entity_factors() -> bool:
+    entity = _get_entity()
+    if not entity:
+        return False
     try:
         resp = requests.get(
             f"{API}/ledger",
@@ -1043,7 +1062,10 @@ def _reset_entity_factors(entity: str = ENTITY) -> bool:
         return False
 
 
-def _run_enrichment(entity: str = ENTITY, limit: int = 200, reset_first: bool = True):
+def _run_enrichment(limit: int = 200, reset_first: bool = True):
+    entity = _get_entity()
+    if not entity:
+        return
     fetch_limit = max(1, min(limit, 100))
     try:
         resp = requests.get(
@@ -1067,7 +1089,7 @@ def _run_enrichment(entity: str = ENTITY, limit: int = 200, reset_first: bool = 
         return
 
     if reset_first:
-        _reset_entity_factors(entity)
+        _reset_entity_factors()
 
     enriched = 0
     total = len(memories)
@@ -1168,22 +1190,22 @@ def _maybe_handle_recall_query(text: str) -> bool:
     since_ms = None
 
     parsed_datetime = None
-    parsed_epoch = None
     if dateparser:
+        # Attempt to parse a datetime from the text, preferring past dates.
         parsed_datetime = dateparser.parse(text, settings={"PREFER_DATES_FROM": "past"})
-    if CAL and parsed_datetime is None:
-        match = TIME_PATTERN.search(text)
-        if match:
-            parsed_tuple, status = CAL.parse(match.group(1))
-            if status != 0:
-                parsed_epoch = int(time.mktime(parsed_tuple) * 1000)
-                if dateparser:
-                    parsed_str = time.strftime("%Y-%m-%d %H:%M:%S", parsed_tuple)
-                    parsed_datetime = dateparser.parse(parsed_str)
+
     if parsed_datetime:
         since_ms = int(parsed_datetime.timestamp() * 1000)
-    elif parsed_epoch:
-        since_ms = parsed_epoch
+    else:
+        # Fallback to parsedatetime for human-readable times like "7 pm".
+        if CAL:
+            parsed_tuple, status = CAL.parse(text)
+            if status != 0:
+                # Convert parsed time to a full datetime object for today.
+                now = datetime.now()
+                dt = datetime(now.year, now.month, now.day, *parsed_tuple[:3])
+                since_ms = int(dt.timestamp() * 1000)
+
     if since_ms is None:
         relative = _infer_relative_timestamp(text)
         if relative:
@@ -1217,12 +1239,16 @@ def _maybe_handle_recall_query(text: str) -> bool:
 
 
 def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors_override: list[dict] | None = None):
+    entity = _get_entity()
+    if not entity:
+        st.error("No active entity; cannot anchor.")
+        return False
     factors = factors_override or _extract_prime_factors(text)
     factors = _flow_safe_factors(factors)
     if not factors:
         st.warning("No alphabetical tokens detected; nothing anchored.")
         return False
-    payload = {"entity": ENTITY, "factors": factors, "text": text}
+    payload = {"entity": entity, "factors": factors, "text": text}
     resp = requests.post(f"{API}/anchor", json=payload, headers=HEADERS, timeout=10)
     try:
         resp.raise_for_status()
@@ -1237,7 +1263,10 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
 
 
 def _recall():
-    resp = requests.get(f"{API}/retrieve?entity={ENTITY}", headers=HEADERS, timeout=10)
+    entity = _get_entity()
+    if not entity:
+        return
+    resp = requests.get(f"{API}/retrieve?entity={entity}", headers=HEADERS, timeout=10)
     if resp.ok:
         st.session_state.recall_payload = resp.json()
     else:
@@ -1245,7 +1274,10 @@ def _recall():
 
 
 def _load_ledger():
-    resp = requests.get(f"{API}/ledger", params={"entity": ENTITY}, headers=HEADERS, timeout=10)
+    entity = _get_entity()
+    if not entity:
+        return
+    resp = requests.get(f"{API}/ledger", params={"entity": entity}, headers=HEADERS, timeout=10)
     if resp.ok:
         data = resp.json()
         factors = data.get("factors") if isinstance(data, dict) else None
@@ -1253,7 +1285,7 @@ def _load_ledger():
             for item in factors:
                 prime = item.get("prime")
                 if isinstance(prime, int):
-                    item["symbol"] = PRIME_SYMBOLS.get(prime, f"Prime {prime}")
+                    item["symbol"] = st.session_state.prime_symbols.get(prime, f"Prime {prime}")
         st.session_state.ledger_state = data
     else:
         st.session_state.ledger_state = {"error": resp.text}
@@ -1351,8 +1383,113 @@ def _chat_response(
     return full or "(No response)"
 
 
+def _get_query_params() -> dict:
+    try:
+        return st.query_params.to_dict()
+    except Exception:
+        return {}
+
+
+def _reset_session():
+    st.session_state.clear()
+    _trigger_rerun()
+
+
+def _reset_chat_state(clear_query: bool = True):
+    st.session_state.chat_history = []
+    st.session_state.ledger_state = None
+    st.session_state.recall_payload = None
+    st.session_state.rolling_text = []
+    st.session_state.last_anchor_ts = time.time()
+    st.session_state.input_mode = "text"
+    st.session_state.top_input = ""
+    st.session_state.prefill_top_input = None
+    st.session_state.pending_attachments = []
+    if clear_query:
+        try:
+            st.query_params.clear()
+        except Exception:
+            pass
+
+
+def _maybe_handle_demo_mode():
+    params = _get_query_params()
+    if params.get("demo") not in ("true", "1"):
+        return
+    if _reset_entity_factors():
+        st.toast("Demo mode: Ledger has been reset.", icon="✅")
+    else:
+        st.toast("Demo mode: Ledger reset failed.", icon="⚠️")
+    _reset_chat_state(clear_query=True)
+
+
+DEMO_USERS = {
+    "Developer": {
+        "entity": "Demo_dev",
+        "digest": "92bfc5adfab78a72",
+    },
+    "Demo user": {
+        "entity": "Demo_new",
+        "digest": "6f6850b5f086fb49",
+    },
+}
+
+
+def _check_password(password: str, digest: str) -> bool:
+    if not password or not digest:
+        return False
+    hasher = hashlib.sha1(password.encode())
+    return hasher.hexdigest()[:16] == digest
+
+
+def _handle_login():
+    user_type = st.session_state.get("login_type")
+    password = st.session_state.get("login_password")
+    if not user_type or not password:
+        st.sidebar.error("Please select a user type and enter a password.")
+        return
+
+    user_data = DEMO_USERS.get(user_type)
+    if not user_data or not _check_password(password, user_data["digest"]):
+        st.sidebar.error("Invalid credentials.")
+        st.session_state.authenticated = False
+        return
+
+    st.session_state.authenticated = True
+    st.session_state.entity = user_data["entity"]
+    st.session_state.user_type = user_type
+    _reset_chat_state(clear_query=False)
+
+    if user_type == "Demo user":
+        if _reset_entity_factors():
+            st.toast("New demo session started. Ledger has been reset.", icon="✅")
+        else:
+            st.toast("Ledger reset failed.", icon="⚠️")
+        st.session_state.login_time = time.time()
+    st.session_state.prime_symbols = _load_prime_schema() or DEFAULT_PRIME_SYMBOLS
+    _trigger_rerun()
+
+
+def _render_login_form():
+    st.sidebar.selectbox(
+        "Select user type",
+        ["Developer", "Demo user"],
+        index=None,
+        placeholder="Select user type...",
+        key="login_type",
+    )
+    st.sidebar.text_input("Enter password", type="password", key="login_password")
+    st.sidebar.button("Submit", on_click=_handle_login, key="login_submit")
+
+
 def _render_app():
     st.set_page_config(page_title="Ledger Chat", layout="wide")
+
+    if not st.session_state.get("authenticated"):
+        _render_login_form()
+        return
+
+    _maybe_handle_demo_mode()
 
     send_icon = _load_base64_image("right-up.png")
     attach_icon = _load_base64_image("add.png")
@@ -1428,6 +1565,21 @@ def _render_app():
         st.session_state.prefill_top_input = None
     if "pending_attachments" not in st.session_state:
         st.session_state.pending_attachments = []
+    if "login_time" not in st.session_state:
+        st.session_state.login_time = None
+    if "prime_symbols" not in st.session_state:
+        st.session_state.prime_symbols = DEFAULT_PRIME_SYMBOLS
+
+    if st.session_state.user_type == "Demo user" and st.session_state.login_time:
+        remaining = 600 - (time.time() - st.session_state.login_time)
+        if remaining <= 0:
+            st.sidebar.error("Demo session has expired.")
+            if st.sidebar.button("Log out"):
+                _reset_session()
+            return
+        st.sidebar.info(f"Time remaining: {int(remaining // 60)}m {int(remaining % 60)}s")
+
+    st.sidebar.button("Log out", on_click=_reset_session, key="logout_button")
 
     if st.session_state.get("prefill_top_input"):
         st.session_state["top_input"] = st.session_state.prefill_top_input
@@ -1451,23 +1603,28 @@ def _render_app():
         # writing to the widget-managed key here to prevent SessionState errors.
 
     # ---------- investor KPI ----------
-    try:
-        metrics_resp = requests.get(f"{API}/metrics", headers=HEADERS, timeout=5)
-        metrics_resp.raise_for_status()
-        metrics = metrics_resp.json()
-    except (requests.RequestException, ValueError):
-        metrics = {"tokens_deduped": "N/A", "ledger_integrity": 0.0}
+    entity = _get_entity()
+    if entity:
+        try:
+            metrics_resp = requests.get(f"{API}/metrics", headers=HEADERS, timeout=5)
+            metrics_resp.raise_for_status()
+            metrics = metrics_resp.json()
+        except (requests.RequestException, ValueError):
+            metrics = {"tokens_deduped": "N/A", "ledger_integrity": 0.0}
 
-    try:
-        memories_resp = requests.get(
-            f"{API}/memories",
-            params={"entity": ENTITY, "limit": 1},
-            headers=HEADERS,
-            timeout=5,
-        )
-        memories_resp.raise_for_status()
-        memories = memories_resp.json()
-    except (requests.RequestException, ValueError):
+        try:
+            memories_resp = requests.get(
+                f"{API}/memories",
+                params={"entity": entity, "limit": 1},
+                headers=HEADERS,
+                timeout=5,
+            )
+            memories_resp.raise_for_status()
+            memories = memories_resp.json()
+        except (requests.RequestException, ValueError):
+            memories = []
+    else:
+        metrics = {"tokens_deduped": "N/A", "ledger_integrity": 0.0}
         memories = []
 
     oldest = (
@@ -1606,7 +1763,11 @@ def _render_app():
             st.markdown('</div>', unsafe_allow_html=True)
             st.markdown("### Möbius lattice rotation")
             if st.button("♾️ Möbius Transform", help="Reproject the exponent lattice"):
-                payload = {"entity": ENTITY, "axis": [0.0, 0.0, 1.0], "angle": 1.0472}
+                entity = _get_entity()
+                if not entity:
+                    st.warning("No active entity.")
+                    return
+                payload = {"entity": entity, "axis": [0.0, 0.0, 1.0], "angle": 1.0472}
                 try:
                     resp = requests.post(
                         f"{API}/rotate",
