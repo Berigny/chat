@@ -781,6 +781,9 @@ def _summarize_accessible_memories(limit: int, since: int | None = None, *, keyw
             snippet = f"{snippet}…"
         lines.append(f"{human_ts}: {snippet or '(no text)'}")
     if not lines:
+        if keywords:
+            focus = ", ".join(keywords[:3])
+            return f"No stored memories matched the requested topic ({focus})."
         return "Ledger currently has no user-authored memories yet."
     scope = (
         f"since {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(since / 1000))}"
@@ -809,6 +812,9 @@ def _memory_context_block(limit: int = 3, since: int | None = None, *, keywords:
         if len(text) > len(snippet):
             snippet += "…"
         snippets.append(f"- {snippet}")
+    if not snippets and keywords:
+        focus = ", ".join(keywords[:3])
+        return f"- No ledger memories matched the topic ({focus})."
     return "\n".join(snippets)
 
 
