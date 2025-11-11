@@ -1,0 +1,38 @@
+import pytest
+import requests
+import streamlit as st
+
+import chat_app
+from prime_schema import DEFAULT_PRIME_SCHEMA
+
+
+class FailingResponse:
+    def raise_for_status(self):
+        raise requests.HTTPError("boom")
+
+
+@pytest.fixture(autouse=True)
+def clear_state():
+    st.session_state.clear()
+    st.session_state.entity = "tester"
+    st.session_state.prime_schema = DEFAULT_PRIME_SCHEMA
+    st.session_state.chat_history = []
+    st.session_state.quote_safe = True
+    yield
+    st.session_state.clear()
+
+
+def test_anchor_failure(monkeypatch):
+    errors: list[str] = []
+    toasts: list[tuple[str, str | None]] = []
+
+    monkeypatch.setattr(chat_app.requests, "post", lambda *a, **k: FailingResponse())
+    monkeypatch.setattr(st, "error", lambda msg: errors.append(msg))
+    monkeypatch.setattr(st, "toast", lambda msg, icon=None: toasts.append((msg, icon)))
+
+    ok = chat_app._anchor("hello world", record_chat=True)
+    assert not ok
+    assert errors
+    assert st.session_state.chat_history == []
+    assert any(icon == "❌" for _, icon in toasts)
+
