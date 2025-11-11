@@ -84,61 +84,28 @@ def _load_metric_floors():
 METRIC_FLOORS = {**DEFAULT_METRIC_FLOORS, **_load_metric_floors()}
 
 
-def _load_prime_schema(entity: str | None = None) -> dict[int, dict]:
-    target = entity or DEFAULT_ENTITY
+def _fetch_prime_schema(entity: str) -> dict[int, dict]:
+    """Network-first, fallback to baked defaults, always returns a dict."""
     try:
-        resp = requests.get(
-            f"{API}/schema",
-            params={"entity": target},
-            headers=HEADERS,
-            timeout=10,
-        )
+        resp = requests.get(f"{API}/schema", params={"entity": entity}, headers=HEADERS, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         schema: dict[int, dict] = {}
-        if isinstance(data, dict):
-            for entry in data.get("primes", []):
-                prime = entry.get("prime")
-                if not isinstance(prime, int):
-                    continue
-                schema[prime] = {
-                    "name": entry.get("name") or entry.get("symbol") or entry.get("label") or f"Prime {prime}",
-                    "tier": entry.get("tier") or entry.get("band") or "",
-                    "mnemonic": entry.get("mnemonic") or "",
-                    "description": entry.get("description") or entry.get("summary") or "",
-                }
-        if schema:
-            if isinstance(prime, int):
-                pass
-            return schema
-    except requests.RequestException:
-        pass
-    try:
-        resp = requests.get(
-            f"{API}/ledger",
-            params={"entity": target},
-            headers=HEADERS,
-            timeout=10,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-    except requests.RequestException:
-        data = None
-    schema = {}
-    if isinstance(data, dict):
-        for entry in data.get("factors", []):
+        for entry in data.get("primes", []):
             prime = entry.get("prime")
-            if not isinstance(prime, int):
-                continue
-            schema[prime] = {
-                "name": entry.get("symbol") or entry.get("label") or f"Prime {prime}",
-                "tier": entry.get("tier") or "",
-                "mnemonic": entry.get("mnemonic") or "",
-                "description": entry.get("description") or "",
-            }
-    if schema:
-        return schema
-    return DEFAULT_PRIME_SCHEMA.copy()
+            if isinstance(prime, int):
+                schema[prime] = {
+                    "name": entry.get("name") or entry.get("symbol") or f"Prime {prime}",
+                    "tier": entry.get("tier") or "",
+                    "mnemonic": entry.get("mnemonic") or "",
+                    "description": entry.get("description") or "",
+                }
+        if schema:  # network success
+            return schema
+    except Exception as e:
+        print("[SCHEMA] network fail, using baked defaults:", e)
+    return DEFAULT_PRIME_SCHEMA.copy()  # guaranteed fallback
+
 
 DEFAULT_PRIME_SCHEMA = {
     2: {"name": "Novelty", "tier": "S!", "mnemonic": "spark"},
@@ -162,7 +129,7 @@ PRIME_WEIGHTS = {
     17: 1.0,
     19: 1.0,
 }
-PRIME_SCHEMA = _load_prime_schema(DEFAULT_ENTITY)
+PRIME_SCHEMA = _fetch_prime_schema(DEFAULT_ENTITY)
 if not PRIME_SCHEMA:
     PRIME_SCHEMA = DEFAULT_PRIME_SCHEMA.copy()
 PRIME_SYMBOLS = {prime: data["name"] for prime, data in PRIME_SCHEMA.items()}
@@ -322,6 +289,32 @@ SENTIMENT_KEYWORDS = {
     "concerned",
     "blocked",
 }
+
+
+# prime_tagger – deterministic keyword/rules for now
+TIER_S1 = {2, 3, 5, 7}
+TIER_S2 = {11, 13, 17, 19}
+PRIME_KEYWORDS = {
+    2: SUBJECT_TOKENS,
+    3: ACTION_KEYWORDS,
+    5: {"with", "for", "about", "regarding"},
+    7: LOCATION_KEYWORDS,
+    11: {"tomorrow", "yesterday", "today", "am", "pm"},
+    13: {"so that", "in order to", "to ensure"},
+    17: CONTEXT_KEYWORDS,
+    19: SENTIMENT_KEYWORDS,
+}
+
+
+def tag_primes(text: str, schema: dict[int, dict]) -> list[int]:
+    lowered = text.lower()
+    scored: dict[int, float] = {}
+    for prime, kws in PRIME_KEYWORDS.items():
+        hits = sum(1 for w in kws if w in lowered)
+        if hits:
+            scored[prime] = hits
+    # keep only primes present in current schema
+    return [p for p in scored if p in schema]
 
 
 def _extract_prime_factors(text: str) -> list[dict]:
@@ -850,6 +843,15 @@ def _build_lawful_augmentation_prompt(
         "snippets. Do not mention the structure itself—just provide the answer."
     ]
 
+    schema_block = _prime_semantics_block()
+    instructions = (
+        "Only quote snippets provided below. "
+        "Do not invent memories. "
+        "If no snippet matches, say so explicitly.\n"
+        f"{schema_block}\n\n"
+    )
+    prompt_lines.insert(0, instructions)
+
     if context_memories:
         prompt_lines.append("")
         prompt_lines.append("Context from memory ledger:")
@@ -1335,17 +1337,21 @@ def _flow_safe_factors(factors: list[dict]) -> list[dict]:
     return odds + evens
 
 
-def _flow_safe_sequence(factors: list[dict]) -> list[dict]:
-    filtered = _flow_safe_factors(factors)
-    safe = []
-    last_prime = None
-    for factor in filtered:
-        prime = factor["prime"]
-        safe.append({"prime": prime, "delta": factor["delta"]})
-        safe.append({"prime": prime, "delta": factor["delta"]})
-        last_prime = prime
-    if not safe:
-        safe = [{"prime": FALLBACK_PRIME, "delta": 1}, {"prime": FALLBACK_PRIME, "delta": 1}]
+def _flow_safe_sequence(primes: list[int]) -> list[dict]:
+    """
+    Convert prime list → legal ledger transitions.
+    Simplest flow rule: duplicate each prime → every edge is a self-loop.
+    """
+    if not primes:
+        primes = [FALLBACK_PRIME]
+    seen: set[int] = set()
+    safe: list[dict] = []
+    for p in primes:
+        if p not in PRIME_ARRAY or p in seen:
+            continue
+        seen.add(p)
+        safe.append({"prime": p, "delta": 1})
+        safe.append({"prime": p, "delta": 1})  # self-loop
     return safe
 
 
@@ -1482,7 +1488,7 @@ def _reset_entity_factors() -> bool:
                 f"{API}/anchor",
                 json={"entity": entity, "factors": seq},
                 headers=HEADERS,
-                timeout=10,
+                timeout=5,
             )
             resp.raise_for_status()
         except requests.RequestException as exc:
@@ -1518,7 +1524,10 @@ def _run_enrichment(limit: int = 200, reset_first: bool = True):
         return
 
     if reset_first:
-        _reset_entity_factors()
+        ok = _reset_entity_factors()
+        if not ok:
+            st.error("Reset failed – aborting enrichment.")
+            return
 
     enriched = 0
     total = len(memories)
@@ -1731,8 +1740,8 @@ def _maybe_handle_recall_query(text: str) -> bool:
         entries = _filter_memories(raw_entries, keywords)
         if not entries:
             focus = ", ".join(keywords[:3]) if keywords else "requested topic"
-            st.session_state.chat_history.append(("Bot", f"No stored memories matched the {focus}."))
-            handled = True
+            st.session_state.chat_history.append(("Bot", f"No stored memories matched “{focus}” yet."))
+            return True
         else:
             entry = entries[0]
             stamp = entry.get("timestamp")
@@ -1757,21 +1766,25 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
     if not entity:
         st.error("No active entity; cannot anchor.")
         return False
-    factors = factors_override or _extract_prime_factors(text)
-    batches = _flow_safe_batches(factors)
-    if not batches:
-        st.warning("No alphabetical tokens detected; nothing anchored.")
-        return False
-    for idx, seq in enumerate(batches):
-        payload = {"entity": entity, "factors": seq, "text": text if idx == 0 else None}
+
+    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+    if factors_override:
+        primes = [f["prime"] for f in factors_override if "prime" in f]
+    else:
+        primes = tag_primes(text, schema)
+    factors = _flow_safe_sequence(primes)
+
+    for seq in factors:
+        payload = {"entity": entity, "factors": seq, "text": text if seq == factors[0] else None}
         try:
-            resp = requests.post(f"{API}/anchor", json=payload, headers=HEADERS, timeout=10)
+            resp = requests.post(f"{API}/anchor", json=payload, headers=HEADERS, timeout=5)
             resp.raise_for_status()
-        except requests.HTTPError as exc:
-            st.session_state.last_anchor_error = str(exc)
+        except Exception as e:
+            st.session_state.last_anchor_error = str(e)
             st.session_state.capabilities_block = _build_capabilities_block()
-            st.error(f"Anchor failed ({resp.status_code}): {resp.text}")
+            st.error(f"Anchor failed: {e}")
             return False
+
     st.session_state.last_anchor_error = None
     st.session_state.capabilities_block = _build_capabilities_block()
     if record_chat:
@@ -2016,7 +2029,7 @@ def _handle_login():
         else:
             st.toast("Ledger reset failed.", icon="⚠️")
         st.session_state.login_time = time.time()
-    st.session_state.prime_schema = _load_prime_schema(user_data["entity"])
+    st.session_state.prime_schema = _fetch_prime_schema(user_data["entity"])
     st.session_state.prime_symbols = {
         prime: meta.get("name", f"Prime {prime}") for prime, meta in st.session_state.prime_schema.items()
     }
