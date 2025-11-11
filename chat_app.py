@@ -624,11 +624,17 @@ def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None
             return f"{summary}\n\nUser question: {user_question}"
         return user_question
 
-    prompt_lines = [
-        "Anchored conversation context:",
-        full_context,
-        "",
-    ]
+    capabilities = st.session_state.get("capabilities_block")
+    prompt_lines = []
+    if capabilities:
+        prompt_lines.extend([capabilities, ""])
+    prompt_lines.extend(
+        [
+            "Anchored conversation context:",
+            full_context,
+            "",
+        ]
+    )
     prompt_lines.append(_prime_semantics_block())
     prompt_lines.append("")
     context_block = _memory_context_block(limit=5)
@@ -790,6 +796,32 @@ def _recent_chat_block(max_entries: int = 8) -> str:
         if len(snippet) > 200:
             snippet = f"{snippet[:200]}…"
         lines.append(f"{role}: {snippet}")
+    return "\n".join(lines)
+
+
+def _build_capabilities_block() -> str:
+    last_error = st.session_state.get("last_anchor_error")
+    anchor_note = (
+        "Latest anchor failed; new text may not be stored."
+        if last_error
+        else "Latest anchor succeeded."
+    )
+    lines = [
+        "Capabilities & Instructions:",
+        "- Cite only the memories listed below; do not invent new quotes.",
+        "- If the ledger has no entry for the requested topic, say so explicitly.",
+        "- Anchors succeed only when the ledger accepts the factors; report failures if they occur.",
+        "",
+        anchor_note,
+        "",
+        _prime_semantics_block(),
+    ]
+    ledger = _memory_context_block(limit=5)
+    if ledger:
+        lines.extend(["", "Recent ledger memories:", ledger])
+    recent_chat = _recent_chat_block()
+    if recent_chat:
+        lines.extend(["", "Recent chat summary:", recent_chat])
     return "\n".join(lines)
 
 
@@ -1185,6 +1217,7 @@ def _run_enrichment(limit: int = 200, reset_first: bool = True):
         if success:
             enriched += 1
     st.success(f"Enriched {enriched}/{total} memories.")
+    st.session_state.capabilities_block = _build_capabilities_block()
 
 
 def _latest_user_transcript(current_request: str, *, limit: int = 5) -> str | None:
@@ -1303,6 +1336,9 @@ def _maybe_handle_recall_query(text: str) -> bool:
     if should_recall:
         entries = _memory_lookup(limit=limit, since=since_ms)
         _render_memories(entries)
+        summary = _memory_context_block(limit=limit, since=since_ms)
+        if summary:
+            st.session_state.chat_history.append(("Bot", f"Here is what the ledger shows:\n{summary}"))
         return True
     return False
 
@@ -1323,8 +1359,12 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
             resp = requests.post(f"{API}/anchor", json=payload, headers=HEADERS, timeout=10)
             resp.raise_for_status()
         except requests.HTTPError as exc:
+            st.session_state.last_anchor_error = str(exc)
+            st.session_state.capabilities_block = _build_capabilities_block()
             st.error(f"Anchor failed ({resp.status_code}): {resp.text}")
             return False
+    st.session_state.last_anchor_error = None
+    st.session_state.capabilities_block = _build_capabilities_block()
     if record_chat:
         st.session_state.chat_history.append(("You", text))
     if notify:
@@ -1418,6 +1458,8 @@ def _chat_response(
             )
             if attachment_block:
                 llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
+            if capabilities_block:
+                llm_prompt = f"{capabilities_block}\n\n{llm_prompt}"
         else:
             since_hint = _infer_relative_timestamp(prompt)
             fallback_summary = _summarize_accessible_memories(max(target_count, 10), since=since_hint)
@@ -1429,6 +1471,8 @@ def _chat_response(
         llm_prompt = _augment_prompt(prompt, attachments=attachments)
         if attachment_block and "Attachment context:" not in llm_prompt:
             llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
+        if capabilities_block:
+            llm_prompt = f"{capabilities_block}\n\n{llm_prompt}"
     if use_openai:
         if not (OpenAI and OPENAI_API_KEY):
             st.warning("OpenAI API key missing.")
@@ -1540,6 +1584,7 @@ def _handle_login():
             st.toast("Ledger reset failed.", icon="⚠️")
         st.session_state.login_time = time.time()
     st.session_state.prime_symbols = _load_prime_schema(user_data["entity"]) or DEFAULT_PRIME_SYMBOLS
+    st.session_state.capabilities_block = _build_capabilities_block()
 
 
 def _render_login_form():
@@ -1559,6 +1604,10 @@ def _render_app():
 
     if "prime_symbols" not in st.session_state:
         st.session_state.prime_symbols = PRIME_SYMBOLS
+    if "last_anchor_error" not in st.session_state:
+        st.session_state.last_anchor_error = None
+    if "capabilities_block" not in st.session_state:
+        st.session_state.capabilities_block = _build_capabilities_block()
 
     if not st.session_state.get("authenticated"):
         _render_login_form()
@@ -1869,3 +1918,5 @@ def _render_app():
 
 if __name__ == "__main__":
     _render_app()
+    capabilities_block = st.session_state.get("capabilities_block")
+    capabilities_block = st.session_state.get("capabilities_block") or _build_capabilities_block()
