@@ -34,7 +34,7 @@ def _init_session() -> None:
     if "prime_schema" not in st.session_state:
         st.session_state.prime_schema = fetch_schema(st.session_state.entity)
     if "chat_history" not in st.session_state:
-        st.session_state.chat_history: List[Dict[str, str]] = []
+        st.session_state.chat_history = []
     if "quote_safe" not in st.session_state:
         st.session_state.quote_safe = True
     if "last_anchor_status" not in st.session_state:
