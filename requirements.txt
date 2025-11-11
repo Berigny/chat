@@ -6,3 +6,4 @@ openai>=1.12.0
 dateparser>=1.2
 google-generativeai>=0.3.0
 pypdf>=4.2.0
+rocksdict>=0.3.22
