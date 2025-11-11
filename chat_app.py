@@ -76,6 +76,68 @@ def _load_metric_floors():
 
 METRIC_FLOORS = {**DEFAULT_METRIC_FLOORS, **_load_metric_floors()}
 
+
+def _load_prime_schema(entity: str = ENTITY) -> dict[int, str]:
+    try:
+        resp = requests.get(
+            f"{API}/schema",
+            params={"entity": entity},
+            headers=HEADERS,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        symbols = {}
+        if isinstance(data, dict):
+            for entry in data.get("primes", []):
+                prime = entry.get("prime")
+                label = entry.get("symbol") or entry.get("label")
+                if isinstance(prime, int):
+                    symbols[prime] = label or f"Prime {prime}"
+        if symbols:
+            return symbols
+    except requests.RequestException:
+        pass
+    try:
+        resp = requests.get(
+            f"{API}/ledger",
+            params={"entity": entity},
+            headers=HEADERS,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except requests.RequestException:
+        data = None
+    symbols = {}
+    if isinstance(data, dict):
+        for entry in data.get("factors", []):
+            prime = entry.get("prime")
+            label = entry.get("symbol") or entry.get("label")
+            if isinstance(prime, int):
+                symbols[prime] = label or f"Prime {prime}"
+    return symbols
+DEFAULT_PRIME_SYMBOLS = {
+    2: "Novelty",
+    3: "Uniqueness",
+    5: "Connection",
+    7: "Action",
+    11: "Relatedness",
+    13: "Mastery",
+    17: "Potential",
+    19: "Autonomy",
+}
+PRIME_ARRAY = tuple(DEFAULT_PRIME_SYMBOLS.keys())
+PRIME_SYMBOLS = _load_prime_schema() or DEFAULT_PRIME_SYMBOLS
+FALLBACK_PRIME = PRIME_ARRAY[0]
+
+
+def _prime_semantics_block() -> str:
+    lines = ["Prime semantics:"]
+    for prime in PRIME_ARRAY:
+        lines.append(f"{prime} = {PRIME_SYMBOLS.get(prime, f'Prime {prime}')}")
+    return "\n".join(lines)
+
 def _load_base64_image(name: str) -> str | None:
     path = ASSET_DIR / name
     try:
@@ -156,8 +218,6 @@ def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
     return buf
 
 
-PRIME_ARRAY = (2, 3, 5, 7, 11, 13, 17, 19)
-FALLBACK_PRIME = PRIME_ARRAY[0]
 SUBJECT_TOKENS = {"i", "me", "we", "us", "team", "our", "client", "customer"}
 ACTION_KEYWORDS = {
     "met",
@@ -273,6 +333,8 @@ def _extract_prime_factors(text: str) -> list[dict]:
 TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
 RELATIVE_NUMBER_PATTERN = re.compile(r"\b(\d+)\s+(minute|hour|day|week)s?\s+ago\b", re.IGNORECASE)
 RELATIVE_ARTICLE_PATTERN = re.compile(r"\b(an|a)\s+(minute|hour|day|week)\s+ago\b", re.IGNORECASE)
+LAST_RANGE_PATTERN = re.compile(r"\blast\s+(\d+)\s+(minute|hour|day|week)s?\b", re.IGNORECASE)
+PAST_RANGE_PATTERN = re.compile(r"\bpast\s+(\d+)\s+(minute|hour|day|week)s?\b", re.IGNORECASE)
 CAL = pdt.Calendar() if pdt else None
 QUOTE_KEYWORD_PATTERN = re.compile(r"\b(quote|verbatim|exact)\b", re.I)
 RECALL_KEYWORD_PATTERN = re.compile(r"\b(recall|retrieve|topics?|covered)\b", re.I)
@@ -286,6 +348,11 @@ RECALL_PHRASES = (
     "did we cover",
     "what topics did we cover",
     "what topics",
+    "last few days",
+    "last 24 hours",
+    "last 48 hours",
+    "past day",
+    "past few days",
 )
 RELATIVE_WORD_OFFSETS = {
     "yesterday": 24 * 3600,
@@ -540,6 +607,8 @@ def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None
         full_context,
         "",
     ]
+    prompt_lines.append(_prime_semantics_block())
+    prompt_lines.append("")
     if _is_quote_request(user_question):
         prompt_lines.append(
             "The user may ask for exact quotes. Provide precise excerpts from the context when relevant, maintaining punctuation and casing."
@@ -640,6 +709,11 @@ def _summarize_accessible_memories(limit: int, since: int | None = None) -> str 
         stamp = entry.get("timestamp")
         human_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp / 1000)) if stamp else "unknown time"
         text = _strip_ledger_noise((entry.get("text") or "").strip())
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered.startswith("(ledger reset"):
+            continue
         snippet = text[:320].replace("\n", " ")
         if len(text) > len(snippet):
             snippet = f"{snippet}…"
@@ -675,6 +749,13 @@ def _infer_relative_timestamp(text: str) -> int | None:
         seconds = UNIT_TO_SECONDS.get(unit)
         if seconds:
             return int((now - seconds) * 1000)
+    match = LAST_RANGE_PATTERN.search(lowered) or PAST_RANGE_PATTERN.search(lowered)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2).lower().rstrip("s")
+        seconds = UNIT_TO_SECONDS.get(unit)
+        if seconds:
+            return int((now - amount * seconds) * 1000)
     return None
 
 
@@ -836,6 +917,14 @@ def _flow_safe_factors(factors: list[dict]) -> list[dict]:
     return odds + evens
 
 
+def _flow_safe_sequence(factors: list[dict]) -> list[dict]:
+    safe = []
+    for factor in _flow_safe_factors(factors):
+        safe.append(factor)
+        safe.append({"prime": factor["prime"], "delta": factor["delta"]})
+    return safe or [{"prime": FALLBACK_PRIME, "delta": 1}, {"prime": FALLBACK_PRIME, "delta": 1}]
+
+
 def _maybe_extract_agent_payload(raw_text: str) -> tuple[str, list[dict]] | None:
     cleaned = (raw_text or "").strip()
     if not cleaned.startswith("{") or "factors" not in cleaned:
@@ -872,6 +961,7 @@ def _extract_json_object(raw: str) -> dict | None:
 def _call_factor_extraction_llm(text: str) -> list[dict]:
     if not text or not (genai and GENAI_KEY):
         return []
+    schema_lines = "\n".join(f"{prime} = {PRIME_SYMBOLS.get(prime, f'Prime {prime}')}" for prime in PRIME_ARRAY)
     prompt = (
         "You extract ledger factors. "
         "Given the transcript below, identify subject (prime 2), action (3), object (5), "
@@ -880,6 +970,8 @@ def _call_factor_extraction_llm(text: str) -> list[dict]:
         "Return STRICT JSON with keys `text` (repeat the transcript) and `factors` "
         "(an array of objects with `prime` and `delta`). Example: "
         '{"text":"Met Priya","factors":[{"prime":2,"delta":1},{"prime":3,"delta":1}]}. '
+        "Prime semantics:\n"
+        f"{schema_lines}\n"
         f"Transcript:\n{text}"
     )
     try:
@@ -931,7 +1023,19 @@ def _reset_entity_factors(entity: str = ENTITY) -> bool:
                 continue
     if not reset_deltas:
         return True
-    return _anchor("(Ledger reset before enrichment)", record_chat=False, notify=False, factors_override=reset_deltas)
+    payload = {"entity": entity, "factors": reset_deltas}
+    try:
+        resp = requests.post(
+            f"{API}/anchor",
+            json=payload,
+            headers=HEADERS,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        return True
+    except requests.RequestException as exc:
+        st.warning(f"Ledger reset failed: {exc}")
+        return False
 
 
 def _run_enrichment(entity: str = ENTITY, limit: int = 200, reset_first: bool = True):
@@ -969,7 +1073,8 @@ def _run_enrichment(entity: str = ENTITY, limit: int = 200, reset_first: bool = 
         factors = _map_to_primes_with_agent(text)
         if not factors:
             continue
-        payload = {"entity": entity, "text": text, "factors": factors}
+        safe_factors = _flow_safe_sequence(factors)
+        payload = {"entity": entity, "text": text, "factors": safe_factors}
         try:
             post_resp = requests.post(
                 f"{API}/anchor",
@@ -1053,7 +1158,8 @@ def _maybe_handle_recall_query(text: str) -> bool:
     normalized = text.strip().lower()
     prefix = normalized.startswith(PREFIXES)
     recall_keyword = RECALL_KEYWORD_PATTERN.search(normalized) is not None
-    recall_phrase = any(phrase in normalized for phrase in RECALL_PHRASES)
+    range_hint = LAST_RANGE_PATTERN.search(normalized) or PAST_RANGE_PATTERN.search(normalized)
+    recall_phrase = any(phrase in normalized for phrase in RECALL_PHRASES) or bool(range_hint)
     since_ms = None
 
     parsed_datetime = None
@@ -1077,6 +1183,12 @@ def _maybe_handle_recall_query(text: str) -> bool:
         relative = _infer_relative_timestamp(text)
         if relative:
             since_ms = relative
+        elif range_hint:
+            amount = int(range_hint.group(1))
+            unit = range_hint.group(2).lower().rstrip("s")
+            seconds = UNIT_TO_SECONDS.get(unit)
+            if seconds:
+                since_ms = int((time.time() - amount * seconds) * 1000)
 
     semantic = _semantic_score(text)
     prefix_score = 1.0 if prefix else 0.0
@@ -1129,7 +1241,37 @@ def _recall():
 
 def _load_ledger():
     resp = requests.get(f"{API}/ledger", params={"entity": ENTITY}, headers=HEADERS, timeout=10)
-    st.session_state.ledger_state = resp.json() if resp.ok else {"error": resp.text}
+    if resp.ok:
+        data = resp.json()
+        factors = data.get("factors") if isinstance(data, dict) else None
+        if isinstance(factors, list):
+            for item in factors:
+                prime = item.get("prime")
+                if isinstance(prime, int):
+                    item["symbol"] = PRIME_SYMBOLS.get(prime, f"Prime {prime}")
+        st.session_state.ledger_state = data
+    else:
+        st.session_state.ledger_state = {"error": resp.text}
+
+
+def _render_ledger_state(data):
+    if not data:
+        return
+    if isinstance(data, dict):
+        factors = data.get("factors")
+        if isinstance(factors, list) and factors:
+            rows = [
+                {
+                    "Prime": f"{item.get('prime')} ({item.get('symbol') or PRIME_SYMBOLS.get(item.get('prime'), f'Prime {item.get('prime')}')})",
+                    "Value": item.get("value", 0),
+                }
+                for item in factors
+                if item.get("prime") in PRIME_ARRAY
+            ]
+            if rows:
+                st.table(rows)
+                return
+    st.json(data)
 
 
 def _chat_response(
@@ -1168,6 +1310,7 @@ def _chat_response(
             )
             if attachment_block:
                 llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
+            llm_prompt = f"{llm_prompt}\n\n{_prime_semantics_block()}"
         else:
             since_hint = _infer_relative_timestamp(prompt)
             fallback_summary = _summarize_accessible_memories(max(target_count, 10), since=since_hint)
@@ -1179,6 +1322,7 @@ def _chat_response(
         llm_prompt = _augment_prompt(prompt, attachments=attachments)
         if attachment_block and "Attachment context:" not in llm_prompt:
             llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
+        llm_prompt = f"{llm_prompt}\n\n{_prime_semantics_block()}"
     if use_openai:
         if not (OpenAI and OPENAI_API_KEY):
             st.warning("OpenAI API key missing.")
@@ -1224,8 +1368,8 @@ def _render_app():
         "div[data-testid='stChatInput'] > div:first-child {position:relative;border:1px solid rgba(255,255,255,0.18);padding:1.5rem 4.5rem 1.5rem 3.25rem;transition:border-color 0.2s ease, box-shadow 0.2s ease;}",
         "div[data-testid='stChatInput']:focus-within > div:first-child {border-color:rgba(255,255,255,0.3);box-shadow:0 0 0 1px rgba(255,255,255,0.18);}",
         "textarea[data-testid='stChatInputTextArea'] {max-height:120px!important; overflow: none !important; padding-left:0 !important;padding-right:0 !important; padding-top: 25px}",
-
         "textarea[data-testid='stChatInputTextArea']:focus {min-height:120px !important;}",
+        "div.stElementContainer .st-bw {height: 4.5rem !important;}",
         ".st-key-top_attach button div,.st-key-top_mic button div {display:none;}",
         ".st-key-top_attach button,.st-key-top_mic button {width:38px;height:38px;background-color:rgba(255,255,255,0.08);background-repeat:no-repeat;background-position:center;background-size:24px 24px;border:1px solid rgba(255,255,255,0.14);transition:background-color 0.2s ease,border-color 0.2s ease;}",
         ".st-key-top_attach button:hover,.st-key-top_mic button:hover {border-color:rgba(255,255,255,0.35);background-color:rgba(255,255,255,0.12);}",
@@ -1435,7 +1579,7 @@ def _render_app():
             if st.button("Load ledger", key="load_ledger_about"):
                 _load_ledger()
             if st.session_state.ledger_state:
-                st.json(st.session_state.ledger_state)
+                _render_ledger_state(st.session_state.ledger_state)
         with col_right:
             st.markdown(
                 """
@@ -1474,7 +1618,7 @@ def _render_app():
                     _load_ledger()
                     if st.session_state.ledger_state:
                         st.caption("Updated ledger snapshot after Möbius transform:")
-                        st.json(st.session_state.ledger_state)
+                        _render_ledger_state(st.session_state.ledger_state)
                 except requests.RequestException as exc:
                     st.error(f"Möbius rotation failed: {exc}")
             if st.button("Initiate Enrichment", help="Replay stored transcripts with richer prime coverage"):
