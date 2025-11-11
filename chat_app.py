@@ -624,6 +624,7 @@ def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None
     entity = _get_entity()
     if not entity:
         return user_question
+    keywords = _keywords_from_prompt(user_question)
     try:
         resp = requests.get(
             f"{API}/memories",
@@ -638,12 +639,12 @@ def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None
         return f"{summary}\n\nUser question: {user_question}" if summary else user_question
 
     if not memories:
-        summary = _summarize_accessible_memories(5)
+        summary = _summarize_accessible_memories(5, keywords=keywords)
         return f"{summary}\n\nUser question: {user_question}" if summary else user_question
 
     full_context = _strip_ledger_noise(memories[0].get("text", "").strip())
     if not full_context:
-        summary = _summarize_accessible_memories(5)
+        summary = _summarize_accessible_memories(5, keywords=keywords)
         if summary:
             return f"{summary}\n\nUser question: {user_question}"
         return user_question
@@ -661,7 +662,7 @@ def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None
     )
     prompt_lines.append(_prime_semantics_block())
     prompt_lines.append("")
-    context_block = _memory_context_block(limit=5)
+    context_block = _memory_context_block(limit=5, keywords=keywords)
     if context_block:
         prompt_lines.extend(["Recent ledger memories:", context_block, ""])
     chat_block = _recent_chat_block()
@@ -758,11 +759,12 @@ def _extract_transcript_text(transcript) -> str | None:
     return None
 
 
-def _summarize_accessible_memories(limit: int, since: int | None = None) -> str | None:
+def _summarize_accessible_memories(limit: int, since: int | None = None, *, keywords: list[str] | None = None) -> str | None:
     entries = _memory_lookup(limit=limit, since=since)
     if not entries:
         return "Ledger currently has no stored memories yet."
     lines: list[str] = []
+    normalized_keywords = [k.lower() for k in (keywords or []) if len(k) >= 3]
     for entry in entries:
         stamp = entry.get("timestamp")
         human_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp / 1000)) if stamp else "unknown time"
@@ -771,6 +773,8 @@ def _summarize_accessible_memories(limit: int, since: int | None = None) -> str 
             continue
         lowered = text.lower()
         if lowered.startswith("(ledger reset"):
+            continue
+        if normalized_keywords and not any(k in lowered for k in normalized_keywords):
             continue
         snippet = text[:320].replace("\n", " ")
         if len(text) > len(snippet):
@@ -788,15 +792,18 @@ def _summarize_accessible_memories(limit: int, since: int | None = None) -> str 
     )
 
 
-def _memory_context_block(limit: int = 3, since: int | None = None) -> str:
+def _memory_context_block(limit: int = 3, since: int | None = None, *, keywords: list[str] | None = None) -> str:
     entries = _memory_lookup(limit=limit, since=since)
     snippets: list[str] = []
+    normalized_keywords = [k.lower() for k in (keywords or []) if len(k) >= 3]
     for entry in entries:
         text = _strip_ledger_noise((entry.get("text") or "").strip())
         if not text:
             continue
         lowered = text.lower()
         if lowered.startswith("(ledger reset before enrichment"):
+            continue
+        if normalized_keywords and not any(k in lowered for k in normalized_keywords):
             continue
         snippet = text[:240].replace("\n", " ")
         if len(text) > len(snippet):
@@ -1321,7 +1328,10 @@ def _maybe_handle_recall_query(text: str) -> bool:
     recall_keyword = RECALL_KEYWORD_PATTERN.search(normalized) is not None
     range_hint = LAST_RANGE_PATTERN.search(normalized) or PAST_RANGE_PATTERN.search(normalized)
     recall_phrase = any(phrase in normalized for phrase in RECALL_PHRASES) or bool(range_hint)
+    if not recall_phrase and "what" in normalized and "have we" in normalized:
+        recall_phrase = True
     since_ms = None
+    keywords = _keywords_from_prompt(text)
 
     words = text.split()
     if len(words) > 120 and not prefix:
@@ -1370,7 +1380,7 @@ def _maybe_handle_recall_query(text: str) -> bool:
     if should_recall:
         entries = _memory_lookup(limit=limit, since=since_ms)
         _render_memories(entries)
-        summary = _memory_context_block(limit=limit, since=since_ms)
+        summary = _memory_context_block(limit=limit, since=since_ms, keywords=keywords)
         if summary:
             st.session_state.chat_history.append(("Bot", f"Here is what the ledger shows:\n{summary}"))
         return True
@@ -1473,6 +1483,7 @@ def _chat_response(
 ):
     attachment_block = ""
     capabilities_block = st.session_state.get("capabilities_block")
+    keywords = _keywords_from_prompt(prompt)
     if attachments:
         lines = ["Attachment context:"]
         for attachment in attachments:
@@ -1487,11 +1498,13 @@ def _chat_response(
     if _is_quote_request(prompt):
         target_count = max(1, min((quote_count or _estimate_quote_count(prompt)), 25))
         search_limit = max(target_count * 3, 15)
+        time_hint = _infer_relative_timestamp(prompt)
         full_text = _latest_user_transcript(prompt, limit=search_limit)
 
         if full_text:
             plural = "quotes" if target_count != 1 else "quote"
             llm_prompt = (
+                "Use only the ledger snippets provided. If insufficient, admit no record exists.\n\n"
                 "Below is a verbatim transcript.  "
                 f"Reply with {target_count} exact {plural} (keep punctuation & capitalisation).  "
                 "Do not paraphrase.  "
@@ -1501,15 +1514,17 @@ def _chat_response(
             )
             if attachment_block:
                 llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
-            if capabilities_block:
-                llm_prompt = f"{capabilities_block}\n\n{llm_prompt}"
         else:
-            since_hint = _infer_relative_timestamp(prompt)
-            fallback_summary = _summarize_accessible_memories(max(target_count, 10), since=since_hint)
+            fallback_summary = _summarize_accessible_memories(
+                max(target_count, 10), since=time_hint, keywords=keywords
+            )
             if fallback_summary:
                 st.session_state.chat_history.append(("Bot", fallback_summary))
                 return fallback_summary
             llm_prompt = "No anchored text found – say so."
+        context_block = _memory_context_block(limit=max(5, target_count), since=time_hint, keywords=keywords)
+        if context_block:
+            llm_prompt = f"{context_block}\n\n{llm_prompt}"
     else:
         llm_prompt = _augment_prompt(prompt, attachments=attachments)
         if attachment_block and "Attachment context:" not in llm_prompt:
