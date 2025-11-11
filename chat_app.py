@@ -1531,7 +1531,6 @@ def _chat_response(
         if context_block:
             llm_prompt = f"{context_block}\n\n{llm_prompt}"
     else:
-    else:
         llm_prompt = _augment_prompt(prompt, attachments=attachments)
         if attachment_block and "Attachment context:" not in llm_prompt:
             llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
