@@ -337,7 +337,7 @@ LAST_RANGE_PATTERN = re.compile(r"\blast\s+(\d+)\s+(minute|hour|day|week)s?\b", 
 PAST_RANGE_PATTERN = re.compile(r"\bpast\s+(\d+)\s+(minute|hour|day|week)s?\b", re.IGNORECASE)
 CAL = pdt.Calendar() if pdt else None
 QUOTE_KEYWORD_PATTERN = re.compile(r"\b(quote|verbatim|exact)\b", re.I)
-RECALL_KEYWORD_PATTERN = re.compile(r"\b(recall|retrieve|topics?|covered)\b", re.I)
+RECALL_KEYWORD_PATTERN = re.compile(r"\b(recall|retrieve|topics?|covered|definitions?)\b", re.I)
 RECALL_PHRASES = (
     "what did i say",
     "what did we talk about",
@@ -353,6 +353,9 @@ RECALL_PHRASES = (
     "last 48 hours",
     "past day",
     "past few days",
+    "definitions of god",
+    "definitions of gods",
+    "god definitions",
 )
 RELATIVE_WORD_OFFSETS = {
     "yesterday": 24 * 3600,
@@ -703,7 +706,7 @@ def _extract_transcript_text(transcript) -> str | None:
 def _summarize_accessible_memories(limit: int, since: int | None = None) -> str | None:
     entries = _memory_lookup(limit=limit, since=since)
     if not entries:
-        return None
+        return "Ledger currently has no stored memories yet."
     lines: list[str] = []
     for entry in entries:
         stamp = entry.get("timestamp")
@@ -718,6 +721,8 @@ def _summarize_accessible_memories(limit: int, since: int | None = None) -> str 
         if len(text) > len(snippet):
             snippet = f"{snippet}…"
         lines.append(f"{human_ts}: {snippet or '(no text)'}")
+    if not lines:
+        return "Ledger currently has no user-authored memories yet."
     scope = (
         f"since {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(since / 1000))}"
         if since
