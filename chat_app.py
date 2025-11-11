@@ -858,13 +858,13 @@ def _filter_memories(entries: list[dict], keywords: list[str] | None = None) -> 
     return filtered
 
 
-def _recent_chat_block(max_entries: int = 8) -> str:
+def _recent_chat_block(max_entries: int = 8) -> str | None:
     history = st.session_state.get("chat_history") or []
     if not history:
         return ""
     lines: list[str] = []
     for role, content in history[-max_entries:]:
-        if role not in {"You", "Agent", "Attachment", "Memory"}:
+        if role not in {"Attachment", "Memory"}:
             continue
         snippet = (content or "").strip()
         if not snippet:
@@ -1430,17 +1430,14 @@ def _maybe_handle_recall_query(text: str) -> bool:
             focus = ", ".join(keywords[:3]) if keywords else "requested topic"
             st.session_state.chat_history.append(("Bot", f"No stored memories matched the {focus}."))
             return True
-        summary_lines = []
-        for entry in entries[:limit]:
-            stamp = entry.get("timestamp")
-            prefix = (
-                time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp / 1000)) if stamp else "unknown time"
-            )
-            text = _strip_ledger_noise((entry.get("text") or "").strip())
-            snippet = text[:220].replace("\n", " ") + ("…" if len(text) > 220 else "")
-            summary_lines.append(f"{prefix} — {snippet}")
-        summary_text = "\n".join(summary_lines)
-        st.session_state.chat_history.append(("Bot", f"Ledger recall:\n{summary_text}"))
+        entry = entries[0]
+        stamp = entry.get("timestamp")
+        prefix = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp / 1000)) if stamp else "unknown time"
+        text = _strip_ledger_noise((entry.get("text") or "").strip())
+        snippet = text[:320].replace("\n", " ")
+        if len(text) > len(snippet):
+            snippet += "…"
+        st.session_state.chat_history.append(("Bot", f"{prefix} — {snippet}"))
         return True
     return False
 
@@ -1586,6 +1583,7 @@ def _chat_response(
         llm_prompt = _augment_prompt(prompt, attachments=attachments)
         if attachment_block and "Attachment context:" not in llm_prompt:
             llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
+    if not (is_quote and context_block):
         if capabilities_block:
             llm_prompt = f"{capabilities_block}\n\n{llm_prompt}"
     if use_openai:
