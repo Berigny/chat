@@ -37,6 +37,7 @@ except ModuleNotFoundError:
     dateparser = None
 
 API = "https://dualsubstrate-commercial.fly.dev"
+DEFAULT_ENTITY = "demo_user"
 
 
 def _get_entity() -> str | None:
@@ -83,14 +84,15 @@ def _load_metric_floors():
 METRIC_FLOORS = {**DEFAULT_METRIC_FLOORS, **_load_metric_floors()}
 
 
-def _load_prime_schema() -> dict[int, str]:
+def _load_prime_schema(entity: str | None = None) -> dict[int, str]:
+    target = entity or DEFAULT_ENTITY
     entity = _get_entity()
     if not entity:
         return {}
     try:
         resp = requests.get(
             f"{API}/schema",
-            params={"entity": entity},
+            params={"entity": target},
             headers=HEADERS,
             timeout=10,
         )
@@ -110,7 +112,7 @@ def _load_prime_schema() -> dict[int, str]:
     try:
         resp = requests.get(
             f"{API}/ledger",
-            params={"entity": entity},
+            params={"entity": target},
             headers=HEADERS,
             timeout=10,
         )
@@ -138,14 +140,15 @@ DEFAULT_PRIME_SYMBOLS = {
     19: "Autonomy",
 }
 PRIME_ARRAY = tuple(DEFAULT_PRIME_SYMBOLS.keys())
-PRIME_SYMBOLS = DEFAULT_PRIME_SYMBOLS
+PRIME_SYMBOLS = _load_prime_schema(DEFAULT_ENTITY) or DEFAULT_PRIME_SYMBOLS
 FALLBACK_PRIME = PRIME_ARRAY[0]
 
 
 def _prime_semantics_block() -> str:
+    symbols = st.session_state.get("prime_symbols", PRIME_SYMBOLS)
     lines = ["Prime semantics:"]
     for prime in PRIME_ARRAY:
-        lines.append(f"{prime} = {st.session_state.prime_symbols.get(prime, f'Prime {prime}')}")
+        lines.append(f"{prime} = {symbols.get(prime, f'Prime {prime}')}")
     return "\n".join(lines)
 
 def _load_base64_image(name: str) -> str | None:
@@ -628,6 +631,9 @@ def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None
     ]
     prompt_lines.append(_prime_semantics_block())
     prompt_lines.append("")
+    context_block = _memory_context_block(limit=3)
+    if context_block:
+        prompt_lines.extend(["Recent ledger memories:", context_block, ""])
     if _is_quote_request(user_question):
         prompt_lines.append(
             "The user may ask for exact quotes. Provide precise excerpts from the context when relevant, maintaining punctuation and casing."
@@ -747,6 +753,23 @@ def _summarize_accessible_memories(limit: int, since: int | None = None) -> str 
     return f"I could not extract exact verbatim quotes for that query, but here is what I can access {scope}:\n" + "\n".join(
         lines
     )
+
+
+def _memory_context_block(limit: int = 3, since: int | None = None) -> str:
+    entries = _memory_lookup(limit=limit, since=since)
+    snippets: list[str] = []
+    for entry in entries:
+        text = _strip_ledger_noise((entry.get("text") or "").strip())
+        if not text:
+            continue
+        lowered = text.lower()
+        if lowered.startswith("(ledger reset before enrichment"):
+            continue
+        snippet = text[:240].replace("\n", " ")
+        if len(text) > len(snippet):
+            snippet += "…"
+        snippets.append(f"- {snippet}")
+    return "\n".join(snippets)
 
 
 def _infer_relative_timestamp(text: str) -> int | None:
@@ -982,7 +1005,8 @@ def _extract_json_object(raw: str) -> dict | None:
 def _call_factor_extraction_llm(text: str) -> list[dict]:
     if not text or not (genai and GENAI_KEY):
         return []
-    schema_lines = "\n".join(f"{prime} = {PRIME_SYMBOLS.get(prime, f'Prime {prime}')}" for prime in PRIME_ARRAY)
+    symbols = st.session_state.get("prime_symbols", PRIME_SYMBOLS)
+    schema_lines = "\n".join(f"{prime} = {symbols.get(prime, f'Prime {prime}')}" for prime in PRIME_ARRAY)
     prompt = (
         "You extract ledger factors. "
         "Given the transcript below, identify subject (prime 2), action (3), object (5), "
@@ -1047,7 +1071,7 @@ def _reset_entity_factors() -> bool:
                 continue
     if not reset_deltas:
         return True
-    payload = {"entity": entity, "factors": reset_deltas}
+    payload = {"entity": entity, "factors": _flow_safe_sequence(reset_deltas)}
     try:
         resp = requests.post(
             f"{API}/anchor",
@@ -1189,6 +1213,10 @@ def _maybe_handle_recall_query(text: str) -> bool:
     recall_phrase = any(phrase in normalized for phrase in RECALL_PHRASES) or bool(range_hint)
     since_ms = None
 
+    words = text.split()
+    if len(words) > 120 and not prefix:
+        return False
+
     parsed_datetime = None
     if dateparser:
         # Attempt to parse a datetime from the text, preferring past dates.
@@ -1280,10 +1308,11 @@ def _load_ledger():
         data = resp.json()
         factors = data.get("factors") if isinstance(data, dict) else None
         if isinstance(factors, list):
+            symbols = st.session_state.get("prime_symbols", PRIME_SYMBOLS)
             for item in factors:
                 prime = item.get("prime")
                 if isinstance(prime, int):
-                    item["symbol"] = st.session_state.prime_symbols.get(prime, f"Prime {prime}")
+                    item["symbol"] = symbols.get(prime, f"Prime {prime}")
         st.session_state.ledger_state = data
     else:
         st.session_state.ledger_state = {"error": resp.text}
@@ -1466,7 +1495,7 @@ def _handle_login():
         else:
             st.toast("Ledger reset failed.", icon="⚠️")
         st.session_state.login_time = time.time()
-    st.session_state.prime_symbols = _load_prime_schema() or DEFAULT_PRIME_SYMBOLS
+    st.session_state.prime_symbols = _load_prime_schema(user_data["entity"]) or DEFAULT_PRIME_SYMBOLS
 
 
 def _render_login_form():
@@ -1483,6 +1512,9 @@ def _render_login_form():
 
 def _render_app():
     st.set_page_config(page_title="Ledger Chat", layout="wide")
+
+    if "prime_symbols" not in st.session_state:
+        st.session_state.prime_symbols = PRIME_SYMBOLS
 
     if not st.session_state.get("authenticated"):
         _render_login_form()
