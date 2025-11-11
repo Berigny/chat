@@ -84,10 +84,11 @@ def _load_metric_floors():
 METRIC_FLOORS = {**DEFAULT_METRIC_FLOORS, **_load_metric_floors()}
 
 
-def _fetch_prime_schema(entity: str) -> dict[int, dict]:
+def _fetch_prime_schema(entity: str | None) -> dict[int, dict]:
+    target = entity or DEFAULT_ENTITY
     """Network-first, fallback to baked defaults, always returns a dict."""
     try:
-        resp = requests.get(f"{API}/schema", params={"entity": entity}, headers=HEADERS, timeout=5)
+        resp = requests.get(f"{API}/schema", params={"entity": target}, headers=HEADERS, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         schema: dict[int, dict] = {}
@@ -2052,7 +2053,7 @@ def _render_app():
     st.set_page_config(page_title="Ledger Chat", layout="wide")
 
     if "prime_schema" not in st.session_state:
-        st.session_state.prime_schema = _load_prime_schema(_get_entity())
+        st.session_state.prime_schema = _fetch_prime_schema(_get_entity() or DEFAULT_ENTITY)
     if "prime_symbols" not in st.session_state:
         st.session_state.prime_symbols = {
             prime: meta.get("name", f"Prime {prime}")
