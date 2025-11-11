@@ -1345,7 +1345,6 @@ def _chat_response(
             )
             if attachment_block:
                 llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
-            llm_prompt = f"{llm_prompt}\n\n{_prime_semantics_block()}"
         else:
             since_hint = _infer_relative_timestamp(prompt)
             fallback_summary = _summarize_accessible_memories(max(target_count, 10), since=since_hint)
@@ -1357,7 +1356,6 @@ def _chat_response(
         llm_prompt = _augment_prompt(prompt, attachments=attachments)
         if attachment_block and "Attachment context:" not in llm_prompt:
             llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
-        llm_prompt = f"{llm_prompt}\n\n{_prime_semantics_block()}"
     if use_openai:
         if not (OpenAI and OPENAI_API_KEY):
             st.warning("OpenAI API key missing.")
