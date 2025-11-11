@@ -1248,9 +1248,9 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
     if not factors:
         st.warning("No alphabetical tokens detected; nothing anchored.")
         return False
-    payload = {"entity": entity, "factors": factors, "text": text}
-    resp = requests.post(f"{API}/anchor", json=payload, headers=HEADERS, timeout=10)
+    payload = {"entity": entity, "factors": _flow_safe_sequence(factors), "text": text}
     try:
+        resp = requests.post(f"{API}/anchor", json=payload, headers=HEADERS, timeout=10)
         resp.raise_for_status()
     except requests.HTTPError as exc:
         st.error(f"Anchor failed ({resp.status_code}): {resp.text}")
@@ -1471,7 +1471,6 @@ def _handle_login():
             st.toast("Ledger reset failed.", icon="⚠️")
         st.session_state.login_time = time.time()
     st.session_state.prime_symbols = _load_prime_schema() or DEFAULT_PRIME_SYMBOLS
-    _trigger_rerun()
 
 
 def _render_login_form():
