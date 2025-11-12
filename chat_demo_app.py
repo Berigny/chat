@@ -36,120 +36,59 @@ try:
 except ModuleNotFoundError:
     dateparser = None
 
+from app_settings import DEFAULT_METRIC_FLOORS, load_settings
+from api_client import DualSubstrateClient
 from validators import validate_prime_sequence, get_tier_value
 from prime_tagger import tag_primes
 
-API = "https://dualsubstrate-commercial.fly.dev"
-DEFAULT_ENTITY = "demo_user"
+SETTINGS = load_settings()
+API = SETTINGS.api_base
+DEFAULT_ENTITY = SETTINGS.default_entity
+DEFAULT_LEDGER_ID = SETTINGS.default_ledger_id
+ADD_LEDGER_OPTION = "➕ Add new ledger…"
+
+GENAI_KEY = SETTINGS.genai_api_key
+if genai and GENAI_KEY:
+    genai.configure(api_key=GENAI_KEY)
+
+OPENAI_API_KEY = SETTINGS.openai_api_key
+ASSET_DIR = Path(__file__).parent
+
+_RERUN_FN = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
+
+
+def _secret(key: str) -> str | None:
+    """Retrieve a Streamlit secret defensively."""
+
+    try:
+        value = st.secrets.get(key)
+    except Exception:
+        return None
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+METRIC_FLOORS = {**DEFAULT_METRIC_FLOORS, **SETTINGS.metric_floors}
+CLIENT = DualSubstrateClient(API, SETTINGS.api_key)
 
 
 def _get_entity() -> str | None:
     return st.session_state.get("entity")
 
 
-def _secret(key: str):
-    try:
-        return st.secrets.get(key)
-    except Exception:
-        return None
-
-API_KEY = _secret("DUALSUBSTRATE_API_KEY") or os.getenv("DUALSUBSTRATE_API_KEY") or "demo-key"
-BASE_HEADERS = {"x-api-key": API_KEY} if API_KEY else {}
-DEFAULT_LEDGER_ID = os.getenv("DEFAULT_LEDGER_ID", "default")
-ADD_LEDGER_OPTION = "➕ Add new ledger…"
-
-GENAI_KEY = _secret("API_KEY") or os.getenv("API_KEY")
-if genai and GENAI_KEY:
-    genai.configure(api_key=GENAI_KEY)
-
-OPENAI_API_KEY = _secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
-ASSET_DIR = Path(__file__).parent
-
-DEFAULT_METRIC_FLOORS = {"tokens_deduped": 12500.0, "ledger_integrity": 0.97, "durability_h": 36.0}
-_RERUN_FN = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
-
-
-def _load_metric_floors():
-    raw = _secret("METRIC_FLOORS") or os.getenv("METRIC_FLOORS") or ""
-    if not raw:
-        return {}
-    try:
-        parsed = json.loads(raw)
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    floors = {}
-    for key, value in parsed.items():
-        try:
-            floors[key] = float(value)
-        except (TypeError, ValueError):
-            continue
-    return floors
-
-
-METRIC_FLOORS = {**DEFAULT_METRIC_FLOORS, **_load_metric_floors()}
-
-
-def _headers(*, include_ledger: bool = True) -> dict[str, str]:
-    headers = dict(BASE_HEADERS)
-    if include_ledger:
-        ledger_id = st.session_state.get("ledger_id") if "ledger_id" in st.session_state else None
-        ledger_id = ledger_id or DEFAULT_LEDGER_ID
-        if ledger_id:
-            headers["X-Ledger-ID"] = ledger_id
-    return headers
-
-
-def _coerce_ledger_records(payload) -> list[dict[str, str]]:
-    if isinstance(payload, dict):
-        ledgers = payload.get("ledgers")
-        if isinstance(ledgers, list):
-            payload = ledgers
-        else:
-            payload = [
-                {"ledger_id": key, "path": value}
-                for key, value in payload.items()
-                if isinstance(key, str)
-            ]
-    records: list[dict[str, str]] = []
-    if not isinstance(payload, list):
-        return records
-    for item in payload:
-        if isinstance(item, str):
-            records.append({"ledger_id": item})
-            continue
-        if not isinstance(item, dict):
-            continue
-        ledger_id = item.get("ledger_id") or item.get("id") or item.get("name")
-        if not ledger_id:
-            continue
-        records.append(
-            {
-                "ledger_id": str(ledger_id),
-                "path": item.get("path") or item.get("base_path"),
-            }
-        )
-    return records
-
-
 def _refresh_ledgers(*, silent: bool = False) -> None:
     try:
-        resp = requests.get(
-            f"{API}/admin/ledgers",
-            headers=_headers(include_ledger=False),
-            timeout=5,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
+        st.session_state.ledgers = CLIENT.list_ledgers()
+        st.session_state.ledger_refresh_error = None
     except requests.RequestException as exc:
+        st.session_state.ledgers = []
         st.session_state.ledger_refresh_error = str(exc)
         if not silent:
             st.sidebar.error(f"Failed to load ledger list: {exc}")
         return
-    except ValueError:
-        payload = []
-
-    st.session_state.ledgers = _coerce_ledger_records(payload)
-    st.session_state.ledger_refresh_error = None
     if not st.session_state.ledgers:
         st.session_state.ledger_id = DEFAULT_LEDGER_ID
         return
@@ -164,13 +103,7 @@ def _create_or_switch_ledger(ledger_id: str, *, notify: bool = True) -> bool:
             st.sidebar.error("Ledger ID cannot be blank.")
         return False
     try:
-        resp = requests.post(
-            f"{API}/admin/ledgers",
-            json={"ledger_id": ledger_id},
-            headers=_headers(include_ledger=False),
-            timeout=5,
-        )
-        resp.raise_for_status()
+        CLIENT.create_ledger(ledger_id)
     except requests.RequestException as exc:
         if notify:
             st.sidebar.error(f"Could not create/switch ledger: {exc}")
@@ -209,23 +142,13 @@ def _ensure_ledger_bootstrap() -> None:
 def _fetch_prime_schema(entity: str | None) -> dict[int, dict]:
     target = entity or DEFAULT_ENTITY
     try:
-        resp = requests.get(f"{API}/schema", params={"entity": target}, headers=_headers(), timeout=5)
-        resp.raise_for_status()
-        data = resp.json()
-        schema: dict[int, dict] = {}
-        for entry in data.get("primes", []):
-            prime = entry.get("prime")
-            if isinstance(prime, int):
-                schema[prime] = {
-                    "name": entry.get("name") or entry.get("symbol") or f"Prime {prime}",
-                    "tier": entry.get("tier") or "",
-                    "mnemonic": entry.get("mnemonic") or "",
-                    "description": entry.get("description") or "",
-                }
-        if schema:  # network success
+        schema = CLIENT.fetch_prime_schema(target, ledger_id=st.session_state.get("ledger_id"))
+        if schema:
             return schema
-    except Exception as e:
-        print("[SCHEMA] network fail, using baked defaults:", e)
+    except requests.RequestException as exc:
+        print("[SCHEMA] network fail, using baked defaults:", exc)
+    except Exception as exc:  # pragma: no cover - defensive fallback
+        print("[SCHEMA] unexpected failure, using baked defaults:", exc)
     return DEFAULT_PRIME_SCHEMA.copy()  # guaranteed fallback
 
 
@@ -650,31 +573,24 @@ def _memory_lookup(limit: int = 3, since: int | None = None):
     entity = _get_entity()
     if not entity:
         return []
-    params = {"entity": entity, "limit": limit}
-    if since:
-        params["since"] = since
+    ledger_id = st.session_state.get("ledger_id")
     try:
-        resp = requests.get(f"{API}/memories", params=params, headers=_headers(), timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        if isinstance(data, list):
+        data = CLIENT.fetch_memories(
+            entity,
+            ledger_id=ledger_id,
+            limit=limit,
+            since=since,
+        )
+        if any(isinstance(item, dict) and item.get("text") for item in data):
             print("[DEBUG] /memories returned:", data[:3])
-            if any(isinstance(item, dict) and item.get("text") for item in data):
-                return data
-        else:
+            return data
+        if data:
             print("[DEBUG] /memories unexpected payload:", data)
     except requests.RequestException as exc:
         print("[DEBUG] /memories error:", exc)
 
     try:
-        resp = requests.get(
-            f"{API}/ledger",
-            params={"entity": entity},
-            headers=_headers(),
-            timeout=10,
-        )
-        resp.raise_for_status()
-        ledger_payload = resp.json()
+        ledger_payload = CLIENT.fetch_ledger(entity, ledger_id=ledger_id)
     except requests.RequestException as exc:
         print("[DEBUG] /ledger fallback failed:", exc)
         return []
@@ -1446,18 +1362,11 @@ def _reset_entity_factors() -> bool:
     if not entity:
         return False
     try:
-        resp = requests.get(
-            f"{API}/ledger",
-            params={"entity": entity},
-            headers=_headers(),
-            timeout=10,
-        )
-        resp.raise_for_status()
+        data = CLIENT.fetch_ledger(entity, ledger_id=st.session_state.get("ledger_id"))
     except requests.RequestException as exc:
         st.warning(f"Could not fetch ledger for reset: {exc}")
         return False
 
-    data = resp.json()
     factors = data.get("factors") if isinstance(data, dict) else None
     if not isinstance(factors, list):
         return False
@@ -1474,13 +1383,7 @@ def _reset_entity_factors() -> bool:
         return True
     for seq in _flow_safe_batches(reset_deltas):
         try:
-            resp = requests.post(
-                f"{API}/anchor",
-                json={"entity": entity, "factors": seq},
-                headers=_headers(),
-                timeout=5,
-            )
-            resp.raise_for_status()
+            CLIENT.anchor(entity, seq, ledger_id=st.session_state.get("ledger_id"))
         except requests.RequestException as exc:
             st.warning(f"Ledger reset failed: {exc}")
             return False
@@ -1493,22 +1396,14 @@ def _run_enrichment(limit: int = 200, reset_first: bool = True):
         return
     fetch_limit = max(1, min(limit, 100))
     try:
-        resp = requests.get(
-            f"{API}/memories",
-            params={"entity": entity, "limit": fetch_limit},
-            headers=_headers(),
-            timeout=15,
+        memories = CLIENT.fetch_memories(
+            entity,
+            ledger_id=st.session_state.get("ledger_id"),
+            limit=fetch_limit,
         )
-        resp.raise_for_status()
     except requests.RequestException as exc:
         st.error(f"Failed to load memories: {exc}")
         return
-
-    try:
-        payload = resp.json()
-    except ValueError:
-        payload = []
-    memories = payload if isinstance(payload, list) else []
     if not memories:
         st.info("No memories found to enrich.")
         return
@@ -1531,24 +1426,13 @@ def _run_enrichment(limit: int = 200, reset_first: bool = True):
         batches = _flow_safe_batches(factors)
         success = True
         for idx_batch, seq in enumerate(batches):
-            payload = {
-                "entity": entity,
-                "text": text if idx_batch == 0 else None,
-                "factors": seq,
-            }
             try:
-                post_resp = requests.post(
-                    f"{API}/anchor",
-                    json=payload,
-                    headers=_headers(),
-                    timeout=5,
+                CLIENT.anchor(
+                    entity,
+                    seq,
+                    ledger_id=st.session_state.get("ledger_id"),
+                    text=text if idx_batch == 0 else None,
                 )
-                if not post_resp.ok:
-                    st.warning(
-                        f"Skip enrichment for {entry.get('timestamp')}: {post_resp.text}"
-                    )
-                    success = False
-                    break
             except requests.RequestException as exc:
                 st.warning(f"Skip enrichment for {entry.get('timestamp')}: {exc}")
                 success = False
@@ -1785,14 +1669,17 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
             # Continue to next batch
             continue
 
-        payload = {"entity": entity, "factors": factors, "text": text if i == 0 else None}
         try:
-            resp = requests.post(f"{API}/anchor", json=payload, headers=_headers(), timeout=5)
-            resp.raise_for_status()
-        except requests.RequestException as e:
-            st.session_state.last_anchor_error = str(e)
+            CLIENT.anchor(
+                entity,
+                factors,
+                ledger_id=st.session_state.get("ledger_id"),
+                text=text if i == 0 else None,
+            )
+        except requests.RequestException as exc:
+            st.session_state.last_anchor_error = str(exc)
             st.session_state.capabilities_block = _build_capabilities_block()
-            st.error(f"Anchor failed: {e}")
+            st.error(f"Anchor failed: {exc}")
             return False
 
     st.session_state.last_anchor_error = None
@@ -1808,31 +1695,32 @@ def _recall():
     entity = _get_entity()
     if not entity:
         return
-    resp = requests.get(f"{API}/retrieve?entity={entity}", headers=_headers(), timeout=10)
-    if resp.ok:
-        st.session_state.recall_payload = resp.json()
-    else:
-        st.session_state.recall_payload = {"error": resp.text}
+    try:
+        payload = CLIENT.retrieve(entity, ledger_id=st.session_state.get("ledger_id"))
+        st.session_state.recall_payload = payload
+    except requests.RequestException as exc:
+        st.session_state.recall_payload = {"error": str(exc)}
 
 
 def _load_ledger():
     entity = _get_entity()
     if not entity:
         return
-    resp = requests.get(f"{API}/ledger", params={"entity": entity}, headers=_headers(), timeout=10)
-    if resp.ok:
-        data = resp.json()
-        factors = data.get("factors") if isinstance(data, dict) else None
-        if isinstance(factors, list):
-            schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
-            for item in factors:
-                prime = item.get("prime")
-                if isinstance(prime, int):
-                    meta = schema.get(prime, DEFAULT_PRIME_SCHEMA.get(prime, {}))
-                    item["symbol"] = meta.get("name", f"Prime {prime}")
-        st.session_state.ledger_state = data
-    else:
-        st.session_state.ledger_state = {"error": resp.text}
+    try:
+        data = CLIENT.fetch_ledger(entity, ledger_id=st.session_state.get("ledger_id"))
+    except requests.RequestException as exc:
+        st.session_state.ledger_state = {"error": str(exc)}
+        return
+
+    factors = data.get("factors") if isinstance(data, dict) else None
+    if isinstance(factors, list):
+        schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+        for item in factors:
+            prime = item.get("prime")
+            if isinstance(prime, int):
+                meta = schema.get(prime, DEFAULT_PRIME_SCHEMA.get(prime, {}))
+                item["symbol"] = meta.get("name", f"Prime {prime}")
+    st.session_state.ledger_state = data
 
 
 def _render_ledger_state(data):
@@ -2239,22 +2127,17 @@ def _render_app():
     entity = _get_entity()
     if entity:
         try:
-            metrics_resp = requests.get(f"{API}/metrics", headers=_headers(), timeout=5)
-            metrics_resp.raise_for_status()
-            metrics = metrics_resp.json()
-        except (requests.RequestException, ValueError):
+            metrics = CLIENT.fetch_metrics(ledger_id=st.session_state.get("ledger_id"))
+        except requests.RequestException:
             metrics = {"tokens_deduped": "N/A", "ledger_integrity": 0.0}
 
         try:
-            memories_resp = requests.get(
-                f"{API}/memories",
-                params={"entity": entity, "limit": 1},
-                headers=_headers(),
-                timeout=5,
+            memories = CLIENT.fetch_memories(
+                entity,
+                ledger_id=st.session_state.get("ledger_id"),
+                limit=1,
             )
-            memories_resp.raise_for_status()
-            memories = memories_resp.json()
-        except (requests.RequestException, ValueError):
+        except requests.RequestException:
             memories = []
     else:
         metrics = {"tokens_deduped": "N/A", "ledger_integrity": 0.0}
@@ -2400,16 +2283,13 @@ def _render_app():
                 if not entity:
                     st.warning("No active entity.")
                     return
-                payload = {"entity": entity, "axis": [0.0, 0.0, 1.0], "angle": 1.0472}
                 try:
-                    resp = requests.post(
-                        f"{API}/rotate",
-                        json=payload,
-                        headers=_headers(),
-                        timeout=15,
+                    data = CLIENT.rotate(
+                        entity,
+                        ledger_id=st.session_state.get("ledger_id"),
+                        axis=(0.0, 0.0, 1.0),
+                        angle=1.0472,
                     )
-                    resp.raise_for_status()
-                    data = resp.json()
                     st.success(
                         f"Rotated lattice. Δenergy = {data.get('energy_cycles')}, "
                         f"checksum {data.get('original_checksum')} → {data.get('rotated_checksum')}."

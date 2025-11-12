@@ -1,0 +1,215 @@
+"""HTTP client helpers for the dual-substrate API."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Any, Iterable
+
+import requests
+
+
+@dataclass
+class DualSubstrateClient:
+    """Lightweight helper for calling the commercial demo API."""
+
+    base_url: str
+    api_key: str | None = None
+    timeout: int = 10
+
+    def _headers(self, *, ledger_id: str | None = None, include_ledger: bool = True) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.api_key:
+            headers["x-api-key"] = self.api_key
+        if include_ledger and ledger_id:
+            headers["X-Ledger-ID"] = ledger_id
+        return headers
+
+    def list_ledgers(self) -> list[dict[str, str]]:
+        """Return ledger metadata records from the admin endpoint."""
+
+        resp = requests.get(
+            f"{self.base_url}/admin/ledgers",
+            headers=self._headers(include_ledger=False),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        return _coerce_ledger_records(payload)
+
+    def create_ledger(self, ledger_id: str) -> None:
+        """Create or switch to a ledger via the admin surface."""
+
+        resp = requests.post(
+            f"{self.base_url}/admin/ledgers",
+            json={"ledger_id": ledger_id},
+            headers=self._headers(include_ledger=False),
+            timeout=5,
+        )
+        resp.raise_for_status()
+
+    def fetch_prime_schema(self, entity: str, *, ledger_id: str | None = None) -> dict[int, dict[str, Any]]:
+        """Fetch the remote prime schema for an entity."""
+
+        resp = requests.get(
+            f"{self.base_url}/schema",
+            params={"entity": entity},
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        raw = resp.json()
+        schema: dict[int, dict[str, Any]] = {}
+        for entry in raw.get("primes", []):
+            prime = entry.get("prime")
+            if isinstance(prime, int):
+                schema[prime] = {
+                    "name": entry.get("name") or entry.get("symbol") or f"Prime {prime}",
+                    "tier": entry.get("tier") or "",
+                    "mnemonic": entry.get("mnemonic") or "",
+                    "description": entry.get("description") or "",
+                }
+        return schema
+
+    def fetch_memories(
+        self,
+        entity: str,
+        *,
+        ledger_id: str | None = None,
+        limit: int = 3,
+        since: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Retrieve memories for an entity."""
+
+        params: dict[str, Any] = {"entity": entity, "limit": limit}
+        if since is not None:
+            params["since"] = since
+        resp = requests.get(
+            f"{self.base_url}/memories",
+            params=params,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, list) else []
+
+    def fetch_ledger(self, entity: str, *, ledger_id: str | None = None) -> dict[str, Any]:
+        """Load the ledger factors for an entity."""
+
+        resp = requests.get(
+            f"{self.base_url}/ledger",
+            params={"entity": entity},
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
+    def anchor(
+        self,
+        entity: str,
+        factors: Iterable[dict[str, Any]],
+        *,
+        ledger_id: str | None = None,
+        text: str | None = None,
+    ) -> None:
+        """Anchor factors (and optional text) into the ledger."""
+
+        payload: dict[str, Any] = {"entity": entity, "factors": list(factors)}
+        if text:
+            payload["text"] = text
+        resp = requests.post(
+            f"{self.base_url}/anchor",
+            json=payload,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=5,
+        )
+        resp.raise_for_status()
+
+    def retrieve(self, entity: str, *, ledger_id: str | None = None) -> dict[str, Any]:
+        """Retrieve ledger memories for the entity."""
+
+        resp = requests.get(
+            f"{self.base_url}/retrieve",
+            params={"entity": entity},
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
+    def fetch_metrics(self, *, ledger_id: str | None = None) -> dict[str, Any]:
+        """Fetch system-wide metrics for the current ledger."""
+
+        resp = requests.get(
+            f"{self.base_url}/metrics",
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
+    def rotate(
+        self,
+        entity: str,
+        *,
+        ledger_id: str | None = None,
+        axis: tuple[float, float, float] | None = None,
+        angle: float | None = None,
+    ) -> dict[str, Any]:
+        """Invoke the rotation endpoint used by the Möbius transform button."""
+
+        payload: dict[str, Any] = {"entity": entity}
+        if axis is not None:
+            payload["axis"] = list(axis)
+        if angle is not None:
+            payload["angle"] = angle
+        resp = requests.post(
+            f"{self.base_url}/rotate",
+            json=payload,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
+
+def _coerce_ledger_records(payload: Any) -> list[dict[str, str]]:
+    """Normalise ledger payloads to a list of dictionaries."""
+
+    if isinstance(payload, dict):
+        ledgers = payload.get("ledgers")
+        if isinstance(ledgers, list):
+            payload = ledgers
+        else:
+            payload = [
+                {"ledger_id": str(key), "path": str(value)}
+                for key, value in payload.items()
+                if isinstance(key, str)
+            ]
+    records: list[dict[str, str]] = []
+    if not isinstance(payload, list):
+        return records
+    for item in payload:
+        if isinstance(item, str):
+            records.append({"ledger_id": item})
+            continue
+        if not isinstance(item, dict):
+            continue
+        ledger_id = item.get("ledger_id") or item.get("id") or item.get("name")
+        if not ledger_id:
+            continue
+        records.append(
+            {
+                "ledger_id": str(ledger_id),
+                "path": item.get("path") or item.get("base_path"),
+            }
+        )
+    return records
+
+
+__all__ = ["DualSubstrateClient"]
