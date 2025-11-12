@@ -21,8 +21,13 @@ except ModuleNotFoundError:
     genai = None
 try:
     from openai import OpenAI
+    try:
+        from openai import BadRequestError as OpenAIClientBadRequest
+    except ImportError:
+        OpenAIClientBadRequest = None
 except ModuleNotFoundError:
     OpenAI = None
+    OpenAIClientBadRequest = None
 try:
     import parsedatetime as pdt
 except ModuleNotFoundError:
@@ -1544,7 +1549,15 @@ def _chat_response(
             return
         client = OpenAI(api_key=OPENAI_API_KEY)
         messages = [{"role": "user", "content": llm_prompt}]
-        response = client.chat.completions.create(model="gpt-3.5-turbo", messages=messages)
+        try:
+            response = client.chat.completions.create(model="gpt-3.5-turbo", messages=messages)
+        except Exception as exc:
+            if OpenAIClientBadRequest and isinstance(exc, OpenAIClientBadRequest):
+                detail = getattr(exc, "message", None) or getattr(getattr(exc, "response", None), "text", "") or str(exc)
+                st.error(f"OpenAI request rejected: {detail}")
+            else:
+                st.error(f"OpenAI request failed: {exc}")
+            return None
         full = response.choices[0].message.content
         st.session_state.chat_history.append(("Bot", full))
         return full
