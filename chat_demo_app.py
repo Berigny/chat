@@ -493,6 +493,7 @@ _STOPWORDS = {
     "ago",
     "been",
     "could",
+    "does",
     "days",
     "discuss",
     "discussed",
@@ -521,6 +522,9 @@ _STOPWORDS = {
     "provide",
     "quote",
     "quotes",
+    "said",
+    "say",
+    "says",
     "some",
     "talk",
     "talked",
@@ -835,7 +839,7 @@ def _trigger_rerun():
 
 
 def _keywords_from_prompt(text: str) -> list[str]:
-    tokens = re.findall(r"[A-Za-z]{4,}", (text or "").lower())
+    tokens = re.findall(r"[A-Za-z]{3,}", (text or "").lower())
     keywords: list[str] = []
     seen = set()
     for token in tokens:
