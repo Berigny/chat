@@ -54,7 +54,8 @@ def _secret(key: str):
         return None
 
 API_KEY = _secret("DUALSUBSTRATE_API_KEY") or os.getenv("DUALSUBSTRATE_API_KEY") or "demo-key"
-HEADERS = {"x-api-key": API_KEY} if API_KEY else {}
+BASE_HEADERS = {"x-api-key": API_KEY} if API_KEY else {}
+DEFAULT_LEDGER_ID = os.getenv("DEFAULT_LEDGER_ID", "default")
 
 GENAI_KEY = _secret("API_KEY") or os.getenv("API_KEY")
 if genai and GENAI_KEY:
@@ -87,10 +88,118 @@ def _load_metric_floors():
 METRIC_FLOORS = {**DEFAULT_METRIC_FLOORS, **_load_metric_floors()}
 
 
+def _headers(*, include_ledger: bool = True) -> dict[str, str]:
+    headers = dict(BASE_HEADERS)
+    if include_ledger:
+        ledger_id = st.session_state.get("ledger_id") if "ledger_id" in st.session_state else None
+        ledger_id = ledger_id or DEFAULT_LEDGER_ID
+        if ledger_id:
+            headers["X-Ledger-ID"] = ledger_id
+    return headers
+
+
+def _coerce_ledger_records(payload) -> list[dict[str, str]]:
+    if isinstance(payload, dict):
+        ledgers = payload.get("ledgers")
+        if isinstance(ledgers, list):
+            payload = ledgers
+        else:
+            payload = [
+                {"ledger_id": key, "path": value}
+                for key, value in payload.items()
+                if isinstance(key, str)
+            ]
+    records: list[dict[str, str]] = []
+    if not isinstance(payload, list):
+        return records
+    for item in payload:
+        if isinstance(item, str):
+            records.append({"ledger_id": item})
+            continue
+        if not isinstance(item, dict):
+            continue
+        ledger_id = item.get("ledger_id") or item.get("id") or item.get("name")
+        if not ledger_id:
+            continue
+        records.append(
+            {
+                "ledger_id": str(ledger_id),
+                "path": item.get("path") or item.get("base_path"),
+            }
+        )
+    return records
+
+
+def _refresh_ledgers(*, silent: bool = False) -> None:
+    try:
+        resp = requests.get(
+            f"{API}/admin/ledgers",
+            headers=_headers(include_ledger=False),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+    except requests.RequestException as exc:
+        st.session_state.ledger_refresh_error = str(exc)
+        if not silent:
+            st.sidebar.error(f"Failed to load ledger list: {exc}")
+        return
+    except ValueError:
+        payload = []
+
+    st.session_state.ledgers = _coerce_ledger_records(payload)
+    st.session_state.ledger_refresh_error = None
+    if not st.session_state.ledgers:
+        st.session_state.ledger_id = DEFAULT_LEDGER_ID
+        return
+    if not st.session_state.get("ledger_id"):
+        st.session_state.ledger_id = st.session_state.ledgers[0]["ledger_id"]
+
+
+def _create_or_switch_ledger(ledger_id: str, *, notify: bool = True) -> bool:
+    ledger_id = (ledger_id or "").strip()
+    if not ledger_id:
+        if notify:
+            st.sidebar.error("Ledger ID cannot be blank.")
+        return False
+    try:
+        resp = requests.post(
+            f"{API}/admin/ledgers",
+            json={"ledger_id": ledger_id},
+            headers=_headers(include_ledger=False),
+            timeout=5,
+        )
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        if notify:
+            st.sidebar.error(f"Could not create/switch ledger: {exc}")
+        return False
+
+    st.session_state.ledger_id = ledger_id
+    if notify:
+        st.toast(f"Ledger ready: {ledger_id}", icon="📚")
+    return True
+
+
+def _ensure_ledger_bootstrap() -> None:
+    if "ledger_id" not in st.session_state:
+        st.session_state.ledger_id = DEFAULT_LEDGER_ID
+    if "ledgers" not in st.session_state:
+        st.session_state.ledgers = []
+    if "ledger_refresh_error" not in st.session_state:
+        st.session_state.ledger_refresh_error = None
+
+    if not st.session_state.get("ledgers"):
+        _refresh_ledgers(silent=True)
+    active = st.session_state.get("ledger_id") or DEFAULT_LEDGER_ID
+    if active:
+        _create_or_switch_ledger(active, notify=False)
+
+
 def _fetch_prime_schema(entity: str | None) -> dict[int, dict]:
     target = entity or DEFAULT_ENTITY
     try:
-        resp = requests.get(f"{API}/schema", params={"entity": target}, headers=HEADERS, timeout=5)
+        resp = requests.get(f"{API}/schema", params={"entity": target}, headers=_headers(), timeout=5)
         resp.raise_for_status()
         data = resp.json()
         schema: dict[int, dict] = {}
@@ -535,7 +644,7 @@ def _memory_lookup(limit: int = 3, since: int | None = None):
     if since:
         params["since"] = since
     try:
-        resp = requests.get(f"{API}/memories", params=params, headers=HEADERS, timeout=10)
+        resp = requests.get(f"{API}/memories", params=params, headers=_headers(), timeout=10)
         resp.raise_for_status()
         data = resp.json()
         if isinstance(data, list):
@@ -551,7 +660,7 @@ def _memory_lookup(limit: int = 3, since: int | None = None):
         resp = requests.get(
             f"{API}/ledger",
             params={"entity": entity},
-            headers=HEADERS,
+            headers=_headers(),
             timeout=10,
         )
         resp.raise_for_status()
@@ -1330,7 +1439,7 @@ def _reset_entity_factors() -> bool:
         resp = requests.get(
             f"{API}/ledger",
             params={"entity": entity},
-            headers=HEADERS,
+            headers=_headers(),
             timeout=10,
         )
         resp.raise_for_status()
@@ -1358,7 +1467,7 @@ def _reset_entity_factors() -> bool:
             resp = requests.post(
                 f"{API}/anchor",
                 json={"entity": entity, "factors": seq},
-                headers=HEADERS,
+                headers=_headers(),
                 timeout=5,
             )
             resp.raise_for_status()
@@ -1377,7 +1486,7 @@ def _run_enrichment(limit: int = 200, reset_first: bool = True):
         resp = requests.get(
             f"{API}/memories",
             params={"entity": entity, "limit": fetch_limit},
-            headers=HEADERS,
+            headers=_headers(),
             timeout=15,
         )
         resp.raise_for_status()
@@ -1421,7 +1530,7 @@ def _run_enrichment(limit: int = 200, reset_first: bool = True):
                 post_resp = requests.post(
                     f"{API}/anchor",
                     json=payload,
-                    headers=HEADERS,
+                    headers=_headers(),
                     timeout=5,
                 )
                 if not post_resp.ok:
@@ -1668,7 +1777,7 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
 
         payload = {"entity": entity, "factors": factors, "text": text if i == 0 else None}
         try:
-            resp = requests.post(f"{API}/anchor", json=payload, headers=HEADERS, timeout=5)
+            resp = requests.post(f"{API}/anchor", json=payload, headers=_headers(), timeout=5)
             resp.raise_for_status()
         except requests.RequestException as e:
             st.session_state.last_anchor_error = str(e)
@@ -1689,7 +1798,7 @@ def _recall():
     entity = _get_entity()
     if not entity:
         return
-    resp = requests.get(f"{API}/retrieve?entity={entity}", headers=HEADERS, timeout=10)
+    resp = requests.get(f"{API}/retrieve?entity={entity}", headers=_headers(), timeout=10)
     if resp.ok:
         st.session_state.recall_payload = resp.json()
     else:
@@ -1700,7 +1809,7 @@ def _load_ledger():
     entity = _get_entity()
     if not entity:
         return
-    resp = requests.get(f"{API}/ledger", params={"entity": entity}, headers=HEADERS, timeout=10)
+    resp = requests.get(f"{API}/ledger", params={"entity": entity}, headers=_headers(), timeout=10)
     if resp.ok:
         data = resp.json()
         factors = data.get("factors") if isinstance(data, dict) else None
@@ -1959,6 +2068,7 @@ def _render_app():
         return
 
     _maybe_handle_demo_mode()
+    _ensure_ledger_bootstrap()
 
     send_icon = _load_base64_image("right-up.png")
     attach_icon = _load_base64_image("add.png")
@@ -2050,6 +2160,39 @@ def _render_app():
 
     st.sidebar.button("Log out", on_click=_reset_session, key="logout_button")
 
+    st.sidebar.subheader("Ledger routing")
+    if st.sidebar.button("Refresh ledgers", key="refresh_ledgers_btn"):
+        _refresh_ledgers()
+    ledger_options = [entry["ledger_id"] for entry in st.session_state.get("ledgers", []) if entry.get("ledger_id")]
+    active_ledger = st.session_state.get("ledger_id") or DEFAULT_LEDGER_ID
+    if active_ledger and active_ledger not in ledger_options:
+        ledger_options = [active_ledger] + ledger_options
+    if ledger_options:
+        selection = st.sidebar.selectbox(
+            "Active ledger",
+            ledger_options,
+            index=ledger_options.index(active_ledger) if active_ledger in ledger_options else 0,
+            help="All API calls send X-Ledger-ID so memories stay scoped per tenant.",
+        )
+        if selection != active_ledger:
+            if _create_or_switch_ledger(selection):
+                _refresh_ledgers(silent=True)
+    else:
+        st.sidebar.info("No ledgers detected. Create one below.")
+
+    with st.sidebar.form("create_ledger_form_demo", clear_on_submit=True):
+        new_ledger = st.text_input("Create/switch ledger", placeholder="team-alpha")
+        if st.form_submit_button("Apply"):
+            if _create_or_switch_ledger(new_ledger):
+                _refresh_ledgers(silent=True)
+
+    if st.session_state.get("ledgers"):
+        st.sidebar.caption("Ledger directories:")
+        for entry in st.session_state["ledgers"]:
+            ledger_id = entry.get("ledger_id")
+            path = entry.get("path") or "—"
+            st.sidebar.caption(f"• {ledger_id}: {path}")
+
     if st.session_state.get("prefill_top_input"):
         st.session_state["top_input"] = st.session_state.prefill_top_input
         st.session_state.prefill_top_input = None
@@ -2075,7 +2218,7 @@ def _render_app():
     entity = _get_entity()
     if entity:
         try:
-            metrics_resp = requests.get(f"{API}/metrics", headers=HEADERS, timeout=5)
+            metrics_resp = requests.get(f"{API}/metrics", headers=_headers(), timeout=5)
             metrics_resp.raise_for_status()
             metrics = metrics_resp.json()
         except (requests.RequestException, ValueError):
@@ -2085,7 +2228,7 @@ def _render_app():
             memories_resp = requests.get(
                 f"{API}/memories",
                 params={"entity": entity, "limit": 1},
-                headers=HEADERS,
+                headers=_headers(),
                 timeout=5,
             )
             memories_resp.raise_for_status()
@@ -2241,7 +2384,7 @@ def _render_app():
                     resp = requests.post(
                         f"{API}/rotate",
                         json=payload,
-                        headers=HEADERS,
+                        headers=_headers(),
                         timeout=15,
                     )
                     resp.raise_for_status()
