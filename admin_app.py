@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import time
 from datetime import datetime
 from typing import Dict, Iterable, List, Optional
 
@@ -53,6 +52,42 @@ def _load_ledger() -> Dict[str, Dict]:
     return data
 
 
+def _is_flow_safe_sequence(seq: Iterable) -> bool:
+    items = list(seq or [])
+    if not items or len(items) % 2:
+        return False
+    for idx in range(0, len(items), 2):
+        first, second = items[idx], items[idx + 1]
+        if not isinstance(first, dict) or not isinstance(second, dict):
+            return False
+        prime_a = first.get("prime", first.get("p"))
+        prime_b = second.get("prime", second.get("p"))
+        delta_a = first.get("delta", first.get("d", 1))
+        delta_b = second.get("delta", second.get("d", 1))
+        if prime_a != prime_b or int(delta_a) != int(delta_b):
+            return False
+    return True
+
+
+def _flow_safe_sequence(entries: Optional[Iterable], *, default_delta: int = 1) -> List[Dict[str, int]]:
+    safe: List[Dict[str, int]] = []
+    if entries is None:
+        return flow_sequence([min(DEFAULT_PRIME_SCHEMA)], delta=default_delta)
+
+    for entry in entries:
+        if isinstance(entry, dict):
+            prime = entry.get("prime", entry.get("p"))
+            delta = entry.get("delta", entry.get("d", default_delta))
+        else:
+            prime = entry
+            delta = default_delta
+        if prime is None:
+            continue
+        safe.extend(flow_sequence([int(prime)], delta=int(delta)))
+
+    return safe or flow_sequence([min(DEFAULT_PRIME_SCHEMA)], delta=default_delta)
+
+
 def _anchor(
     text: str,
     *,
@@ -67,18 +102,7 @@ def _anchor(
 
     schema = st.session_state.get("prime_schema") or DEFAULT_PRIME_SCHEMA
 
-    def _normalise(seq: Iterable) -> List[Dict[str, int]]:
-        normalised: List[Dict[str, int]] = []
-        for item in seq:
-            if isinstance(item, dict):
-                prime = item.get("prime", item.get("p"))
-                delta = item.get("delta", item.get("d", 1))
-                if prime is None:
-                    continue
-                normalised.append({"prime": int(prime), "delta": int(delta)})
-            else:
-                normalised.extend(flow_sequence([int(item)]))
-        return normalised
+    modifiers = tag_modifiers(text, schema)
 
     if factors_override is None:
         primes = tag_primes(text, schema)
@@ -86,11 +110,20 @@ def _anchor(
     else:
         override = list(factors_override)
         if override and isinstance(override[0], dict):
-            safe_seq = _normalise(override)
+            if _is_flow_safe_sequence(override):
+                safe_seq = [
+                    {"prime": int(item.get("prime", item.get("p"))), "delta": int(item.get("delta", item.get("d", 1)))}
+                    for item in override
+                    if item.get("prime", item.get("p")) is not None
+                ]
+            else:
+                safe_seq = _flow_safe_sequence(override)
         else:
-            safe_seq = flow_sequence([int(p) for p in override])
+            safe_seq = _flow_safe_sequence(override)
 
     payload = {"entity": entity, "text": text, "factors": safe_seq}
+    if modifiers:
+        payload["modifiers"] = modifiers
     try:
         resp = requests.post(
             f"{API_URL}/anchor",
@@ -181,13 +214,17 @@ def _run_enrichment(limit: int = 50, reset_first: bool = True) -> None:
 
     schema = st.session_state.get("prime_schema") or DEFAULT_PRIME_SCHEMA
     enriched = 0
+    failures: List[str] = []
     for entry in memories:
         text = (entry.get("text") or "").strip()
         if not text:
             continue
         primes = tag_primes(text, schema)
+        modifiers = tag_modifiers(text, schema)
         safe_seq = flow_sequence(primes)
         payload = {"entity": entity, "text": text, "factors": safe_seq}
+        if modifiers:
+            payload["modifiers"] = modifiers
         try:
             post = requests.post(
                 f"{API_URL}/anchor",
@@ -198,9 +235,15 @@ def _run_enrichment(limit: int = 50, reset_first: bool = True) -> None:
             post.raise_for_status()
         except requests.RequestException as exc:
             stamp = entry.get("timestamp")
-            st.warning(f"Skipped enrichment for {stamp}: {exc}")
+            label = str(stamp) if stamp else "unknown"
+            failures.append(f"{label}: {exc}")
             continue
         enriched += 1
+    if failures:
+        st.warning(
+            "Enrichment completed with failures. Retry details: "
+            + "; ".join(failures)
+        )
     st.success(f"Enrichment finished: {enriched}/{len(memories)} entries.")
 
 
@@ -289,6 +332,19 @@ def _render_history() -> None:
             footer = message.get("footer")
             if footer:
                 st.caption(footer)
+
+            shards = message.get("shards") or []
+            for shard in shards:
+                for snippet in shard.get("snippets", []):
+                    text = snippet.get("text", "")
+                    modifiers = snippet.get("modifiers") or []
+                    if not text:
+                        continue
+                    if modifiers:
+                        modifier_str = ", ".join(str(mod) for mod in modifiers)
+                        st.caption(f"• {text} (modifiers: {modifier_str})")
+                    else:
+                        st.caption(f"• {text}")
 
 
 def main() -> None:

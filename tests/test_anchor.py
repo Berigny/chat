@@ -1,8 +1,8 @@
-import pytest
 import requests
 import streamlit as st
+import pytest
 
-import chat_app
+import admin_app
 from prime_schema import DEFAULT_PRIME_SCHEMA
 
 
@@ -26,11 +26,11 @@ def test_anchor_failure(monkeypatch):
     errors: list[str] = []
     toasts: list[tuple[str, str | None]] = []
 
-    monkeypatch.setattr(chat_app.requests, "post", lambda *a, **k: FailingResponse())
+    monkeypatch.setattr(admin_app.requests, "post", lambda *a, **k: FailingResponse())
     monkeypatch.setattr(st, "error", lambda msg: errors.append(msg))
     monkeypatch.setattr(st, "toast", lambda msg, icon=None: toasts.append((msg, icon)))
 
-    ok = chat_app._anchor("hello world", record_chat=True)
+    ok = admin_app._anchor("hello world", record_chat=True)
     assert not ok
     assert errors
     assert st.session_state.chat_history == []
