@@ -11,6 +11,7 @@ from validators import get_tier_value
 
 PrimeSchema = Dict[int, Dict[str, object]]
 Factors = List[Dict[str, int]]
+FactorBatches = List[Factors]
 
 
 def _normalize_factors_override(factors: object, valid_primes: Sequence[int]) -> Factors:
@@ -200,19 +201,16 @@ def build_anchor_batches(
         for tier in sorted(tiered.keys()):
             factors.extend(tiered[tier])
 
+    if factors:
+        _append_batches(factors)
     if not batches:
         _append_batches([{"prime": fallback_prime, "delta": 1}])
 
-    payload_factors = [
-        {"prime": int(entry["prime"]), "delta": int(entry.get("delta", 1))}
-        for entry in factors
-        if "prime" in entry
-    ]
-    return {"text": text, "factors": payload_factors}
+    return batches
 
 
 __all__ = [
-    "build_anchor_payload",
+    "build_anchor_batches",
     "call_factor_extraction_llm",
     "map_to_primes",
     "normalize_override_factors",
