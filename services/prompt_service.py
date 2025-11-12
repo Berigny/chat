@@ -11,6 +11,11 @@ from .memory_service import MemoryService, strip_ledger_noise
 
 __all__ = ["PromptService", "create_prompt_service"]
 
+LEDGER_SNIPPET_LIMIT = 6
+LEDGER_SNIPPET_CHARS = 280
+ATTACHMENT_SNIPPET_CHARS = 400
+ATTACHMENT_LIMIT = 3
+
 
 def _recent_chat_block(history: Sequence[tuple[str, str]], *, max_entries: int = 15) -> str | None:
     if not history:
@@ -59,7 +64,7 @@ class PromptService:
                 question,
                 schema,
                 ledger_id=ledger_id,
-                limit=10,
+                limit=LEDGER_SNIPPET_LIMIT,
                 time_window_hours=time_window_hours,
                 since=since,
                 until=until,
@@ -69,7 +74,7 @@ class PromptService:
 
         if memories:
             prompt_lines.append("\n--- Ledger Memories (most relevant first) ---")
-            for entry in memories:
+            for entry in memories[:LEDGER_SNIPPET_LIMIT]:
                 sanitized = entry.get("_sanitized_text") or strip_ledger_noise((entry.get("text") or "").strip())
                 if not sanitized:
                     continue
@@ -82,7 +87,7 @@ class PromptService:
                     )
                 else:
                     ts = "No timestamp"
-                prompt_lines.append(f"[{ts}] {sanitized}")
+                prompt_lines.append(f"[{ts}] {_trim_snippet(sanitized, LEDGER_SNIPPET_CHARS)}")
         else:
             prompt_lines.append("\n--- Ledger Memories ---")
             prompt_lines.append("(No specific memories matched the query, but the full ledger is available.)")
@@ -94,11 +99,11 @@ class PromptService:
 
         if attachments:
             prompt_lines.append("\n--- Attachments ---")
-            for attachment in attachments:
+            for attachment in list(attachments)[:ATTACHMENT_LIMIT]:
                 name = attachment.get("name", "attachment")
-                snippet = (attachment.get("text") or "").strip()[:1000]
+                snippet = _trim_snippet(attachment.get("text", ""), ATTACHMENT_SNIPPET_CHARS)
                 if snippet:
-                    prompt_lines.append(f"[{name}] {snippet}...")
+                    prompt_lines.append(f"[{name}] {snippet}")
 
         prompt_lines.append("\n--- Your Turn ---")
         prompt_lines.append(f"User's request: {question}")
@@ -155,3 +160,8 @@ class PromptService:
 
 def create_prompt_service(memory_service: MemoryService) -> PromptService:
     return PromptService(memory_service=memory_service)
+def _trim_snippet(text: str, limit: int) -> str:
+    snippet = (text or "").strip().replace("\n", " ")
+    if len(snippet) > limit:
+        snippet = f"{snippet[:limit].rstrip()}…"
+    return snippet
