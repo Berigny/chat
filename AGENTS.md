@@ -31,7 +31,7 @@ Together these components form a practical implementation of the paper’s thesi
 
 ## Target User Experience
 The intended UX should **feel like interacting with a contemporary LLM**, yet every exchange is backed by **exact memory and identity persistence**.  
-Each message round-trips through the ledger, giving users:
+Each message round-trips through the ledger, this gives users:
 
 - Stable recall of previous context  
 - Deterministic identity across sessions  
