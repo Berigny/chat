@@ -14,6 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import requests
+from typing import Dict, List
 import streamlit as st
 try:
     import google.generativeai as genai
