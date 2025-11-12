@@ -105,6 +105,53 @@ class PromptService:
         prompt_lines.append("Your response:")
         return "\n".join(prompt_lines)
 
+    def build_capabilities_block(
+        self,
+        *,
+        entity: str | None,
+        schema: Mapping[int, Mapping[str, object]],
+        chat_history: Sequence[tuple[str, str]],
+        prime_semantics: str,
+        ledger_id: str | None = None,
+        last_anchor_error: str | None = None,
+        context_limit: int = 5,
+    ) -> str:
+        anchor_note = (
+            "Latest anchor failed; new text may not be stored."
+            if last_anchor_error
+            else "Latest anchor succeeded."
+        )
+
+        lines = [
+            "Capabilities & Instructions:",
+            "- Cite only the memories listed below; do not invent new quotes.",
+            "- If the ledger has no entry for the requested topic, say so explicitly.",
+            "- Anchors succeed only when the ledger accepts the factors; report failures if they occur.",
+            "",
+            anchor_note,
+            "",
+            prime_semantics,
+        ]
+
+        if entity:
+            ledger_block = self.memory_service.render_context_block(
+                entity,
+                schema,
+                ledger_id=ledger_id,
+                limit=context_limit,
+            )
+        else:
+            ledger_block = ""
+
+        if ledger_block:
+            lines.extend(["", "Recent ledger memories:", ledger_block])
+
+        recent_chat = _recent_chat_block(chat_history)
+        if recent_chat:
+            lines.extend(["", "Recent chat summary:", recent_chat])
+
+        return "\n".join(lines)
+
 
 def create_prompt_service(memory_service: MemoryService) -> PromptService:
     return PromptService(memory_service=memory_service)

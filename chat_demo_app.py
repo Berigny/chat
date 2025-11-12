@@ -322,17 +322,20 @@ def _semantic_score(prompt: str) -> float:
         return 0.0
 
 
-def _memory_lookup(limit: int = 3, since: int | None = None):
+def _refresh_capabilities_block() -> str:
+    history: list[tuple[str, str]] = st.session_state.get("chat_history") or []
+    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
     entity = _get_entity()
-    if not entity:
-        return []
-    ledger_id = st.session_state.get("ledger_id")
-    return MEMORY_SERVICE.memory_lookup(
-        entity,
-        ledger_id=ledger_id,
-        limit=limit,
-        since=since,
+    block = PROMPT_SERVICE.build_capabilities_block(
+        entity=entity,
+        schema=schema,
+        chat_history=history,
+        prime_semantics=_prime_semantics_block(),
+        ledger_id=st.session_state.get("ledger_id"),
+        last_anchor_error=st.session_state.get("last_anchor_error"),
     )
+    st.session_state.capabilities_block = block
+    return block
 
 
 def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None) -> str:
@@ -409,55 +412,6 @@ def _extract_transcript_text(transcript) -> str | None:
             if combined:
                 return combined
     return None
-def _recent_chat_block(max_entries: int = 15) -> str | None:
-    """Format the recent chat history into a string for the LLM context."""
-    history = st.session_state.get("chat_history") or []
-    if not history:
-        return ""
-    lines: list[str] = []
-    for role, content in history[-max_entries:]:
-        # Include all roles for a more complete picture of the conversation.
-        snippet = (content or "").strip().replace("\n", " ")
-        if not snippet:
-            continue
-        if len(snippet) > 300:
-            snippet = f"{snippet[:300]}…"
-        lines.append(f"{role}: {snippet}")
-    return "\n".join(lines) if lines else None
-
-
-def _build_capabilities_block() -> str:
-    last_error = st.session_state.get("last_anchor_error")
-    anchor_note = (
-        "Latest anchor failed; new text may not be stored."
-        if last_error
-        else "Latest anchor succeeded."
-    )
-    lines = [
-        "Capabilities & Instructions:",
-        "- Cite only the memories listed below; do not invent new quotes.",
-        "- If the ledger has no entry for the requested topic, say so explicitly.",
-        "- Anchors succeed only when the ledger accepts the factors; report failures if they occur.",
-        "",
-        anchor_note,
-        "",
-        _prime_semantics_block(),
-    ]
-    entity = _get_entity()
-    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
-    ledger_id = st.session_state.get("ledger_id")
-    ledger = MEMORY_SERVICE.render_context_block(
-        entity,
-        schema,
-        ledger_id=ledger_id,
-        limit=5,
-    )
-    if ledger:
-        lines.extend(["", "Recent ledger memories:", ledger])
-    recent_chat = _recent_chat_block()
-    if recent_chat:
-        lines.extend(["", "Recent chat summary:", recent_chat])
-    return "\n".join(lines)
 def _ingest_attachment(uploaded_file) -> dict | None:
     if uploaded_file is None:
         return None
@@ -686,7 +640,7 @@ def _run_enrichment(limit: int = 200, reset_first: bool = True):
         except requests.RequestException as exc:
             st.warning(f"Skip enrichment for {entry.get('timestamp')}: {exc}")
     st.success(f"Enriched {enriched}/{total} memories.")
-    st.session_state.capabilities_block = _build_capabilities_block()
+    _refresh_capabilities_block()
 
 
 def _latest_user_transcript(current_request: str, *, limit: int = 5) -> str | None:
@@ -800,12 +754,12 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
         )
     except requests.RequestException as exc:
         st.session_state.last_anchor_error = str(exc)
-        st.session_state.capabilities_block = _build_capabilities_block()
+        _refresh_capabilities_block()
         st.error(f"Anchor failed: {exc}")
         return False
 
     st.session_state.last_anchor_error = None
-    st.session_state.capabilities_block = _build_capabilities_block()
+    _refresh_capabilities_block()
     if record_chat:
         st.session_state.chat_history.append(("You", text))
     if notify:
@@ -1010,7 +964,7 @@ def _handle_login():
     st.session_state.prime_symbols = {
         prime: meta.get("name", f"Prime {prime}") for prime, meta in st.session_state.prime_schema.items()
     }
-    st.session_state.capabilities_block = _build_capabilities_block()
+    _refresh_capabilities_block()
 
 
 def _render_login_form():
@@ -1038,7 +992,7 @@ def _render_app():
     if "last_anchor_error" not in st.session_state:
         st.session_state.last_anchor_error = None
     if "capabilities_block" not in st.session_state:
-        st.session_state.capabilities_block = _build_capabilities_block()
+        _refresh_capabilities_block()
 
     if not st.session_state.get("authenticated"):
         _render_login_form()
@@ -1139,7 +1093,15 @@ def _render_app():
 
     with st.sidebar.expander("Debugging"):
         st.subheader("Raw Ledger")
-        raw = _memory_lookup(limit=20)
+        entity = _get_entity()
+        if entity:
+            raw = MEMORY_SERVICE.memory_lookup(
+                entity,
+                ledger_id=st.session_state.get("ledger_id"),
+                limit=20,
+            )
+        else:
+            raw = []
         for m in raw:
             st.caption(f"**{m.get('timestamp', 'N/A')}**")
             st.code(m.get('text', '')[:200] + ("…" if len(m.get('text', '')) > 200 else ""))
@@ -1395,4 +1357,4 @@ def _render_app():
 if __name__ == "__main__":
     _render_app()
     capabilities_block = st.session_state.get("capabilities_block")
-    capabilities_block = st.session_state.get("capabilities_block") or _build_capabilities_block()
+    capabilities_block = st.session_state.get("capabilities_block") or _refresh_capabilities_block()
