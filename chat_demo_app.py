@@ -1652,24 +1652,35 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
         return False
 
     schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
-    
+
+    sequences: list[list[dict]] = []
+
+    def _extend_with_batches(candidates: list[dict]) -> None:
+        batches = _flow_safe_batches(candidates)
+        if batches:
+            sequences.extend(batches)
+
     if factors_override:
-        sequences = [factors_override]
+        _extend_with_batches(factors_override)
     else:
         primes = tag_primes(text, schema)
-        
+        if not primes:
+            primes = [FALLBACK_PRIME]
+
         tiered_primes: Dict[int, List[int]] = {}
-        for p in primes:
-            tier = get_tier_value(p, schema)
-            if tier not in tiered_primes:
-                tiered_primes[tier] = []
-            tiered_primes[tier].append(p)
-        
-        sequences = []
+        for prime in primes:
+            tier = get_tier_value(prime, schema)
+            tiered_primes.setdefault(tier, []).append(prime)
+
         for tier in sorted(tiered_primes.keys()):
-            sequences.append(_flow_safe_sequence(tiered_primes[tier]))
+            tier_factors = [{"prime": p, "delta": 1} for p in tiered_primes[tier]]
+            _extend_with_batches(tier_factors)
 
     if not sequences:
+        _extend_with_batches([{"prime": FALLBACK_PRIME, "delta": 1}])
+    if not sequences:
+        st.error("Anchor failed: no lawful factor batches could be generated.")
+        st.session_state.last_anchor_error = "No lawful batches"
         return False
 
     for i, factors in enumerate(sequences):
