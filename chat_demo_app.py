@@ -222,6 +222,8 @@ def _process_memory_text(text: str, use_openai: bool, *, attachments: list[dict]
     if not cleaned:
         st.warning("Enter some text first.")
         return
+    # Always anchor the user's text silently in the background.
+    _anchor(cleaned, record_chat=False, notify=False)
     agent_payload = _maybe_extract_agent_payload(cleaned)
     if agent_payload:
         agent_text, factors_override = agent_payload
@@ -325,19 +327,33 @@ def _prime_topological_distance(query_sig: dict[int, float], memory_sig: dict[in
 
 
 def _is_user_content(text: str) -> bool:
+    """Check if a memory entry appears to be user-authored content."""
     normalized = (text or "").strip().lower()
     if len(normalized) < 20:
         return False
-    markers = (
+
+    # Stricter check for bot-like prefixes.
+    bot_prefixes = (
         "bot:",
         "assistant:",
-        "ledger recall:",
-        "ten exact quotes",
-        "no stored memories matched",
-        "exact quotes:",
-        "transcript:",
+        "system:",
+        "model:",
+        "ai:",
+        "llm:",
+        "response:",
+        "here’s what the ledger currently recalls:",
+        "[",
     )
-    return not any(marker in normalized for marker in markers)
+    if normalized.startswith(bot_prefixes):
+        return False
+
+    # More specific check for ledger factor lines.
+    if "• ledger" in normalized and "ledger factor" in normalized:
+        return False
+
+    # Avoid filtering just because the word "ledger" is present.
+    # The original check was too broad.
+    return True
 
 
 def _select_lawful_context(
@@ -348,84 +364,41 @@ def _select_lawful_context(
     since: int | None = None,
     until: int | None = None,
 ) -> list[dict]:
+    """Select relevant memories based on keyword matching and recency."""
     entity = _get_entity()
     if not entity:
         return []
 
-    query_signature = _encode_prime_signature(query)
+    keywords = _keywords_from_prompt(query)
+    fetch_limit = min(100, max(limit * 5, 25))
     window_start = since
     if window_start is None:
         window_start = int((time.time() - time_window_hours * 3600) * 1000)
 
-    fetch_limit = min(100, max(limit * 4, 20))
     raw_memories = _memory_lookup(limit=fetch_limit, since=window_start)
-
     if until is not None:
-        raw_memories = [
-            entry
-            for entry in raw_memories
-            if entry.get("timestamp") and entry["timestamp"] <= until
-        ]
+        raw_memories = [m for m in raw_memories if m.get("timestamp", 0) <= until]
 
-    scored_memories: list[dict] = []
+    scored_memories = []
     now = time.time()
     for entry in raw_memories:
-        raw_text = entry.get("text", "")
-        sanitized = _strip_ledger_noise(raw_text)
-        if not sanitized or not _is_user_content(sanitized):
+        text = _strip_ledger_noise(entry.get("text", ""))
+        if not text or not _is_user_content(text):
             continue
-        memory_signature = _encode_prime_signature(sanitized)
-        distance = _prime_topological_distance(query_signature, memory_signature)
-        timestamp = entry.get("timestamp")
-        age_hours = (now - (timestamp / 1000)) / 3600 if timestamp else 0.0
-        recency_boost = max(0.0, 1.0 - (age_hours / 24.0)) * 0.3
-        scored_memories.append(
-            {
-                "entry": entry,
-                "score": distance - recency_boost,
-                "signature": memory_signature,
-                "sanitized": sanitized,
-            }
-        )
 
-    scored_memories.sort(key=lambda item: item["score"])
+        score = 0
+        for keyword in keywords:
+            score += text.lower().count(keyword.lower())
 
-    selected: list[dict] = []
-    covered_primes: set[int] = set()
-    seen_keys: set[tuple] = set()
+        timestamp = entry.get("timestamp", 0)
+        age_hours = (now - timestamp / 1000) / 3600
+        score += max(0, 1 - age_hours / (time_window_hours * 2))  # Recency boost
 
-    def _entry_key(entry: dict) -> tuple:
-        return (entry.get("timestamp"), entry.get("text"))
+        entry["_sanitized_text"] = text
+        scored_memories.append({"entry": entry, "score": score})
 
-    for item in scored_memories:
-        if len(selected) >= limit:
-            break
-        entry = item["entry"]
-        key = _entry_key(entry)
-        if key in seen_keys:
-            continue
-        memory_primes = set(item["signature"].keys())
-        if memory_primes - covered_primes or len(selected) < 2:
-            entry_copy = dict(entry)
-            entry_copy["_sanitized_text"] = item["sanitized"]
-            selected.append(entry_copy)
-            covered_primes.update(memory_primes)
-            seen_keys.add(key)
-
-    if len(selected) < limit:
-        for item in scored_memories:
-            if len(selected) >= limit:
-                break
-            entry = item["entry"]
-            key = _entry_key(entry)
-            if key in seen_keys:
-                continue
-            entry_copy = dict(entry)
-            entry_copy["_sanitized_text"] = item["sanitized"]
-            selected.append(entry_copy)
-            seen_keys.add(key)
-
-    return selected
+    scored_memories.sort(key=lambda x: x["score"], reverse=True)
+    return [item["entry"] for item in scored_memories[:limit]]
 
 
 TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
@@ -699,55 +672,24 @@ BULLET_QUOTE_PATTERN = re.compile(r"^\s*[-\u2022]\s+")
 
 
 def _strip_ledger_noise(text: str, *, user_only: bool = False) -> str:
+    """Strip bot-generated prefixes and other machine noise from memory text."""
     if not text:
         return text
 
-    cleaned: list[str] = []
-    skip_quote_list = False
-
-    for raw_line in text.splitlines():
-        line = raw_line.rstrip()
-        stripped = line.lstrip()
+    # Keep only lines that appear to be from a human user.
+    # This is more targeted than the original implementation.
+    clean_lines: list[str] = []
+    for line in text.splitlines():
+        stripped = line.strip()
         lowered = stripped.lower()
-
         if not stripped:
-            cleaned.append("")
-            skip_quote_list = False
             continue
-
-        if "ten exact quotes" in lowered:
-            # Previous quote-mode replies sometimes anchor verbatim – skip them.
-            skip_quote_list = True
+        if lowered.startswith("bot:") or "• ledger" in lowered:
             continue
+        if len(stripped) > 20:
+            clean_lines.append(stripped)
 
-        if skip_quote_list:
-            if QUOTE_LIST_PATTERN.match(stripped):
-                # Drop enumerated quote lines like `1. "..."`.
-                continue
-            if BULLET_QUOTE_PATTERN.match(stripped) and any(q in stripped for q in ('"', '“', '”')):
-                # Drop bullet-style quote residue when it clearly contains quoted text.
-                continue
-            skip_quote_list = False
-
-        assistant_prefixes = ("bot:", "assistant:", "system:", "model:")
-        if lowered.startswith(assistant_prefixes):
-            continue
-
-        if user_only:
-            non_user_prefixes = ("ai:", "llm:", "response:")
-            if lowered.startswith(non_user_prefixes):
-                continue
-
-        user_prefixes = ("you:", "user:")
-        if lowered.startswith(user_prefixes):
-            # Drop the explicit marker while keeping the actual speech.
-            cleaned.append(stripped.split(":", 1)[1].lstrip())
-            continue
-
-        cleaned.append(line)
-
-    candidate = "\n".join(cleaned).strip()
-    return candidate or text
+    return "\n".join(clean_lines)
 
 
 def _build_lawful_augmentation_prompt(
@@ -1402,8 +1344,8 @@ def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = Fa
     if user_text is None and bot_reply is None:
         return
     st.session_state.rolling_text.append(f"You: {user_text}\nBot: {bot_reply}")
-    window_s = 300
-    max_tokens = 2_000
+    window_s = 120  # Anchor every 2 minutes
+    max_tokens = 500  # Or when the conversation chunk gets long enough
     full_block = "\n".join(st.session_state.rolling_text)
     should_anchor = (
         time.time() - st.session_state.last_anchor_ts > window_s
@@ -1417,139 +1359,39 @@ def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = Fa
 
 
 def _maybe_handle_recall_query(text: str) -> bool:
-    print("=" * 60)
-    print("[RECALL] query:", text)
-    extracted_keywords = _keywords_from_prompt(text)
-    print("[RECALL] keywords extracted:", extracted_keywords)
+    """Check for recall triggers and reply with ledger content if matched."""
     normalized = text.strip().lower()
-    prefix = normalized.startswith(PREFIXES)
-    recall_keyword = RECALL_KEYWORD_PATTERN.search(normalized) is not None
-    range_hint = LAST_RANGE_PATTERN.search(normalized) or PAST_RANGE_PATTERN.search(normalized)
-    recall_phrase = any(phrase in normalized for phrase in RECALL_PHRASES) or bool(range_hint)
-    if not recall_phrase and "what" in normalized and "have we" in normalized:
-        recall_phrase = True
-    since_ms = None
-    end_ms = None
-    keywords = extracted_keywords
-
-    recent_context_refs = {"that", "this", "it", "the paper", "the topic", "our conversation"}
-    is_follow_up = (
-        len(normalized.split()) < 15
-        and any(ref in normalized for ref in recent_context_refs)
-        and bool(st.session_state.get("chat_history"))
-    )
-
-    words = text.split()
-    if len(words) > 120 and not prefix:
+    # Simplified trigger: check for keywords and phrases.
+    # This is more direct than the original scoring system.
+    triggers = [
+        normalized.startswith(PREFIXES),
+        any(k in normalized for k in ["quote", "verbatim", "exact", "recall", "retrieve"]),
+        any(p in normalized for p in RECALL_PHRASES),
+    ]
+    if not any(triggers):
         return False
 
-    parsed_datetime = None
-    if dateparser:
-        # Attempt to parse a datetime from the text, preferring past dates.
-        parsed_datetime = dateparser.parse(text, settings={"PREFER_DATES_FROM": "past"})
-
-    if parsed_datetime:
-        since_ms = int(parsed_datetime.timestamp() * 1000)
-    elif CAL:
-        parsed_tuple, status = CAL.parse(text)
-        if status != 0:
-            try:
-                since_ms = int(time.mktime(parsed_tuple) * 1000)
-            except (OverflowError, ValueError):
-                since_ms = None
-
+    limit = _estimate_quote_count(normalized)
+    since_ms, until_ms = _parse_time_range(normalized)
     if since_ms is None:
-        relative = _infer_relative_timestamp(text)
-        if relative:
-            since_ms = relative
-        elif range_hint:
-            amount = int(range_hint.group(1))
-            unit = range_hint.group(2).lower().rstrip("s")
-            seconds = UNIT_TO_SECONDS.get(unit)
-            if seconds:
-                since_ms = int((time.time() - amount * seconds) * 1000)
+        since_ms = _infer_relative_timestamp(normalized)
 
-    start_range, end_range = _parse_time_range(text)
-    if start_range is not None:
-        since_ms = start_range if since_ms is None else min(since_ms, start_range)
-    if end_range is not None:
-        end_ms = end_range
+    # Use the more reliable lawful context selection.
+    memories = _select_lawful_context(text, limit=limit, since=since_ms, until=until_ms)
+    if not memories:
+        st.session_state.chat_history.append(("Bot", "I couldn't find any matching memories in the ledger."))
+        return True
 
-    semantic = _semantic_score(text)
-    prefix_score = 1.0 if prefix else 0.0
-    keyword_score = 1.0 if (recall_keyword or recall_phrase) else 0.0
-    time_score = 1.0 if (since_ms or end_ms) else 0.0
-    scores = [keyword_score, time_score, semantic, prefix_score]
-    weights = [0.3, 0.4, 0.2, 0.1]
-    weighted_total = sum(s * w for s, w in zip(scores, weights))
+    # Format the response.
+    response_lines = ["Here’s what the ledger currently recalls:"]
+    for entry in memories:
+        timestamp = entry.get("timestamp")
+        date_str = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M")
+        text_content = entry.get("_sanitized_text", entry.get("text", "")).strip()
+        response_lines.append(f"[{date_str} • ledger] {text_content}")
 
-    requested = _extract_requested_count(text)
-    default_limit = _estimate_quote_count(text) if (recall_keyword or recall_phrase or prefix) else 3
-    limit = requested if requested else default_limit
-    limit = max(1, min(limit, 25))
-
-    should_recall = (
-        prefix
-        or recall_keyword
-        or recall_phrase
-        or is_follow_up
-        or since_ms is not None
-        or end_ms is not None
-        or weighted_total > 0.45
-    )
-    raw_entries_count = 0
-    resolution = None
-    handled = False
-    if should_recall:
-        fetch_limit = min(100, max(limit * 4, 20))
-        raw_entries = _memory_lookup(limit=fetch_limit, since=since_ms)
-        raw_entries_count = len(raw_entries)
-        if end_ms is not None:
-            raw_entries = [
-                entry
-                for entry in raw_entries
-                if entry.get("timestamp") and entry["timestamp"] <= end_ms
-            ]
-        resolution = MEMORY_RESOLVER.resolve(
-            text,
-            st.session_state.get("chat_history") or [],
-            raw_entries,
-            keywords=keywords,
-        )
-        if resolution.summary:
-            if keywords and not resolution.matched_terms:
-                focus_pool = resolution.focus_terms or [kw for kw in keywords if len(kw) > 2]
-                focus = ", ".join(focus_pool[:3]) if focus_pool else "the requested topic"
-                preface = (
-                    f"I could not find an exact ledger entry mentioning {focus}, but here is the closest related context:\n\n"
-                )
-            else:
-                preface = ""
-            st.session_state.chat_history.append(("Bot", f"{preface}{resolution.summary}"))
-            handled = True
-        else:
-            focus_terms = resolution.focus_terms or [kw for kw in (keywords or []) if len(kw) > 2]
-            focus = ", ".join(focus_terms[:3]) if focus_terms else "the requested topic"
-            fallback_summary = _summarize_accessible_memories(max(5, limit), since=since_ms)
-            message = f"No stored memories matched “{focus}” yet."
-            if fallback_summary:
-                message = f"{message}\n\nHere is the latest ledger context I can access:\n{fallback_summary}"
-            st.session_state.chat_history.append(("Bot", message))
-            return True
-    print("[RECALL] should_recall =", should_recall, "weighted_total =", weighted_total)
-    if should_recall:
-        print("[RECALL] candidate entries:", raw_entries_count)
-        if resolution and resolution.summary:
-            print(
-                "[RECALL] summary sentences:",
-                resolution.used_entries,
-                "matched terms:",
-                resolution.matched_terms,
-            )
-        else:
-            print("[RECALL] → no usable summary, fallback engaged")
-    print("=" * 60)
-    return handled
+    st.session_state.chat_history.append(("Bot", "\n".join(response_lines)))
+    return True
 
 
 def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors_override: list[dict] | None = None):
@@ -1966,6 +1808,13 @@ def _render_app():
 
     st.sidebar.button("Log out", on_click=_reset_session, key="logout_button")
 
+    with st.sidebar.expander("Debugging"):
+        st.subheader("Raw Ledger")
+        raw = _memory_lookup(limit=20)
+        for m in raw:
+            st.caption(f"**{m.get('timestamp', 'N/A')}**")
+            st.code(m.get('text', '')[:200] + ("…" if len(m.get('text', '')) > 200 else ""))
+
     st.sidebar.subheader("Ledger routing")
     if st.sidebar.button("Refresh ledgers", key="refresh_ledgers_btn"):
         _refresh_ledgers()
@@ -2206,6 +2055,7 @@ def _render_app():
                     if st.session_state.ledger_state:
                         st.caption("Updated ledger snapshot after Möbius transform:")
                         _render_ledger_state(st.session_state.ledger_state)
+                    _trigger_rerun()
                 except requests.RequestException as exc:
                     st.error(f"Möbius rotation failed: {exc}")
             if st.button("Initiate Enrichment", help="Replay stored transcripts with richer prime coverage"):
