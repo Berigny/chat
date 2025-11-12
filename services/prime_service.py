@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
+from flow_safe import sequence as flow_safe_sequence
 from prime_pipeline import build_anchor_batches, normalize_override_factors
 
 
@@ -61,6 +62,8 @@ class PrimeService:
             factors_override=factors_override,
             llm_extractor=llm_extractor,
         )
+        if not batches:
+            batches = [flow_safe_sequence([self.fallback_prime])]
         for index, factors in enumerate(batches):
             self.api_service.anchor(
                 entity,

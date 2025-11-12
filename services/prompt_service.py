@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Iterable, Mapping, Sequence
@@ -11,8 +12,10 @@ from .memory_service import MemoryService, strip_ledger_noise
 
 __all__ = ["PromptService", "create_prompt_service"]
 
-LEDGER_SNIPPET_LIMIT = 6
-LEDGER_SNIPPET_CHARS = 280
+logger = logging.getLogger(__name__)
+
+LEDGER_SNIPPET_LIMIT = 5
+LEDGER_SNIPPET_CHARS = 250
 ATTACHMENT_SNIPPET_CHARS = 400
 ATTACHMENT_LIMIT = 3
 
@@ -29,6 +32,19 @@ def _recent_chat_block(history: Sequence[tuple[str, str]], *, max_entries: int =
             snippet = f"{snippet[:300]}…"
         lines.append(f"{role}: {snippet}")
     return "\n".join(lines) if lines else None
+
+
+def _trim_snippet(text: str, limit: int) -> str:
+    snippet = (text or "").strip().replace("\n", " ")
+    if len(snippet) > limit:
+        snippet = f"{snippet[:limit].rstrip()}…"
+    return snippet
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rudimentary token estimate (~4 chars/token)."""
+
+    return max(1, len(text) // 4)
 
 
 @dataclass
@@ -108,7 +124,13 @@ class PromptService:
         prompt_lines.append("\n--- Your Turn ---")
         prompt_lines.append(f"User's request: {question}")
         prompt_lines.append("Your response:")
-        return "\n".join(prompt_lines)
+        prompt = "\n".join(prompt_lines)
+        token_estimate = _estimate_tokens(prompt)
+        if token_estimate > 15000:
+            logger.warning("Augmented prompt approx %s tokens; risk of context overflow.", token_estimate)
+        else:
+            logger.debug("Augmented prompt approx %s tokens.", token_estimate)
+        return prompt
 
     def build_capabilities_block(
         self,
@@ -160,8 +182,3 @@ class PromptService:
 
 def create_prompt_service(memory_service: MemoryService) -> PromptService:
     return PromptService(memory_service=memory_service)
-def _trim_snippet(text: str, limit: int) -> str:
-    snippet = (text or "").strip().replace("\n", " ")
-    if len(snippet) > limit:
-        snippet = f"{snippet[:limit].rstrip()}…"
-    return snippet
