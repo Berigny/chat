@@ -10,7 +10,6 @@ from validators import get_tier_value
 
 PrimeSchema = Dict[int, Dict[str, object]]
 Factors = List[Dict[str, int]]
-FactorBatches = List[Factors]
 
 
 def _normalize_factors_override(factors: object, valid_primes: Sequence[int]) -> Factors:
@@ -34,25 +33,6 @@ def normalize_override_factors(factors: object, valid_primes: Sequence[int]) -> 
     """Public wrapper for validating override payloads."""
 
     return _normalize_factors_override(factors, valid_primes)
-
-
-def _flow_safe_factors(factors: Factors, valid_primes: Sequence[int]) -> Factors:
-    filtered: Factors = []
-    seen: set[int] = set()
-    for factor in factors:
-        prime = factor.get("prime")
-        if prime not in valid_primes or prime in seen:
-            continue
-        delta = factor.get("delta", 1)
-        try:
-            entry = {"prime": int(prime), "delta": int(delta)}
-        except (TypeError, ValueError):
-            continue
-        filtered.append(entry)
-        seen.add(entry["prime"])
-    odds = [f for f in filtered if f["prime"] % 2 == 1]
-    evens = [f for f in filtered if f["prime"] % 2 == 0]
-    return odds + evens
 
 
 def _extract_json_object(raw: str) -> Dict | None:
@@ -130,32 +110,25 @@ def map_to_primes(
     return [{"prime": int(p), "delta": 1} for p in primes if p in valid]
 
 
-def build_anchor_batches(
+def build_anchor_payload(
     text: str,
     schema: PrimeSchema,
     *,
     fallback_prime: int,
     factors_override: Sequence[Dict[str, int]] | None = None,
     llm_extractor: Callable[[str, PrimeSchema], Factors] | None = None,
-) -> FactorBatches:
+) -> dict[str, object]:
+    """Return the payload expected by the /anchor endpoint.
+
+    The DualSubstrate service is responsible for validating ordering and flow
+    rules, so the client only needs to provide the raw factor list alongside
+    the utterance text. This helper centralises how we construct that payload
+    so UI layers can stay unaware of batching heuristics.
+    """
+
     valid_primes = tuple(schema.keys()) or (fallback_prime,)
-    batches: FactorBatches = []
-
-    def _append_batches(candidates: Factors) -> None:
-        normalized = _normalize_factors_override(list(candidates), valid_primes)
-        safe = _flow_safe_factors(normalized, valid_primes)
-        if not safe:
-            safe = [{"prime": fallback_prime, "delta": 1}]
-        for factor in safe:
-            batches.append(
-                [
-                    {"prime": factor["prime"], "delta": factor["delta"]},
-                    {"prime": factor["prime"], "delta": factor["delta"]},
-                ]
-            )
-
     if factors_override:
-        _append_batches(list(factors_override))
+        factors = _normalize_factors_override(list(factors_override), valid_primes)
     else:
         mapped = map_to_primes(
             text,
@@ -169,17 +142,23 @@ def build_anchor_batches(
             prime = factor["prime"]
             tier = get_tier_value(prime, schema)
             tiered.setdefault(tier, []).append(factor)
+        factors = []
         for tier in sorted(tiered.keys()):
-            _append_batches(tiered[tier])
+            factors.extend(tiered[tier])
 
-    if not batches:
-        _append_batches([{ "prime": fallback_prime, "delta": 1 }])
+    if not factors:
+        factors = [{"prime": fallback_prime, "delta": 1}]
 
-    return batches
+    payload_factors = [
+        {"prime": int(entry["prime"]), "delta": int(entry.get("delta", 1))}
+        for entry in factors
+        if "prime" in entry
+    ]
+    return {"text": text, "factors": payload_factors}
 
 
 __all__ = [
-    "build_anchor_batches",
+    "build_anchor_payload",
     "call_factor_extraction_llm",
     "map_to_primes",
     "normalize_override_factors",
