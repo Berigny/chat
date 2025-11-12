@@ -57,6 +57,20 @@ ASSET_DIR = Path(__file__).parent
 _RERUN_FN = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
 
 
+def _secret(key: str) -> str | None:
+    """Retrieve a Streamlit secret defensively."""
+
+    try:
+        value = st.secrets.get(key)
+    except Exception:
+        return None
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
 METRIC_FLOORS = {**DEFAULT_METRIC_FLOORS, **SETTINGS.metric_floors}
 CLIENT = DualSubstrateClient(API, SETTINGS.api_key)
 
