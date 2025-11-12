@@ -56,6 +56,7 @@ def _secret(key: str):
 API_KEY = _secret("DUALSUBSTRATE_API_KEY") or os.getenv("DUALSUBSTRATE_API_KEY") or "demo-key"
 BASE_HEADERS = {"x-api-key": API_KEY} if API_KEY else {}
 DEFAULT_LEDGER_ID = os.getenv("DEFAULT_LEDGER_ID", "default")
+ADD_LEDGER_OPTION = "➕ Add new ledger…"
 
 GENAI_KEY = _secret("API_KEY") or os.getenv("API_KEY")
 if genai and GENAI_KEY:
@@ -179,6 +180,15 @@ def _create_or_switch_ledger(ledger_id: str, *, notify: bool = True) -> bool:
     if notify:
         st.toast(f"Ledger ready: {ledger_id}", icon="📚")
     return True
+
+
+def _validate_ledger_name(candidate: str) -> tuple[bool, str | None]:
+    ledger_id = (candidate or "").strip()
+    if not ledger_id:
+        return False, "Ledger ID cannot be empty."
+    if not re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{1,30})[a-z0-9]", ledger_id):
+        return False, "Use 3-32 lowercase letters or numbers; hyphens allowed inside only."
+    return True, None
 
 
 def _ensure_ledger_bootstrap() -> None:
@@ -2163,28 +2173,37 @@ def _render_app():
     st.sidebar.subheader("Ledger routing")
     if st.sidebar.button("Refresh ledgers", key="refresh_ledgers_btn"):
         _refresh_ledgers()
-    ledger_options = [entry["ledger_id"] for entry in st.session_state.get("ledgers", []) if entry.get("ledger_id")]
+    raw_ledgers = st.session_state.get("ledgers", [])
+    ledger_options: list[str] = []
+    for entry in raw_ledgers:
+        lid = entry.get("ledger_id")
+        if lid and lid not in ledger_options:
+            ledger_options.append(lid)
     active_ledger = st.session_state.get("ledger_id") or DEFAULT_LEDGER_ID
     if active_ledger and active_ledger not in ledger_options:
-        ledger_options = [active_ledger] + ledger_options
-    if ledger_options:
-        selection = st.sidebar.selectbox(
-            "Active ledger",
-            ledger_options,
-            index=ledger_options.index(active_ledger) if active_ledger in ledger_options else 0,
-            help="All API calls send X-Ledger-ID so memories stay scoped per tenant.",
-        )
-        if selection != active_ledger:
-            if _create_or_switch_ledger(selection):
+        ledger_options.insert(0, active_ledger)
+    available_options = list(ledger_options)
+    available_options.append(ADD_LEDGER_OPTION)
+    initial_index = available_options.index(active_ledger) if active_ledger in available_options else 0
+    selection = st.sidebar.selectbox(
+        "Active ledger",
+        available_options,
+        index=initial_index,
+        help="All API calls send X-Ledger-ID so memories stay scoped per tenant.",
+    )
+    if selection == ADD_LEDGER_OPTION:
+        st.sidebar.caption("Rules: 3-32 chars, lowercase letters/digits, hyphens allowed in the middle.")
+        new_ledger = st.sidebar.text_input("New ledger ID", placeholder="team-alpha", key="new_ledger_id")
+        if st.sidebar.button("Create ledger", key="create_ledger_btn"):
+            valid, error = _validate_ledger_name(new_ledger)
+            if not valid:
+                st.sidebar.error(error)
+            elif _create_or_switch_ledger(new_ledger):
                 _refresh_ledgers(silent=True)
-    else:
-        st.sidebar.info("No ledgers detected. Create one below.")
-
-    with st.sidebar.form("create_ledger_form_demo", clear_on_submit=True):
-        new_ledger = st.text_input("Create/switch ledger", placeholder="team-alpha")
-        if st.form_submit_button("Apply"):
-            if _create_or_switch_ledger(new_ledger):
-                _refresh_ledgers(silent=True)
+                _trigger_rerun()
+    elif selection != active_ledger:
+        if _create_or_switch_ledger(selection):
+            _refresh_ledgers(silent=True)
 
     if st.session_state.get("ledgers"):
         st.sidebar.caption("Ledger directories:")
@@ -2192,6 +2211,8 @@ def _render_app():
             ledger_id = entry.get("ledger_id")
             path = entry.get("path") or "—"
             st.sidebar.caption(f"• {ledger_id}: {path}")
+    else:
+        st.sidebar.info("No ledgers detected yet — choose “Add new ledger…” to create one.")
 
     if st.session_state.get("prefill_top_input"):
         st.session_state["top_input"] = st.session_state.prefill_top_input
