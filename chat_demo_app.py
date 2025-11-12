@@ -36,7 +36,7 @@ try:
 except ModuleNotFoundError:
     dateparser = None
 
-from validators import validate_prime_sequence
+from validators import validate_prime_sequence, get_tier_value
 from prime_tagger import tag_primes
 
 API = "https://dualsubstrate-commercial.fly.dev"
@@ -1639,26 +1639,42 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
         return False
 
     schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+    
     if factors_override:
-        factors = factors_override
+        sequences = [factors_override]
     else:
         primes = tag_primes(text, schema)
-        factors = _flow_safe_sequence(primes)
+        
+        tiered_primes: Dict[int, List[int]] = {}
+        for p in primes:
+            tier = get_tier_value(p, schema)
+            if tier not in tiered_primes:
+                tiered_primes[tier] = []
+            tiered_primes[tier].append(p)
+        
+        sequences = []
+        for tier in sorted(tiered_primes.keys()):
+            sequences.append(_flow_safe_sequence(tiered_primes[tier]))
 
-    if not validate_prime_sequence(factors, schema):
-        st.error("Anchor failed: Invalid prime sequence.")
-        st.session_state.last_anchor_error = "Invalid prime sequence"
+    if not sequences:
         return False
 
-    payload = {"entity": entity, "factors": factors, "text": text}
-    try:
-        resp = requests.post(f"{API}/anchor", json=payload, headers=HEADERS, timeout=5)
-        resp.raise_for_status()
-    except requests.RequestException as e:
-        st.session_state.last_anchor_error = str(e)
-        st.session_state.capabilities_block = _build_capabilities_block()
-        st.error(f"Anchor failed: {e}")
-        return False
+    for i, factors in enumerate(sequences):
+        if not validate_prime_sequence(factors, schema):
+            st.error(f"Anchor failed: Invalid prime sequence for tier batch {i}.")
+            st.session_state.last_anchor_error = "Invalid prime sequence"
+            # Continue to next batch
+            continue
+
+        payload = {"entity": entity, "factors": factors, "text": text if i == 0 else None}
+        try:
+            resp = requests.post(f"{API}/anchor", json=payload, headers=HEADERS, timeout=5)
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            st.session_state.last_anchor_error = str(e)
+            st.session_state.capabilities_block = _build_capabilities_block()
+            st.error(f"Anchor failed: {e}")
+            return False
 
     st.session_state.last_anchor_error = None
     st.session_state.capabilities_block = _build_capabilities_block()

@@ -1,4 +1,5 @@
 """Sequence validation logic."""
+import re
 from typing import Dict, List
 
 def get_tier_value(prime: int, schema: Dict[int, Dict]) -> int:
@@ -6,10 +7,16 @@ def get_tier_value(prime: int, schema: Dict[int, Dict]) -> int:
     if not schema or prime not in schema:
         return 0
     tier_str = schema.get(prime, {}).get("tier", "")
-    if tier_str == "S!":
+    if not tier_str:
+        return 0
+    
+    if "S!" in tier_str:
         return 1
-    if tier_str == "S2":
-        return 2
+    
+    match = re.search(r'S(\d+)', tier_str)
+    if match:
+        return int(match.group(1))
+        
     return 0
 
 def validate_prime_sequence(sequence: List[Dict], schema: Dict[int, Dict]) -> bool:
