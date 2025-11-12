@@ -7,10 +7,10 @@ install:
 	$(PIP) install -r requirements.txt
 
 run:
-	streamlit run streamlit_app.py
+	$(PYTHON) -m streamlit run chat_demo_app.py
 
 chat:
-        streamlit run admin_app.py
+	$(PYTHON) -m streamlit run admin_app.py
 
 demo:
-	streamlit run chat_demo_app.py
+	$(PYTHON) -m streamlit run chat_demo_app.py
