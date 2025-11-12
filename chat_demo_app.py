@@ -33,6 +33,11 @@ except ModuleNotFoundError:
     PdfReader = None
 
 from app_settings import DEFAULT_METRIC_FLOORS, load_settings
+from agent_selector import (
+    init_llm_provider,
+    render_llm_selector,
+    use_openai_provider,
+)
 from services.api import ApiService, requests
 from services.memory_service import (
     MemoryService,
@@ -1079,6 +1084,10 @@ def _render_app():
         st.session_state.login_time = None
     if "prime_symbols" not in st.session_state:
         st.session_state.prime_symbols = DEFAULT_PRIME_SYMBOLS
+    init_llm_provider(
+        openai_ready=bool(OpenAI and OPENAI_API_KEY),
+        gemini_ready=bool(genai and GENAI_KEY),
+    )
 
     if st.session_state.user_type == "Demo user" and st.session_state.login_time:
         remaining = 600 - (time.time() - st.session_state.login_time)
@@ -1150,6 +1159,11 @@ def _render_app():
     else:
         st.sidebar.info("No ledgers detected yet — choose “Add new ledger…” to create one.")
 
+    render_llm_selector(
+        openai_ready=bool(OpenAI and OPENAI_API_KEY),
+        gemini_ready=bool(genai and GENAI_KEY),
+    )
+
     if st.session_state.get("prefill_top_input"):
         st.session_state["top_input"] = st.session_state.prefill_top_input
         st.session_state.prefill_top_input = None
@@ -1166,7 +1180,7 @@ def _render_app():
 
     if prompt_top:
         attachments = list(st.session_state.pending_attachments)
-        _process_memory_text(prompt_top, use_openai=True, attachments=attachments)
+        _process_memory_text(prompt_top, use_openai=use_openai_provider(), attachments=attachments)
         st.session_state.pending_attachments = []
         # Streamlit clears chat inputs automatically after submission, so avoid
         # writing to the widget-managed key here to prevent SessionState errors.

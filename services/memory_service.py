@@ -4,9 +4,12 @@ import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Mapping, Sequence
+from typing import Mapping, Sequence, TYPE_CHECKING
 
 from prime_tagger import tag_primes
+
+if TYPE_CHECKING:
+    from services.api import ApiService
 
 
 __all__ = [
@@ -99,7 +102,8 @@ def strip_ledger_noise(text: str, *, user_only: bool = False) -> str:
             continue
         if user_only and lowered.startswith(("assistant:", "system:")):
             continue
-        if len(stripped) > 20:
+        has_quote = any(q in stripped for q in ('"', "“", "”", "‘", "’"))
+        if len(stripped) > 20 or has_quote:
             clean_lines.append(stripped)
     return "\n".join(clean_lines)
 

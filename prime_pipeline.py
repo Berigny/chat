@@ -154,32 +154,16 @@ def build_anchor_batches(
         if not safe:
             safe = [{"prime": fallback_prime, "delta": 1}]
 
-        current_group: list[dict[str, int]] = []
-        last_parity: int | None = None
-
-        def _flush_group(group: list[dict[str, int]]) -> None:
-            if not group:
-                return
-            ordered_primes = [item["prime"] for item in group]
-            base_sequence = flow_safe_sequence(ordered_primes)
-            index = 0
-            for factor in group:
-                delta = int(factor.get("delta", 1))
-                for _ in range(2):
-                    base_sequence[index]["delta"] = delta
-                    index += 1
-            batches.append(base_sequence)
-
+        sequence_batch: list[dict[str, int]] = []
         for factor in safe:
             prime = factor["prime"]
-            parity = prime % 2
-            if last_parity is not None and parity < last_parity:
-                _flush_group(current_group)
-                current_group = []
-            current_group.append({"prime": prime, "delta": factor.get("delta", 1)})
-            last_parity = parity
+            delta = int(factor.get("delta", 1))
+            flow_safe = flow_safe_sequence([prime])
+            for entry in flow_safe:
+                entry["delta"] = delta
+            sequence_batch.extend(flow_safe)
 
-        _flush_group(current_group)
+        batches.append(sequence_batch)
 
     valid_primes = tuple(schema.keys()) or (fallback_prime,)
     if factors_override:
