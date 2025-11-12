@@ -750,12 +750,6 @@ def _strip_ledger_noise(text: str, *, user_only: bool = False) -> str:
     return candidate or text
 
 
-MEMORY_RESOLVER = MemoryResolver(
-    _keywords_from_prompt,
-    lambda text: _strip_ledger_noise(text),
-)
-
-
 def _build_lawful_augmentation_prompt(
     user_question: str,
     *,
@@ -868,6 +862,12 @@ def _keywords_from_prompt(text: str) -> list[str]:
         seen.add(token)
         keywords.append(token)
     return keywords
+
+
+MEMORY_RESOLVER = MemoryResolver(
+    _keywords_from_prompt,
+    lambda text: _strip_ledger_noise(text),
+)
 
 
 def _extract_transcript_text(transcript) -> str | None:
