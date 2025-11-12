@@ -54,6 +54,15 @@ class ApiService:
     ) -> List[Dict[str, Any]]:
         return self._client.fetch_memories(entity, ledger_id=ledger_id, limit=limit, since=since)
 
+    def latest_memory_text(
+        self,
+        entity: str,
+        *,
+        ledger_id: Optional[str] = None,
+        since: int | None = None,
+    ) -> Optional[str]:
+        return self._client.latest_memory_text(entity, ledger_id=ledger_id, since=since)
+
     def fetch_ledger(self, entity: str, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
         return self._client.fetch_ledger(entity, ledger_id=ledger_id)
 

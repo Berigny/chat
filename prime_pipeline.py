@@ -36,25 +36,6 @@ def normalize_override_factors(factors: object, valid_primes: Sequence[int]) -> 
     return _normalize_factors_override(factors, valid_primes)
 
 
-def _flow_safe_factors(factors: Factors, valid_primes: Sequence[int]) -> Factors:
-    filtered: Factors = []
-    seen: set[int] = set()
-    for factor in factors:
-        prime = factor.get("prime")
-        if prime not in valid_primes or prime in seen:
-            continue
-        delta = factor.get("delta", 1)
-        try:
-            entry = {"prime": int(prime), "delta": int(delta)}
-        except (TypeError, ValueError):
-            continue
-        filtered.append(entry)
-        seen.add(entry["prime"])
-    odds = [f for f in filtered if f["prime"] % 2 == 1]
-    evens = [f for f in filtered if f["prime"] % 2 == 0]
-    return odds + evens
-
-
 def _extract_json_object(raw: str) -> Dict | None:
     if not raw:
         return None
@@ -130,6 +111,25 @@ def map_to_primes(
     return [{"prime": int(p), "delta": 1} for p in primes if p in valid]
 
 
+def _flow_safe_factors(factors: Factors, valid_primes: Sequence[int]) -> Factors:
+    filtered: Factors = []
+    seen: set[int] = set()
+    for factor in factors:
+        prime = factor.get("prime")
+        if prime not in valid_primes or prime in seen:
+            continue
+        delta = factor.get("delta", 1)
+        try:
+            entry = {"prime": int(prime), "delta": int(delta)}
+        except (TypeError, ValueError):
+            continue
+        filtered.append(entry)
+        seen.add(entry["prime"])
+    odds = [f for f in filtered if f["prime"] % 2 == 1]
+    evens = [f for f in filtered if f["prime"] % 2 == 0]
+    return odds + evens
+
+
 def build_anchor_batches(
     text: str,
     schema: PrimeSchema,
@@ -138,6 +138,12 @@ def build_anchor_batches(
     factors_override: Sequence[Dict[str, int]] | None = None,
     llm_extractor: Callable[[str, PrimeSchema], Factors] | None = None,
 ) -> FactorBatches:
+    """Return batches of flow-safe factors for anchoring.
+
+    Each batch represents a lawful traversal across the ledger. The caller is
+    responsible for invoking the `/anchor` endpoint once per batch.
+    """
+
     valid_primes = tuple(schema.keys()) or (fallback_prime,)
     batches: FactorBatches = []
 
@@ -173,7 +179,7 @@ def build_anchor_batches(
             _append_batches(tiered[tier])
 
     if not batches:
-        _append_batches([{ "prime": fallback_prime, "delta": 1 }])
+        _append_batches([{"prime": fallback_prime, "delta": 1}])
 
     return batches
 
