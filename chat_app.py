@@ -67,13 +67,26 @@ def _anchor(
 
     schema = st.session_state.get("prime_schema") or DEFAULT_PRIME_SCHEMA
 
+    def _normalise(seq: Iterable) -> List[Dict[str, int]]:
+        normalised: List[Dict[str, int]] = []
+        for item in seq:
+            if isinstance(item, dict):
+                prime = item.get("prime", item.get("p"))
+                delta = item.get("delta", item.get("d", 1))
+                if prime is None:
+                    continue
+                normalised.append({"prime": int(prime), "delta": int(delta)})
+            else:
+                normalised.extend(flow_sequence([int(item)]))
+        return normalised
+
     if factors_override is None:
         primes = tag_primes(text, schema)
         safe_seq = flow_sequence(primes)
     else:
         override = list(factors_override)
         if override and isinstance(override[0], dict):
-            safe_seq = override
+            safe_seq = _normalise(override)
         else:
             safe_seq = flow_sequence([int(p) for p in override])
 
@@ -125,7 +138,7 @@ def _reset_entity_factors() -> bool:
         if not isinstance(prime, int) or not value:
             continue
         delta = -abs(int(value))
-        seq = [{"p": prime, "d": delta}, {"p": prime, "d": delta}]
+        seq = flow_sequence([prime], delta=delta)
         try:
             post = requests.post(
                 f"{API_URL}/anchor",
@@ -309,4 +322,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
