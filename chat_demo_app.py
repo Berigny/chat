@@ -38,6 +38,7 @@ except ModuleNotFoundError:
 
 from app_settings import DEFAULT_METRIC_FLOORS, load_settings
 from services.api import ApiService, requests
+from services.memory_resolver import MemoryResolver
 from validators import validate_prime_sequence, get_tier_value
 from prime_pipeline import (
     build_anchor_batches,
@@ -749,6 +750,27 @@ def _strip_ledger_noise(text: str, *, user_only: bool = False) -> str:
     return candidate or text
 
 
+def _keywords_from_prompt(text: str) -> list[str]:
+    tokens = re.findall(r"[A-Za-z]{3,}", (text or "").lower())
+    keywords: list[str] = []
+    seen = set()
+    for token in tokens:
+        if token in _STOPWORDS:
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        keywords.append(token)
+    return keywords
+
+
+
+MEMORY_RESOLVER = MemoryResolver(
+    _keywords_from_prompt,
+    lambda text: _strip_ledger_noise(text),
+)
+
+
 def _build_lawful_augmentation_prompt(
     user_question: str,
     *,
@@ -848,19 +870,6 @@ def _trigger_rerun():
         except RuntimeError:
             pass
 
-
-def _keywords_from_prompt(text: str) -> list[str]:
-    tokens = re.findall(r"[A-Za-z]{3,}", (text or "").lower())
-    keywords: list[str] = []
-    seen = set()
-    for token in tokens:
-        if token in _STOPWORDS:
-            continue
-        if token in seen:
-            continue
-        seen.add(token)
-        keywords.append(token)
-    return keywords
 
 
 def _extract_transcript_text(transcript) -> str | None:
@@ -965,37 +974,6 @@ def _memory_context_block(limit: int = 3, since: int | None = None, *, keywords:
         focus = ", ".join(keywords[:3])
         return f"- No ledger memories matched the topic ({focus})."
     return "\n".join(snippets)
-
-
-def _filter_memories(entries: list[dict], keywords: list[str] | None = None) -> list[dict]:
-    print("[FILTER] input entries:", len(entries), "keywords:", keywords)
-    for idx, e in enumerate(entries[:5]):
-        txt = (e.get("text") or "")[:120] + "…"
-        print(f"[FILTER] entry {idx} text: {txt}")
-        print(f"[FILTER] entry {idx} keys: {list(e.keys())}")
-    if not keywords:
-        print("[FILTER] no keywords → return as-is")
-        return entries
-    normalized_keywords = [k.lower() for k in keywords if len(k) >= 3]
-    if not normalized_keywords:
-        return entries
-    filtered = []
-    normalized_keywords = [k.lower() for k in keywords if len(k) >= 3]
-    for entry in entries:
-        text = (entry.get("text") or "").lower()
-        if not text:
-            continue
-        if any(text.startswith(prefix) for prefix in _RECALL_SKIP_PREFIXES):
-            continue
-        score = sum(text.count(k) for k in normalized_keywords)
-        if score:
-            entry["_match_score"] = score
-            filtered.append(entry)
-    if filtered:
-        filtered.sort(key=lambda e: (-(e.get("_match_score", 1)), -e.get("timestamp", 0)))
-    for entry in filtered:
-        entry.pop("_match_score", None)
-    return filtered
 
 
 def _recent_chat_block(max_entries: int = 8) -> str | None:
@@ -1521,41 +1499,57 @@ def _maybe_handle_recall_query(text: str) -> bool:
         or end_ms is not None
         or weighted_total > 0.45
     )
-    entries: list[dict] = []
+    raw_entries_count = 0
+    resolution = None
     handled = False
     if should_recall:
         fetch_limit = min(100, max(limit * 4, 20))
         raw_entries = _memory_lookup(limit=fetch_limit, since=since_ms)
+        raw_entries_count = len(raw_entries)
         if end_ms is not None:
             raw_entries = [
                 entry
                 for entry in raw_entries
                 if entry.get("timestamp") and entry["timestamp"] <= end_ms
             ]
-        entries = _filter_memories(raw_entries, keywords)
-        if not entries:
-            focus = ", ".join(keywords[:3]) if keywords else "requested topic"
+        resolution = MEMORY_RESOLVER.resolve(
+            text,
+            st.session_state.get("chat_history") or [],
+            raw_entries,
+            keywords=keywords,
+        )
+        if resolution.summary:
+            if keywords and not resolution.matched_terms:
+                focus_pool = resolution.focus_terms or [kw for kw in keywords if len(kw) > 2]
+                focus = ", ".join(focus_pool[:3]) if focus_pool else "the requested topic"
+                preface = (
+                    f"I could not find an exact ledger entry mentioning {focus}, but here is the closest related context:\n\n"
+                )
+            else:
+                preface = ""
+            st.session_state.chat_history.append(("Bot", f"{preface}{resolution.summary}"))
+            handled = True
+        else:
+            focus_terms = resolution.focus_terms or [kw for kw in (keywords or []) if len(kw) > 2]
+            focus = ", ".join(focus_terms[:3]) if focus_terms else "the requested topic"
             fallback_summary = _summarize_accessible_memories(max(5, limit), since=since_ms)
             message = f"No stored memories matched “{focus}” yet."
             if fallback_summary:
                 message = f"{message}\n\nHere is the latest ledger context I can access:\n{fallback_summary}"
             st.session_state.chat_history.append(("Bot", message))
             return True
-        else:
-            entry = entries[0]
-            stamp = entry.get("timestamp")
-            prefix = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp / 1000)) if stamp else "unknown time"
-            text = _strip_ledger_noise((entry.get("text") or "").strip())
-            snippet = text[:320].replace("\n", " ")
-            if len(text) > len(snippet):
-                snippet += "…"
-            st.session_state.chat_history.append(("Bot", f"{prefix} — {snippet}"))
-            handled = True
     print("[RECALL] should_recall =", should_recall, "weighted_total =", weighted_total)
     if should_recall:
-        print("[RECALL] final entries after filter:", len(entries))
-        if not entries:
-            print("[RECALL] → empty list, will show 'No stored memories matched'")
+        print("[RECALL] candidate entries:", raw_entries_count)
+        if resolution and resolution.summary:
+            print(
+                "[RECALL] summary sentences:",
+                resolution.used_entries,
+                "matched terms:",
+                resolution.matched_terms,
+            )
+        else:
+            print("[RECALL] → no usable summary, fallback engaged")
     print("=" * 60)
     return handled
 
