@@ -649,7 +649,7 @@ def _latest_user_transcript(current_request: str, *, limit: int = 5) -> str | No
         return None
     ledger_id = st.session_state.get("ledger_id")
     schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
-    start_ms, _ = _parse_time_range(current_request)
+    start_ms, _ = derive_time_filters(current_request)
     return MEMORY_SERVICE.latest_user_transcript(
         entity,
         schema,
