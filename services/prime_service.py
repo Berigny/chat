@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
-from prime_pipeline import build_anchor_payload, normalize_override_factors
+from prime_pipeline import build_anchor_batches, normalize_override_factors
 
 
 Payload = Mapping[str, object]
@@ -18,15 +18,15 @@ class PrimeService:
     api_service: "ApiService"
     fallback_prime: int
 
-    def build_payload(
+    def build_batches(
         self,
         text: str,
         schema: Mapping[int, Mapping[str, object]],
         *,
         factors_override: Sequence[Mapping[str, int]] | None = None,
         llm_extractor=None,
-    ) -> Payload:
-        """Return the payload ready for the `/anchor` endpoint."""
+    ) -> list[list[dict[str, int]]]:
+        """Return flow-safe factor batches ready for anchoring."""
 
         valid_primes = tuple(schema.keys()) or (self.fallback_prime,)
         override = (
@@ -34,7 +34,7 @@ class PrimeService:
             if factors_override
             else None
         )
-        return build_anchor_payload(
+        return build_anchor_batches(
             text,
             schema,
             fallback_prime=self.fallback_prime,
@@ -55,19 +55,20 @@ class PrimeService:
     ) -> Payload:
         """Send the text and factors to the engine and return the payload."""
 
-        payload = self.build_payload(
+        batches = self.build_batches(
             text,
             schema,
             factors_override=factors_override,
             llm_extractor=llm_extractor,
         )
-        self.api_service.anchor(
-            entity,
-            payload.get("factors", []),
-            ledger_id=ledger_id,
-            text=payload.get("text") or text,
-        )
-        return payload
+        for index, factors in enumerate(batches):
+            self.api_service.anchor(
+                entity,
+                factors,
+                ledger_id=ledger_id,
+                text=text if index == 0 else None,
+            )
+        return {"text": text, "batches": batches}
 
 
 def create_prime_service(api_service: "ApiService", fallback_prime: int) -> PrimeService:

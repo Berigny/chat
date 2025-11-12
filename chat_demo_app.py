@@ -9,7 +9,6 @@ import os
 import re
 import time
 import wave
-from datetime import datetime, timedelta
 
 from pathlib import Path
 
@@ -29,21 +28,20 @@ except ModuleNotFoundError:
     OpenAI = None
     OpenAIClientBadRequest = None
 try:
-    import parsedatetime as pdt
-except ModuleNotFoundError:
-    pdt = None
-try:
     from pypdf import PdfReader
 except ModuleNotFoundError:
     PdfReader = None
-try:
-    import dateparser
-except ModuleNotFoundError:
-    dateparser = None
 
 from app_settings import DEFAULT_METRIC_FLOORS, load_settings
 from services.api import ApiService, requests
-from services.memory_service import MemoryService, is_recall_query, _strip_ledger_noise as strip_ledger_noise
+from services.memory_service import (
+    MemoryService,
+    derive_time_filters,
+    estimate_quote_count,
+    is_recall_query,
+    strip_ledger_noise,
+)
+from services.prompt_service import create_prompt_service
 from services.prime_service import create_prime_service
 from prime_pipeline import (
     call_factor_extraction_llm,
@@ -197,6 +195,7 @@ FALLBACK_PRIME = PRIME_ARRAY[0]
 
 PRIME_SERVICE = create_prime_service(API_SERVICE, FALLBACK_PRIME)
 MEMORY_SERVICE = MemoryService(API_SERVICE, PRIME_WEIGHTS)
+PROMPT_SERVICE = create_prompt_service(MEMORY_SERVICE)
 
 
 def _prime_semantics_block() -> str:
@@ -241,8 +240,8 @@ def _process_memory_text(text: str, use_openai: bool, *, attachments: list[dict]
     st.session_state.chat_history.append(("You", cleaned))
     if _maybe_handle_recall_query(cleaned):
         return
-    quote_mode = _is_quote_request(cleaned)
-    quote_count = _estimate_quote_count(cleaned) if quote_mode else None
+    quote_mode = is_recall_query(cleaned)
+    quote_count = estimate_quote_count(cleaned) if quote_mode else None
     if attachments:
         for attachment in attachments:
             preview = (attachment.get("text") or "").strip().replace("\n", " ")
@@ -299,117 +298,6 @@ def _normalize_audio(raw_bytes: bytes) -> io.BytesIO:
 
 
 
-
-
-def _select_lawful_context(
-    query: str,
-    *,
-    limit: int = 5,
-    time_window_hours: int = 72,
-    since: int | None = None,
-    until: int | None = None,
-) -> list[dict]:
-    """Select relevant memories based on keyword matching and recency."""
-    entity = _get_entity()
-    if not entity:
-        return []
-    ledger_id = st.session_state.get("ledger_id")
-    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
-    return MEMORY_SERVICE.select_context(
-        entity,
-        query,
-        schema,
-        ledger_id=ledger_id,
-        limit=limit,
-        time_window_hours=time_window_hours,
-        since=since,
-        until=until,
-    )
-
-
-TIME_PATTERN = re.compile(r"\b(\d{1,2}:\d{2}(?::\d{2})?\s?(?:am|pm)?)\b", re.IGNORECASE)
-RELATIVE_NUMBER_PATTERN = re.compile(r"\b(\d+)\s+(minute|hour|day|week)s?\s+ago\b", re.IGNORECASE)
-RELATIVE_ARTICLE_PATTERN = re.compile(r"\b(an|a)\s+(minute|hour|day|week)\s+ago\b", re.IGNORECASE)
-LAST_RANGE_PATTERN = re.compile(r"\blast\s+(\d+)\s+(minute|hour|day|week)s?\b", re.IGNORECASE)
-PAST_RANGE_PATTERN = re.compile(r"\bpast\s+(\d+)\s+(minute|hour|day|week)s?\b", re.IGNORECASE)
-TIME_RANGE_PATTERN = re.compile(
-    r"(?:yesterday|today)\s+between\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?",
-    re.IGNORECASE,
-)
-CAL = pdt.Calendar() if pdt else None
-QUOTE_KEYWORD_PATTERN = re.compile(r"\b(quote|verbatim|exact)\b", re.I)
-RECALL_KEYWORD_PATTERN = re.compile(r"\b(recall|retrieve|topics?|covered|definitions?)\b", re.I)
-RECALL_PHRASES = (
-    "what did i say",
-    "what did we talk about",
-    "did we talk about",
-    "what did we discuss",
-    "did we discuss",
-    "what did we cover",
-    "did we cover",
-    "what topics did we cover",
-    "what topics",
-    "last few days",
-    "last 24 hours",
-    "last 48 hours",
-    "past day",
-    "past few days",
-    "definitions of god",
-    "definitions of gods",
-    "god definitions",
-)
-RELATIVE_WORD_OFFSETS = {
-    "yesterday": 24 * 3600,
-    "last night": 12 * 3600,
-    "earlier today": 6 * 3600,
-    "this morning": 6 * 3600,
-    "this afternoon": 6 * 3600,
-    "this evening": 6 * 3600,
-    "an hour ago": 3600,
-    "an hour earlier": 3600,
-    "last week": 7 * 24 * 3600,
-}
-UNIT_TO_SECONDS = {"minute": 60, "hour": 3600, "day": 86400, "week": 7 * 86400}
-PREFIXES = ("/q", "@ledger", "::memory")
-_DIGIT_PATTERN = re.compile(r"\b\d+\b")
-_NUMBER_WORDS = {
-    "one": 1,
-    "two": 2,
-    "three": 3,
-    "four": 4,
-    "five": 5,
-    "six": 6,
-    "seven": 7,
-    "eight": 8,
-    "nine": 9,
-    "ten": 10,
-    "eleven": 11,
-    "twelve": 12,
-}
-_QUANTITY_HINTS = {
-    "a couple": 2,
-    "couple": 2,
-    "a few": 3,
-    "few": 3,
-    "handful": 4,
-    "some": 4,
-    "several": 6,
-    "many": 8,
-    "plenty": 8,
-    "all": 15,
-    "entire": 15,
-}
-
-_RECALL_SKIP_PREFIXES = (
-    "what information have we been discussing",
-    "what information do we have",
-    "what did we talk about",
-    "can you provide",
-    "what topics did we cover",
-    "what information have we been",
-)
-
-
 def _cosine(a, b):
     if not a or not b or len(a) != len(b):
         return 0.0
@@ -447,125 +335,21 @@ def _memory_lookup(limit: int = 3, since: int | None = None):
     )
 
 
-def _render_memories(entries):
-    if not entries:
-        st.session_state.chat_history.append(("Memory", "Ledger recall: no matching memories."))
-        return
-    for entry in entries:
-        stamp = entry.get("timestamp")
-        ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp / 1000)) if stamp else "unknown time"
-        text = entry.get("text", "(no text)")
-        msg = f"{ts} — {text}"
-        st.session_state.chat_history.append(("Memory", msg))
-
-
-def _is_quote_request(text: str) -> bool:
-    normalized = text.strip().lower()
-    return normalized.startswith(PREFIXES) or QUOTE_KEYWORD_PATTERN.search(normalized) is not None
-
-
-def _extract_requested_count(text: str) -> int | None:
-    if not text:
-        return None
-
-    digits = [int(match) for match in _DIGIT_PATTERN.findall(text)]
-    if digits:
-        return digits[-1]
-
-    lowered = text.lower()
-    for phrase, value in _QUANTITY_HINTS.items():
-        if phrase in lowered:
-            return value
-
-    for word, value in _NUMBER_WORDS.items():
-        if re.search(rf"\b{re.escape(word)}\b", lowered):
-            return value
-
-    return None
-
-
-def _estimate_quote_count(text: str) -> int:
-    explicit = _extract_requested_count(text)
-    if explicit:
-        return max(1, min(explicit, 25))
-
-    lowered = (text or "").lower()
-    for phrase, value in _QUANTITY_HINTS.items():
-        if phrase in lowered:
-            return max(1, min(value, 25))
-
-    return 5
-
-
-QUOTE_LIST_PATTERN = re.compile(r"^\s*\d{1,2}[).:-]\s+")
-BULLET_QUOTE_PATTERN = re.compile(r"^\s*[-\u2022]\s+")
-
-
-def _build_lawful_augmentation_prompt(
-    user_question: str,
-    *,
-    attachments: list[dict] | None = None,
-    since: int | None = None,
-    until: int | None = None,
-) -> str:
-    """Build a rich prompt that unshackles the LLM to use its full context window."""
-    context_memories = _select_lawful_context(
-        user_question,
-        limit=10,  # Provide more memories for richer context.
-        time_window_hours=168,  # Extend to a full week.
+def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None) -> str:
+    entity = _get_entity()
+    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+    ledger_id = st.session_state.get("ledger_id")
+    since, until = derive_time_filters(user_question)
+    history = st.session_state.get("chat_history") or []
+    return PROMPT_SERVICE.build_augmented_prompt(
+        entity=entity,
+        question=user_question,
+        schema=schema,
+        chat_history=history,
+        ledger_id=ledger_id,
+        attachments=attachments or [],
         since=since,
         until=until,
-    )
-
-    # Rephrase the prompt to be less restrictive and more empowering.
-    prompt_lines = [
-        "You are a helpful assistant with access to a perfect, exact memory ledger.",
-        "Your goal is to provide the most relevant, insightful, and natural response.",
-        "Use the provided ledger memories and conversation history to understand the full context.",
-        "You are free to synthesize information, draw conclusions, and ask clarifying questions.",
-        "Your response should be helpful and conversational, not a rigid report.",
-    ]
-
-    if context_memories:
-        prompt_lines.append("\n--- Ledger Memories (most relevant first) ---")
-        for entry in context_memories:
-            sanitized = entry.get("_sanitized_text") or strip_ledger_noise((entry.get("text") or "").strip())
-            if not sanitized:
-                continue
-            stamp = entry.get("timestamp")
-            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp / 1000)) if stamp else "No timestamp"
-            prompt_lines.append(f"[{ts}] {sanitized}")
-    else:
-        prompt_lines.append("\n--- Ledger Memories ---")
-        prompt_lines.append("(No specific memories matched the query, but the full ledger is available.)")
-
-    # Provide a much larger view of the recent conversation.
-    chat_block = _recent_chat_block(max_entries=15)
-    if chat_block:
-        prompt_lines.append("\n--- Recent Conversation ---")
-        prompt_lines.append(chat_block)
-
-    if attachments:
-        prompt_lines.append("\n--- Attachments ---")
-        for attachment in attachments:
-            name = attachment.get("name", "attachment")
-            snippet = (attachment.get("text") or "").strip()[:1000]
-            if snippet:
-                prompt_lines.append(f"[{name}] {snippet}...")
-
-    prompt_lines.append(f"\n--- Your Turn ---")
-    prompt_lines.append(f"User's request: {user_question}")
-    prompt_lines.append("Your response:")
-    return "\n".join(prompt_lines)
-
-
-def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None) -> str:
-    start_ms, end_ms = _parse_time_range(user_question)
-    return _build_lawful_augmentation_prompt(
-        user_question,
-        attachments=attachments,
-        since=start_ms,
-        until=end_ms,
     )
 
 
@@ -625,75 +409,6 @@ def _extract_transcript_text(transcript) -> str | None:
             if combined:
                 return combined
     return None
-
-
-def _summarize_accessible_memories(limit: int, since: int | None = None, *, keywords: list[str] | None = None) -> str | None:
-    fetch_limit = limit
-    if keywords:
-        fetch_limit = min(100, max(limit * 4, 20))
-    entries = _memory_lookup(limit=fetch_limit, since=since)
-    if not entries:
-        return "Ledger currently has no stored memories yet."
-    lines: list[str] = []
-    normalized_keywords = [k.lower() for k in (keywords or []) if len(k) >= 3]
-    for entry in entries:
-        stamp = entry.get("timestamp")
-        human_ts = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(stamp / 1000)) if stamp else "unknown time"
-        text = strip_ledger_noise((entry.get("text") or "").strip())
-        if not text:
-            continue
-        lowered = text.lower()
-        if lowered.startswith("(ledger reset"):
-            continue
-        if normalized_keywords and not any(k in lowered for k in normalized_keywords):
-            continue
-        snippet = text[:320].replace("\n", " ")
-        if len(text) > len(snippet):
-            snippet = f"{snippet}…"
-        lines.append(f"{human_ts}: {snippet or '(no text)'}")
-    if not lines:
-        if keywords:
-            focus = ", ".join(keywords[:3])
-            return f"No stored memories matched the requested topic ({focus})."
-        return "Ledger currently has no user-authored memories yet."
-    scope = (
-        f"since {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(since / 1000))}"
-        if since
-        else "from the latest anchors"
-    )
-    return f"I could not extract exact verbatim quotes for that query, but here is what I can access {scope}:\n" + "\n".join(
-        lines
-    )
-
-
-def _memory_context_block(limit: int = 3, since: int | None = None, *, keywords: list[str] | None = None) -> str:
-    fetch_limit = limit
-    if keywords:
-        fetch_limit = min(100, max(limit * 4, 20))
-    entries = _memory_lookup(limit=fetch_limit, since=since)
-    snippets: list[str] = []
-    normalized_keywords = [k.lower() for k in (keywords or []) if len(k) >= 3]
-    for entry in entries:
-        text = strip_ledger_noise((entry.get("text") or "").strip())
-        if not text:
-            continue
-        lowered = text.lower()
-        if lowered.startswith("(ledger reset before enrichment"):
-            continue
-        if normalized_keywords and not any(k in lowered for k in normalized_keywords):
-            continue
-        source = entry.get("meta", {}).get("source") or entry.get("name") or entry.get("attachment") or ""
-        snippet = text[:240].replace("\n", " ")
-        if len(text) > len(snippet):
-            snippet += "…"
-        label = f" ({source})" if source else ""
-        snippets.append(f"- {snippet}{label}")
-    if not snippets and keywords:
-        focus = ", ".join(keywords[:3])
-        return f"- No ledger memories matched the topic ({focus})."
-    return "\n".join(snippets)
-
-
 def _recent_chat_block(max_entries: int = 15) -> str | None:
     """Format the recent chat history into a string for the LLM context."""
     history = st.session_state.get("chat_history") or []
@@ -728,88 +443,21 @@ def _build_capabilities_block() -> str:
         "",
         _prime_semantics_block(),
     ]
-    ledger = _memory_context_block(limit=5)
+    entity = _get_entity()
+    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+    ledger_id = st.session_state.get("ledger_id")
+    ledger = MEMORY_SERVICE.render_context_block(
+        entity,
+        schema,
+        ledger_id=ledger_id,
+        limit=5,
+    )
     if ledger:
         lines.extend(["", "Recent ledger memories:", ledger])
     recent_chat = _recent_chat_block()
     if recent_chat:
         lines.extend(["", "Recent chat summary:", recent_chat])
     return "\n".join(lines)
-
-
-def _parse_time_range(text: str) -> tuple[int | None, int | None]:
-    if not text:
-        return None, None
-    match = TIME_RANGE_PATTERN.search(text)
-    if not match:
-        return None, None
-
-    lowered = text.lower()
-    now = datetime.now()
-    base_date = now - timedelta(days=1) if "yesterday" in lowered else now
-
-    try:
-        start_hour = int(match.group(1))
-        start_minute = int(match.group(2) or 0)
-        start_ampm = (match.group(3) or "").lower()
-        end_hour = int(match.group(4))
-        end_minute = int(match.group(5) or 0)
-        end_ampm = (match.group(6) or "").lower()
-
-        if not start_ampm and end_ampm:
-            start_ampm = end_ampm
-        if start_ampm == "pm" and start_hour != 12:
-            start_hour += 12
-        if start_ampm == "am" and start_hour == 12:
-            start_hour = 0
-        if not end_ampm and start_ampm:
-            end_ampm = start_ampm
-        if end_ampm == "pm" and end_hour != 12:
-            end_hour += 12
-        if end_ampm == "am" and end_hour == 12:
-            end_hour = 0
-
-        start_dt = base_date.replace(hour=start_hour % 24, minute=start_minute, second=0, microsecond=0)
-        end_dt = base_date.replace(hour=end_hour % 24, minute=end_minute, second=0, microsecond=0)
-        if end_dt <= start_dt:
-            end_dt += timedelta(days=1)
-
-        return int(start_dt.timestamp() * 1000), int(end_dt.timestamp() * 1000)
-    except Exception:
-        return None, None
-
-
-def _infer_relative_timestamp(text: str) -> int | None:
-    if not text:
-        return None
-    lowered = text.lower()
-    now = time.time()
-    for phrase, seconds in RELATIVE_WORD_OFFSETS.items():
-        if phrase in lowered:
-            return int((now - seconds) * 1000)
-    match = RELATIVE_NUMBER_PATTERN.search(lowered)
-    if match:
-        amount = int(match.group(1))
-        unit = match.group(2).lower().rstrip("s")
-        seconds = UNIT_TO_SECONDS.get(unit)
-        if seconds:
-            return int((now - amount * seconds) * 1000)
-    match = RELATIVE_ARTICLE_PATTERN.search(lowered)
-    if match:
-        unit = match.group(2).lower()
-        seconds = UNIT_TO_SECONDS.get(unit)
-        if seconds:
-            return int((now - seconds) * 1000)
-    match = LAST_RANGE_PATTERN.search(lowered) or PAST_RANGE_PATTERN.search(lowered)
-    if match:
-        amount = int(match.group(1))
-        unit = match.group(2).lower().rstrip("s")
-        seconds = UNIT_TO_SECONDS.get(unit)
-        if seconds:
-            return int((now - amount * seconds) * 1000)
-    return None
-
-
 def _ingest_attachment(uploaded_file) -> dict | None:
     if uploaded_file is None:
         return None
@@ -1118,27 +766,19 @@ def _maybe_handle_recall_query(text: str) -> bool:
     if not is_recall_query(text):
         return False
 
-    normalized = text.strip().lower()
-    limit = _estimate_quote_count(normalized)
-    since_ms, until_ms = _parse_time_range(normalized)
-    if since_ms is None:
-        since_ms = _infer_relative_timestamp(normalized)
-
-    # Use the more reliable lawful context selection.
-    memories = _select_lawful_context(text, limit=limit, since=since_ms, until=until_ms)
-    if not memories:
+    entity = _get_entity()
+    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+    ledger_id = st.session_state.get("ledger_id")
+    response = MEMORY_SERVICE.build_recall_response(
+        entity,
+        text,
+        schema,
+        ledger_id=ledger_id,
+    )
+    if response:
+        st.session_state.chat_history.append(("Bot", response))
+    else:
         st.session_state.chat_history.append(("Bot", "I couldn't find any matching memories in the ledger."))
-        return True
-
-    # Format the response.
-    response_lines = ["Here’s what the ledger currently recalls:"]
-    for entry in memories:
-        timestamp = entry.get("timestamp")
-        date_str = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M")
-        text_content = entry.get("_sanitized_text", entry.get("text", "")).strip()
-        response_lines.append(f"[{date_str} • ledger] {text_content}")
-
-    st.session_state.chat_history.append(("Bot", "\n".join(response_lines)))
     return True
 
 
