@@ -93,6 +93,27 @@ class DualSubstrateClient:
         data = resp.json()
         return data if isinstance(data, list) else []
 
+    def latest_memory_text(
+        self,
+        entity: str,
+        *,
+        ledger_id: str | None = None,
+        since: int | None = None,
+    ) -> str | None:
+        """Return the most recent memory text if available."""
+
+        entries = self.fetch_memories(
+            entity,
+            ledger_id=ledger_id,
+            limit=1,
+            since=since,
+        )
+        if not entries:
+            return None
+        latest = entries[0]
+        text = latest.get("text") if isinstance(latest, dict) else None
+        return text if isinstance(text, str) else None
+
     def fetch_ledger(self, entity: str, *, ledger_id: str | None = None) -> dict[str, Any]:
         """Load the ledger factors for an entity."""
 

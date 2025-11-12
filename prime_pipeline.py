@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Callable, Dict, List, Sequence
 
+from flow_safe import sequence as flow_safe_sequence
 from prime_tagger import tag_primes
 from validators import get_tier_value
 
@@ -34,25 +35,6 @@ def normalize_override_factors(factors: object, valid_primes: Sequence[int]) -> 
     """Public wrapper for validating override payloads."""
 
     return _normalize_factors_override(factors, valid_primes)
-
-
-def _flow_safe_factors(factors: Factors, valid_primes: Sequence[int]) -> Factors:
-    filtered: Factors = []
-    seen: set[int] = set()
-    for factor in factors:
-        prime = factor.get("prime")
-        if prime not in valid_primes or prime in seen:
-            continue
-        delta = factor.get("delta", 1)
-        try:
-            entry = {"prime": int(prime), "delta": int(delta)}
-        except (TypeError, ValueError):
-            continue
-        filtered.append(entry)
-        seen.add(entry["prime"])
-    odds = [f for f in filtered if f["prime"] % 2 == 1]
-    evens = [f for f in filtered if f["prime"] % 2 == 0]
-    return odds + evens
 
 
 def _extract_json_object(raw: str) -> Dict | None:
@@ -130,6 +112,25 @@ def map_to_primes(
     return [{"prime": int(p), "delta": 1} for p in primes if p in valid]
 
 
+def _flow_safe_factors(factors: Factors, valid_primes: Sequence[int]) -> Factors:
+    filtered: Factors = []
+    seen: set[int] = set()
+    for factor in factors:
+        prime = factor.get("prime")
+        if prime not in valid_primes or prime in seen:
+            continue
+        delta = factor.get("delta", 1)
+        try:
+            entry = {"prime": int(prime), "delta": int(delta)}
+        except (TypeError, ValueError):
+            continue
+        filtered.append(entry)
+        seen.add(entry["prime"])
+    odds = [f for f in filtered if f["prime"] % 2 == 1]
+    evens = [f for f in filtered if f["prime"] % 2 == 0]
+    return odds + evens
+
+
 def build_anchor_batches(
     text: str,
     schema: PrimeSchema,
@@ -138,6 +139,12 @@ def build_anchor_batches(
     factors_override: Sequence[Dict[str, int]] | None = None,
     llm_extractor: Callable[[str, PrimeSchema], Factors] | None = None,
 ) -> FactorBatches:
+    """Return batches of flow-safe factors for anchoring.
+
+    Each batch represents a lawful traversal across the ledger. The caller is
+    responsible for invoking the `/anchor` endpoint once per batch.
+    """
+
     valid_primes = tuple(schema.keys()) or (fallback_prime,)
     batches: FactorBatches = []
 
@@ -146,13 +153,33 @@ def build_anchor_batches(
         safe = _flow_safe_factors(normalized, valid_primes)
         if not safe:
             safe = [{"prime": fallback_prime, "delta": 1}]
+
+        current_group: list[dict[str, int]] = []
+        last_parity: int | None = None
+
+        def _flush_group(group: list[dict[str, int]]) -> None:
+            if not group:
+                return
+            ordered_primes = [item["prime"] for item in group]
+            base_sequence = flow_safe_sequence(ordered_primes)
+            index = 0
+            for factor in group:
+                delta = int(factor.get("delta", 1))
+                for _ in range(2):
+                    base_sequence[index]["delta"] = delta
+                    index += 1
+            batches.append(base_sequence)
+
         for factor in safe:
-            batches.append(
-                [
-                    {"prime": factor["prime"], "delta": factor["delta"]},
-                    {"prime": factor["prime"], "delta": factor["delta"]},
-                ]
-            )
+            prime = factor["prime"]
+            parity = prime % 2
+            if last_parity is not None and parity < last_parity:
+                _flush_group(current_group)
+                current_group = []
+            current_group.append({"prime": prime, "delta": factor.get("delta", 1)})
+            last_parity = parity
+
+        _flush_group(current_group)
 
     if factors_override:
         _append_batches(list(factors_override))
@@ -173,7 +200,7 @@ def build_anchor_batches(
             _append_batches(tiered[tier])
 
     if not batches:
-        _append_batches([{ "prime": fallback_prime, "delta": 1 }])
+        _append_batches([{"prime": fallback_prime, "delta": 1}])
 
     return batches
 
