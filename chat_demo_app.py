@@ -13,7 +13,6 @@ from datetime import datetime, timedelta
 
 from pathlib import Path
 
-import requests
 from typing import Dict, List
 import streamlit as st
 try:
@@ -38,8 +37,14 @@ except ModuleNotFoundError:
     dateparser = None
 
 from app_settings import DEFAULT_METRIC_FLOORS, load_settings
-from api_client import DualSubstrateClient
+from services.api import ApiService, requests
 from validators import validate_prime_sequence, get_tier_value
+from prime_pipeline import (
+    build_anchor_batches,
+    call_factor_extraction_llm,
+    map_to_primes,
+    normalize_override_factors,
+)
 from prime_tagger import tag_primes
 
 SETTINGS = load_settings()
@@ -58,6 +63,12 @@ ASSET_DIR = Path(__file__).parent
 _RERUN_FN = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
 
 
+def _llm_factor_extractor(text: str, schema: dict[int, dict]) -> list[dict]:
+    if not (genai and GENAI_KEY):
+        return []
+    return call_factor_extraction_llm(text, schema, genai_module=genai)
+
+
 def _secret(key: str) -> str | None:
     """Retrieve a Streamlit secret defensively."""
 
@@ -73,7 +84,7 @@ def _secret(key: str) -> str | None:
 
 
 METRIC_FLOORS = {**DEFAULT_METRIC_FLOORS, **SETTINGS.metric_floors}
-CLIENT = DualSubstrateClient(API, SETTINGS.api_key)
+API_SERVICE = ApiService(API, SETTINGS.api_key)
 
 
 def _get_entity() -> str | None:
@@ -82,7 +93,7 @@ def _get_entity() -> str | None:
 
 def _refresh_ledgers(*, silent: bool = False) -> None:
     try:
-        st.session_state.ledgers = CLIENT.list_ledgers()
+        st.session_state.ledgers = API_SERVICE.list_ledgers()
         st.session_state.ledger_refresh_error = None
     except requests.RequestException as exc:
         st.session_state.ledgers = []
@@ -104,7 +115,7 @@ def _create_or_switch_ledger(ledger_id: str, *, notify: bool = True) -> bool:
             st.sidebar.error("Ledger ID cannot be blank.")
         return False
     try:
-        CLIENT.create_ledger(ledger_id)
+        API_SERVICE.create_ledger(ledger_id)
     except requests.RequestException as exc:
         if notify:
             st.sidebar.error(f"Could not create/switch ledger: {exc}")
@@ -143,7 +154,7 @@ def _ensure_ledger_bootstrap() -> None:
 def _fetch_prime_schema(entity: str | None) -> dict[int, dict]:
     target = entity or DEFAULT_ENTITY
     try:
-        schema = CLIENT.fetch_prime_schema(target, ledger_id=st.session_state.get("ledger_id"))
+        schema = API_SERVICE.fetch_prime_schema(target, ledger_id=st.session_state.get("ledger_id"))
         if schema:
             return schema
     except requests.RequestException as exc:
@@ -585,7 +596,7 @@ def _memory_lookup(limit: int = 3, since: int | None = None):
         return []
     ledger_id = st.session_state.get("ledger_id")
     try:
-        data = CLIENT.fetch_memories(
+        data = API_SERVICE.fetch_memories(
             entity,
             ledger_id=ledger_id,
             limit=limit,
@@ -600,7 +611,7 @@ def _memory_lookup(limit: int = 3, since: int | None = None):
         print("[DEBUG] /memories error:", exc)
 
     try:
-        ledger_payload = CLIENT.fetch_ledger(entity, ledger_id=ledger_id)
+        ledger_payload = API_SERVICE.fetch_ledger(entity, ledger_id=ledger_id)
     except requests.RequestException as exc:
         print("[DEBUG] /ledger fallback failed:", exc)
         return []
@@ -1204,7 +1215,13 @@ def _anchor_attachment(attachment: dict):
     total = len(chunks)
     for idx, chunk in enumerate(chunks, 1):
         payload = f"[Attachment: {name} | chunk {idx}/{total}]\n{chunk}"
-        factors_override = _tag_text_with_schema(chunk)
+        schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+        factors_override = map_to_primes(
+            chunk,
+            schema,
+            fallback_prime=FALLBACK_PRIME,
+            llm_extractor=_llm_factor_extractor,
+        )
         if _anchor(payload, record_chat=False, notify=False, factors_override=factors_override):
             anchored += 1
         else:
@@ -1217,75 +1234,6 @@ def _anchor_attachment(attachment: dict):
     st.session_state.chat_history.append(("Attachment", status))
 
 
-def _normalize_factors_override(factors) -> list[dict]:
-    normalized: list[dict] = []
-    if not isinstance(factors, list):
-        return normalized
-    for item in factors:
-        if not isinstance(item, dict):
-            continue
-        prime = item.get("prime")
-        delta = item.get("delta", 1)
-        if prime in PRIME_ARRAY:
-            try:
-                normalized.append({"prime": int(prime), "delta": int(delta)})
-            except (TypeError, ValueError):
-                continue
-    return normalized
-
-
-def _flow_safe_factors(factors: list[dict]) -> list[dict]:
-    filtered: list[dict] = []
-    seen: set[int] = set()
-    for factor in factors:
-        prime = factor.get("prime")
-        if prime not in PRIME_ARRAY or prime in seen:
-            continue
-        delta = factor.get("delta", 1)
-        try:
-            entry = {"prime": int(prime), "delta": int(delta)}
-        except (TypeError, ValueError):
-            continue
-        filtered.append(entry)
-        seen.add(entry["prime"])
-    odds = [f for f in filtered if f["prime"] % 2 == 1]
-    evens = [f for f in filtered if f["prime"] % 2 == 0]
-    return odds + evens
-
-
-def _flow_safe_sequence(primes: list[int]) -> list[dict]:
-    """
-    Convert prime list → legal ledger transitions.
-    Simplest flow rule: duplicate each prime → every edge is a self-loop.
-    """
-    if not primes:
-        primes = [FALLBACK_PRIME]
-    seen: set[int] = set()
-    safe: list[dict] = []
-    for p in primes:
-        if p not in PRIME_ARRAY or p in seen:
-            continue
-        seen.add(p)
-        safe.append({"prime": p, "delta": 1})
-        safe.append({"prime": p, "delta": 1})  # self-loop
-    return safe
-
-
-def _flow_safe_batches(factors: list[dict]) -> list[list[dict]]:
-    filtered = _flow_safe_factors(factors)
-    if not filtered:
-        filtered = [{"prime": FALLBACK_PRIME, "delta": 1}]
-    batches: list[list[dict]] = []
-    for factor in filtered:
-        batches.append(
-            [
-                {"prime": factor["prime"], "delta": factor["delta"]},
-                {"prime": factor["prime"], "delta": factor["delta"]},
-            ]
-        )
-    return batches
-
-
 def _maybe_extract_agent_payload(raw_text: str) -> tuple[str, list[dict]] | None:
     cleaned = (raw_text or "").strip()
     if not cleaned.startswith("{") or "factors" not in cleaned:
@@ -1295,7 +1243,8 @@ def _maybe_extract_agent_payload(raw_text: str) -> tuple[str, list[dict]] | None
     except json.JSONDecodeError:
         return None
     text = (payload.get("text") or "").strip()
-    factors = _normalize_factors_override(payload.get("factors"))
+    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+    factors = normalize_override_factors(payload.get("factors"), tuple(schema.keys()))
     if not text or not factors:
         return None
     return text, factors
@@ -1319,60 +1268,12 @@ def _extract_json_object(raw: str) -> dict | None:
         return None
 
 
-def _call_factor_extraction_llm(text: str) -> list[dict]:
-    if not text or not (genai and GENAI_KEY):
-        return []
-    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
-    schema_lines = "\n".join(
-        f"{prime} ({meta.get('name', f'Prime {prime}')}) = {meta.get('tier', '')} {meta.get('mnemonic', '')} {meta.get('description', '')}".strip()
-        for prime, meta in schema.items()
-    )
-    prompt = (
-        "You extract ledger factors. "
-        "Given the transcript below, identify subject (prime 2), action (3), object (5), "
-        "location/channel (7), time/date (11), intent/outcome (13), context (17), sentiment/priority (19). "
-        "Only include a prime if the transcript clearly expresses that facet. "
-        "Return STRICT JSON with keys `text` (repeat the transcript) and `factors` "
-        "(an array of objects with `prime` and `delta`). Example: "
-        '{"text":"Met Priya","factors":[{"prime":2,"delta":1},{"prime":3,"delta":1}]}. '
-        "Prime semantics:\n"
-        f"{schema_lines}\n"
-        f"Transcript:\n{text}"
-    )
-    try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
-        response = model.generate_content(prompt)
-        raw = getattr(response, "text", None) or ""
-    except Exception:
-        return []
-    data = _extract_json_object(raw)
-    if not isinstance(data, dict):
-        return []
-    factors = _normalize_factors_override(data.get("factors"))
-    return factors
-
-
-def _map_to_primes_with_agent(text: str) -> list[dict]:
-    llm_factors = _call_factor_extraction_llm(text)
-    if llm_factors:
-        return llm_factors
-    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
-    primes = tag_primes(text, schema)
-    if not primes:
-        return [{"prime": FALLBACK_PRIME, "delta": 1}]
-    return [{"prime": p, "delta": 1} for p in primes]
-
-
-def _tag_text_with_schema(text: str) -> list[dict]:
-    return _map_to_primes_with_agent(text)
-
-
 def _reset_entity_factors() -> bool:
     entity = _get_entity()
     if not entity:
         return False
     try:
-        data = CLIENT.fetch_ledger(entity, ledger_id=st.session_state.get("ledger_id"))
+        data = API_SERVICE.fetch_ledger(entity, ledger_id=st.session_state.get("ledger_id"))
     except requests.RequestException as exc:
         st.warning(f"Could not fetch ledger for reset: {exc}")
         return False
@@ -1391,9 +1292,16 @@ def _reset_entity_factors() -> bool:
                 continue
     if not reset_deltas:
         return True
-    for seq in _flow_safe_batches(reset_deltas):
+    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+    for seq in build_anchor_batches(
+        "",
+        schema,
+        fallback_prime=FALLBACK_PRIME,
+        factors_override=reset_deltas,
+        llm_extractor=None,
+    ):
         try:
-            CLIENT.anchor(entity, seq, ledger_id=st.session_state.get("ledger_id"))
+            API_SERVICE.anchor(entity, seq, ledger_id=st.session_state.get("ledger_id"))
         except requests.RequestException as exc:
             st.warning(f"Ledger reset failed: {exc}")
             return False
@@ -1406,7 +1314,7 @@ def _run_enrichment(limit: int = 200, reset_first: bool = True):
         return
     fetch_limit = max(1, min(limit, 100))
     try:
-        memories = CLIENT.fetch_memories(
+        memories = API_SERVICE.fetch_memories(
             entity,
             ledger_id=st.session_state.get("ledger_id"),
             limit=fetch_limit,
@@ -1430,14 +1338,17 @@ def _run_enrichment(limit: int = 200, reset_first: bool = True):
         text = (entry.get("text") or "").strip()
         if not text:
             continue
-        factors = _tag_text_with_schema(text)
-        if not factors:
-            continue
-        batches = _flow_safe_batches(factors)
+        schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+        batches = build_anchor_batches(
+            text,
+            schema,
+            fallback_prime=FALLBACK_PRIME,
+            llm_extractor=_llm_factor_extractor,
+        )
         success = True
         for idx_batch, seq in enumerate(batches):
             try:
-                CLIENT.anchor(
+                API_SERVICE.anchor(
                     entity,
                     seq,
                     ledger_id=st.session_state.get("ledger_id"),
@@ -1656,46 +1567,26 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
         return False
 
     schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
-
-    sequences: list[list[dict]] = []
-
-    def _extend_with_batches(candidates: list[dict]) -> None:
-        batches = _flow_safe_batches(candidates)
-        if batches:
-            sequences.extend(batches)
-
-    if factors_override:
-        _extend_with_batches(factors_override)
-    else:
-        primes = tag_primes(text, schema)
-        if not primes:
-            primes = [FALLBACK_PRIME]
-
-        tiered_primes: Dict[int, List[int]] = {}
-        for prime in primes:
-            tier = get_tier_value(prime, schema)
-            tiered_primes.setdefault(tier, []).append(prime)
-
-        for tier in sorted(tiered_primes.keys()):
-            tier_factors = [{"prime": p, "delta": 1} for p in tiered_primes[tier]]
-            _extend_with_batches(tier_factors)
-
-    if not sequences:
-        _extend_with_batches([{"prime": FALLBACK_PRIME, "delta": 1}])
-    if not sequences:
+    batches = build_anchor_batches(
+        text,
+        schema,
+        fallback_prime=FALLBACK_PRIME,
+        factors_override=factors_override,
+        llm_extractor=_llm_factor_extractor,
+    )
+    if not batches:
         st.error("Anchor failed: no lawful factor batches could be generated.")
         st.session_state.last_anchor_error = "No lawful batches"
         return False
 
-    for i, factors in enumerate(sequences):
+    for i, factors in enumerate(batches):
         if not validate_prime_sequence(factors, schema):
             st.error(f"Anchor failed: Invalid prime sequence for tier batch {i}.")
             st.session_state.last_anchor_error = "Invalid prime sequence"
-            # Continue to next batch
             continue
 
         try:
-            CLIENT.anchor(
+            API_SERVICE.anchor(
                 entity,
                 factors,
                 ledger_id=st.session_state.get("ledger_id"),
@@ -1721,7 +1612,7 @@ def _recall():
     if not entity:
         return
     try:
-        payload = CLIENT.retrieve(entity, ledger_id=st.session_state.get("ledger_id"))
+        payload = API_SERVICE.retrieve(entity, ledger_id=st.session_state.get("ledger_id"))
         st.session_state.recall_payload = payload
     except requests.RequestException as exc:
         st.session_state.recall_payload = {"error": str(exc)}
@@ -1732,7 +1623,7 @@ def _load_ledger():
     if not entity:
         return
     try:
-        data = CLIENT.fetch_ledger(entity, ledger_id=st.session_state.get("ledger_id"))
+        data = API_SERVICE.fetch_ledger(entity, ledger_id=st.session_state.get("ledger_id"))
     except requests.RequestException as exc:
         st.session_state.ledger_state = {"error": str(exc)}
         return
@@ -2152,12 +2043,12 @@ def _render_app():
     entity = _get_entity()
     if entity:
         try:
-            metrics = CLIENT.fetch_metrics(ledger_id=st.session_state.get("ledger_id"))
+            metrics = API_SERVICE.fetch_metrics(ledger_id=st.session_state.get("ledger_id"))
         except requests.RequestException:
             metrics = {"tokens_deduped": "N/A", "ledger_integrity": 0.0}
 
         try:
-            memories = CLIENT.fetch_memories(
+            memories = API_SERVICE.fetch_memories(
                 entity,
                 ledger_id=st.session_state.get("ledger_id"),
                 limit=1,
@@ -2309,7 +2200,7 @@ def _render_app():
                     st.warning("No active entity.")
                     return
                 try:
-                    data = CLIENT.rotate(
+                    data = API_SERVICE.rotate(
                         entity,
                         ledger_id=st.session_state.get("ledger_id"),
                         axis=(0.0, 0.0, 1.0),
