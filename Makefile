@@ -10,7 +10,7 @@ run:
 	streamlit run streamlit_app.py
 
 chat:
-	streamlit run chat_app.py
+        streamlit run admin_app.py
 
 demo:
 	streamlit run chat_demo_app.py
