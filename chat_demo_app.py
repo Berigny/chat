@@ -222,8 +222,9 @@ def _process_memory_text(text: str, use_openai: bool, *, attachments: list[dict]
     if not cleaned:
         st.warning("Enter some text first.")
         return
-    # Always anchor the user's text silently in the background.
-    _anchor(cleaned, record_chat=False, notify=False)
+    # Let the LLM structure the memory for anchoring.
+    factors = _let_llm_structure_memory(cleaned)
+    _anchor(cleaned, record_chat=False, notify=False, factors_override=factors)
     agent_payload = _maybe_extract_agent_payload(cleaned)
     if agent_payload:
         agent_text, factors_override = agent_payload
@@ -699,65 +700,54 @@ def _build_lawful_augmentation_prompt(
     since: int | None = None,
     until: int | None = None,
 ) -> str:
+    """Build a rich prompt that unshackles the LLM to use its full context window."""
     context_memories = _select_lawful_context(
         user_question,
-        limit=5,
-        time_window_hours=72,
+        limit=10,  # Provide more memories for richer context.
+        time_window_hours=168,  # Extend to a full week.
         since=since,
         until=until,
     )
 
+    # Rephrase the prompt to be less restrictive and more empowering.
     prompt_lines = [
-        "You are answering based on a structured memory ledger. Below are relevant pieces of information, ordered by their "
-        "semantic relationship to the question. Synthesize a coherent answer that respects the connections between these "
-        "snippets. Do not mention the structure itself—just provide the answer."
+        "You are a helpful assistant with access to a perfect, exact memory ledger.",
+        "Your goal is to provide the most relevant, insightful, and natural response.",
+        "Use the provided ledger memories and conversation history to understand the full context.",
+        "You are free to synthesize information, draw conclusions, and ask clarifying questions.",
+        "Your response should be helpful and conversational, not a rigid report.",
     ]
 
-    schema_block = _prime_semantics_block()
-    instructions = (
-        "Only quote snippets provided below. "
-        "Do not invent memories. "
-        "If no snippet matches, say so explicitly.\n"
-        f"{schema_block}\n\n"
-    )
-    prompt_lines.insert(0, instructions)
-
     if context_memories:
-        prompt_lines.append("")
-        prompt_lines.append("Context from memory ledger:")
+        prompt_lines.append("\n--- Ledger Memories (most relevant first) ---")
         for entry in context_memories:
             sanitized = entry.get("_sanitized_text") or _strip_ledger_noise((entry.get("text") or "").strip())
             if not sanitized:
                 continue
             stamp = entry.get("timestamp")
-            if stamp:
-                ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp / 1000))
-                prompt_lines.append(f"[{ts}] {sanitized}")
-            else:
-                prompt_lines.append(f"- {sanitized}")
+            ts = time.strftime("%Y-%m-%d %H:%M", time.localtime(stamp / 1000)) if stamp else "No timestamp"
+            prompt_lines.append(f"[{ts}] {sanitized}")
     else:
-        summary = _summarize_accessible_memories(5, since=since)
-        if summary:
-            prompt_lines.append("")
-            prompt_lines.append(summary)
+        prompt_lines.append("\n--- Ledger Memories ---")
+        prompt_lines.append("(No specific memories matched the query, but the full ledger is available.)")
 
-    chat_block = _recent_chat_block(max_entries=3)
+    # Provide a much larger view of the recent conversation.
+    chat_block = _recent_chat_block(max_entries=15)
     if chat_block:
-        prompt_lines.append("")
-        prompt_lines.append("Recent conversation:")
+        prompt_lines.append("\n--- Recent Conversation ---")
         prompt_lines.append(chat_block)
 
     if attachments:
-        prompt_lines.append("")
-        prompt_lines.append("Attachments:")
+        prompt_lines.append("\n--- Attachments ---")
         for attachment in attachments:
             name = attachment.get("name", "attachment")
-            snippet = (attachment.get("text") or "").strip()[:500]
+            snippet = (attachment.get("text") or "").strip()[:1000]
             if snippet:
-                prompt_lines.append(f"{name}: {snippet}")
+                prompt_lines.append(f"[{name}] {snippet}...")
 
-    prompt_lines.append("")
-    prompt_lines.append(f"Question: {user_question}")
+    prompt_lines.append(f"\n--- Your Turn ---")
+    prompt_lines.append(f"User's request: {user_question}")
+    prompt_lines.append("Your response:")
     return "\n".join(prompt_lines)
 
 
@@ -916,20 +906,19 @@ def _memory_context_block(limit: int = 3, since: int | None = None, *, keywords:
     return "\n".join(snippets)
 
 
-def _recent_chat_block(max_entries: int = 8) -> str | None:
+def _recent_chat_block(max_entries: int = 15) -> str | None:
+    """Format the recent chat history into a string for the LLM context."""
     history = st.session_state.get("chat_history") or []
     if not history:
         return ""
     lines: list[str] = []
     for role, content in history[-max_entries:]:
-        if role not in {"Attachment", "Memory"}:
-            continue
-        snippet = (content or "").strip()
+        # Include all roles for a more complete picture of the conversation.
+        snippet = (content or "").strip().replace("\n", " ")
         if not snippet:
             continue
-        snippet = snippet.replace("\n", " ")
-        if len(snippet) > 200:
-            snippet = f"{snippet[:200]}…"
+        if len(snippet) > 300:
+            snippet = f"{snippet[:300]}…"
         lines.append(f"{role}: {snippet}")
     return "\n".join(lines) if lines else None
 
@@ -1340,6 +1329,43 @@ def _latest_user_transcript(current_request: str, *, limit: int = 5) -> str | No
     return user_entries[0][1]
 
 
+def _let_llm_structure_memory(text: str) -> list[dict] | None:
+    """Prompt the LLM to extract key concepts as prime factors."""
+    if not (OpenAI and OPENAI_API_KEY):
+        st.warning("OpenAI API key missing for memory structuring.")
+        return None
+
+    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+    schema_lines = [f'- {p}: {d.get("name")} ({d.get("mnemonic")})' for p, d in schema.items()]
+    schema_str = "\n".join(schema_lines)
+
+    prompt = f"""
+    You are an AI assistant that structures memories.
+    Analyze the following text and identify the key concepts.
+    Represent these concepts as a list of prime factors based on the following schema:
+    {schema_str}
+
+    Respond with a JSON object containing a "factors" key, like this:
+    {{"factors": [{{"prime": 2, "delta": 1}}, {{"prime": 5, "delta": 2}}]}}
+
+    Text to analyze:
+    {text}
+    """
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    try:
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[{"role": "user", "content": prompt}],
+            response_format={"type": "json_object"},
+        )
+        payload = json.loads(response.choices[0].message.content)
+        if "factors" in payload and isinstance(payload["factors"], list):
+            return payload["factors"]
+    except Exception as e:
+        st.error(f"Failed to structure memory with LLM: {e}")
+    return None
+
+
 def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = False):
     if user_text is None and bot_reply is None:
         return
@@ -1353,7 +1379,8 @@ def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = Fa
         or quote_mode
     )
     if should_anchor:
-        if _anchor(full_block, record_chat=False):
+        factors = _let_llm_structure_memory(full_block)
+        if _anchor(full_block, record_chat=False, factors_override=factors):
             st.session_state.rolling_text = []
             st.session_state.last_anchor_ts = time.time()
 
@@ -1507,66 +1534,10 @@ def _chat_response(
     quote_count: int | None = None,
     attachments: list[dict] | None = None,
 ):
-    attachment_block = ""
-    capabilities_block = st.session_state.get("capabilities_block")
-    keywords = _keywords_from_prompt(prompt)
-    if attachments:
-        lines = ["Attachment context:"]
-        for attachment in attachments:
-            name = attachment.get("name", "attachment")
-            snippet = (attachment.get("text") or "").strip()
-            truncated = snippet[:1500]
-            if len(snippet) > len(truncated):
-                truncated = f"{truncated}\n… (truncated)"
-            lines.append(f"{name}:\n{truncated}")
-        attachment_block = "\n\n".join(lines)
+    """Generate a chat response, unshackling the LLM to use the full context."""
+    # The new prompt augmentation function provides all the necessary context.
+    llm_prompt = _augment_prompt(prompt, attachments=attachments)
 
-    time_hint = _infer_relative_timestamp(prompt)
-    is_quote = _is_quote_request(prompt)
-    if is_quote:
-        target_count = max(1, min((quote_count or _estimate_quote_count(prompt)), 25))
-        search_limit = max(target_count * 3, 15)
-        full_text = _latest_user_transcript(prompt, limit=search_limit)
-
-        if full_text:
-            cleaned_transcript = full_text.strip()
-            if len(cleaned_transcript) < 50:
-                message = f"No transcript found for '{prompt[:30]}…' in recent memories."
-                st.session_state.chat_history.append(("Bot", message))
-                return message
-            head_tokens = re.findall(r"[a-z']+", cleaned_transcript.lower()[:200])
-            if not any(token in {"i", "me", "we", "our", "us"} for token in head_tokens):
-                message = "Found content but it doesn't appear to be user-authored."
-                st.session_state.chat_history.append(("Bot", message))
-                return message
-            plural = "quotes" if target_count != 1 else "quote"
-            llm_prompt = (
-                "Use only the ledger snippets provided. If insufficient, admit no record exists.\n\n"
-                "Below is a verbatim transcript.  "
-                f"Reply with {target_count} exact {plural} (keep punctuation & capitalisation).  "
-                "Do not paraphrase.  "
-                "If the transcript contains assistant replies marked 'Bot:' or similar, ignore them and only quote the human speaker.  "
-                f"Transcript:\n{full_text}\n\n"
-                f"Exact {plural}:"
-            )
-            if attachment_block:
-                llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
-        else:
-            fallback_summary = _summarize_accessible_memories(max(target_count, 10), since=time_hint, keywords=keywords)
-            if fallback_summary:
-                st.session_state.chat_history.append(("Bot", fallback_summary))
-                return fallback_summary
-            llm_prompt = "No anchored text found – say so."
-        context_block = _memory_context_block(limit=max(5, target_count), since=time_hint, keywords=keywords)
-        if context_block:
-            llm_prompt = f"{context_block}\n\n{llm_prompt}"
-    else:
-        llm_prompt = _augment_prompt(prompt, attachments=attachments)
-        if attachment_block and "Attachment context:" not in llm_prompt:
-            llm_prompt = f"{llm_prompt}\n\n{attachment_block}"
-    if not (is_quote and context_block):
-        if capabilities_block:
-            llm_prompt = f"{capabilities_block}\n\n{llm_prompt}"
     if use_openai:
         if not (OpenAI and OPENAI_API_KEY):
             st.warning("OpenAI API key missing.")
@@ -1581,7 +1552,12 @@ def _chat_response(
     if not (genai and GENAI_KEY):
         return "Gemini API key missing."
     model = genai.GenerativeModel("gemini-2.0-flash")
-    chat = model.start_chat(history=[{"role": "user", "parts": [h[1]]} for h in st.session_state.chat_history])
+    # Provide a more complete chat history to the model.
+    history = [
+        {"role": "user" if h[0] == "You" else "model", "parts": [h[1]]}
+        for h in st.session_state.chat_history
+    ]
+    chat = model.start_chat(history=history)
     chunks = []
     for chunk in chat.send_message(llm_prompt, stream=True):
         chunks.append(chunk.text)
