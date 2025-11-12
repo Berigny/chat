@@ -1,4 +1,4 @@
-[![Live Demo](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://dualsubstrate-demo-chassis.streamlit.app)
+[![Live Demo](not ready)
 
 “Engine stays hardened on Fly.
 Demo chassis lives on Streamlit Cloud (free).
