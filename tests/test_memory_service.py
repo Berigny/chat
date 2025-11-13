@@ -1,43 +1,6 @@
-import pytest
+from types import SimpleNamespace
 
 from services.memory_service import MOBIUS_REFRESH_INTERVAL, MemoryService
-
-
-BERIGNY_EXCERPT = """Light for the million Religion of God and not of man\nFirst Lecture (Delivered before the Truth-seekers Free Debating society, on May 28, 1863, by Dr Berigny) God; Considered scientifically, morally and philosophically\nAll weak minds move with the atmosphere of public opinion, yet the discourse insists that knowledge alone restores religious harmony."""
-
-
-@pytest.mark.parametrize("recall_prefix", ["Here’s", "Here's"])
-def test_prepare_fallback_entries_filters_transcripts(recall_prefix: str) -> None:
-    service = MemoryService(api_service=None, prime_weights={})
-    raw_entries = [
-        {
-            "timestamp": 10,
-            "text": f"{recall_prefix} what the ledger currently recalls: [2025-11-13 08:31] what do you recall about god? [2025-11-13 08:10] You: any quotes from God you might have from last hour?",
-        },
-        {
-            "timestamp": 5,
-            "text": BERIGNY_EXCERPT,
-        },
-    ]
-
-    fallback = service._prepare_fallback_entries(raw_entries, limit=2)
-
-    assert len(fallback) == 1
-    assert "First Lecture" in fallback[0]["_sanitized_text"]
-
-
-def test_prepare_fallback_entries_deduplicates_matching_memories() -> None:
-    service = MemoryService(api_service=None, prime_weights={})
-    raw_entries = [
-        {"timestamp": 12, "text": BERIGNY_EXCERPT},
-        {"timestamp": 11, "text": BERIGNY_EXCERPT},
-        {"timestamp": 10, "text": BERIGNY_EXCERPT},
-    ]
-
-    fallback = service._prepare_fallback_entries(raw_entries, limit=5)
-
-    assert len(fallback) == 1
-    assert fallback[0]["timestamp"] == 12
 
 
 class DummyAssemblyApi:
@@ -47,6 +10,66 @@ class DummyAssemblyApi:
     def fetch_assembly(self, *_, **__):
         self.calls += 1
         return {"summaries": [], "bodies": [], "claims": []}
+
+
+def test_select_context_forwards_search_params() -> None:
+    calls: list[dict] = []
+
+    class ApiStub(SimpleNamespace):
+        def search_slots(self, entity, query, **kwargs):
+            calls.append({"entity": entity, "query": query, **kwargs})
+            return [
+                {"prime": 2, "summary": "Met with Alice", "score": 0.9},
+                {"prime": 11, "summary": "Follow-up scheduled", "score": 0.5},
+            ]
+
+    service = MemoryService(api_service=ApiStub(), prime_weights={})
+
+    results = service.select_context(
+        "demo",
+        "meeting recap",
+        {},
+        ledger_id="ledger-alpha",
+        limit=2,
+    )
+
+    assert len(results) == 2
+    assert results[0]["summary"] == "Met with Alice"
+    assert calls and calls[0]["mode"] == "slots"
+    assert calls[0]["limit"] == 2
+    assert calls[0]["ledger_id"] == "ledger-alpha"
+
+
+def test_build_recall_response_returns_engine_text() -> None:
+    class ApiStub(SimpleNamespace):
+        def __init__(self) -> None:
+            super().__init__(
+                payload={"response": "Here’s what the ledger currently recalls:\n• Meeting notes"}
+            )
+
+        def search(self, entity, query, **kwargs):
+            self.last_call = {"entity": entity, "query": query, **kwargs}
+            return self.payload
+
+    api = ApiStub()
+    service = MemoryService(api_service=api, prime_weights={})
+
+    response = service.build_recall_response("demo", "recall meeting", {}, ledger_id="ledger-alpha")
+
+    assert response == "Here’s what the ledger currently recalls:\n• Meeting notes"
+    assert api.last_call["mode"] == "recall"
+    assert api.last_call["limit"] >= 1
+    assert api.last_call["ledger_id"] == "ledger-alpha"
+
+
+def test_build_recall_response_returns_none_for_empty_payload() -> None:
+    class ApiStub(SimpleNamespace):
+        def search(self, *_, **__):
+            return {}
+
+    service = MemoryService(api_service=ApiStub(), prime_weights={})
+
+    assert service.build_recall_response("demo", "recall meeting", {}) is None
 
 
 def test_mobius_refresh_waits_for_rotation() -> None:

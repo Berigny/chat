@@ -359,7 +359,6 @@ class MemoryService:
 
     api_service: "ApiService"
     prime_weights: Mapping[int, float]
-    _structured_ledgers: dict[tuple[str, str | None], dict] = field(default_factory=dict, init=False, repr=False)
     _assembly_cache: dict[
         tuple[str, str | None, int | None, bool, int | None],
         tuple[float, dict[str, list[dict]]],
@@ -690,32 +689,23 @@ class MemoryService:
         since: int | None = None,
         until: int | None = None,
     ) -> list[dict]:
-        fetch_limit = min(100, max(limit * 3, 25))
-        window_start = since
-        if window_start is None:
-            window_start = int((time.time() - time_window_hours * 3600) * 1000)
+        if not entity or not query:
+            return []
 
-        raw_memories = self.memory_lookup(
+        slots = self.api_service.search_slots(
             entity,
+            query,
             ledger_id=ledger_id,
-            limit=fetch_limit,
-            since=window_start,
+            mode="slots",
+            limit=limit,
         )
-        if until is not None:
-            raw_memories = [m for m in raw_memories if m.get("timestamp", 0) <= until]
-
-        structured = self.structured_context(entity, ledger_id=ledger_id)
-        structured_slots = structured.get("slots", []) if isinstance(structured, dict) else []
-        structured_entries = self._prepare_structured_entries(structured_slots)
-
-        if len(structured_entries) >= limit:
-            return structured_entries[:limit]
-
-        fallback_needed = max(0, limit - len(structured_entries))
-        fallback_entries = self._prepare_fallback_entries(raw_memories, fallback_needed)
-
-        combined = structured_entries + fallback_entries
-        return combined[:limit]
+        normalized: list[dict] = []
+        for slot in slots:
+            if isinstance(slot, Mapping):
+                normalized.append(dict(slot))
+        if limit is not None:
+            return normalized[: int(limit)]
+        return normalized
 
     def latest_user_transcript(
         self,
@@ -753,17 +743,28 @@ class MemoryService:
     ) -> str:
         if not entity:
             return ""
-        structured = self.structured_context(entity, ledger_id=ledger_id)
-        raw_slots = structured.get("slots")
-        if isinstance(raw_slots, list):
-            slots = raw_slots
-        else:
+        query_hint = " ".join([kw for kw in (keywords or []) if kw]) or "recent ledger context"
+        try:
+            slots = self.api_service.search_slots(
+                entity,
+                query_hint,
+                ledger_id=ledger_id,
+                mode="slots",
+                limit=limit,
+            )
+        except Exception:
             slots = []
         snippets: list[str] = []
         for slot in slots:
             title = slot.get("title")
             summary = slot.get("summary")
-            body = slot.get("body") if isinstance(slot.get("body"), list) else []
+            body_source = slot.get("body")
+            if isinstance(body_source, Sequence) and not isinstance(body_source, (str, bytes)):
+                body = [chunk for chunk in body_source if isinstance(chunk, str)]
+            elif isinstance(body_source, str):
+                body = [body_source]
+            else:
+                body = []
             snippet = summary or (body[0] if body else title)
             snippet = (snippet or "").strip()
             if not snippet:
@@ -782,7 +783,12 @@ class MemoryService:
             )
             normalized_keywords = [k.lower() for k in (keywords or []) if len(k) >= 3]
             for entry in entries:
-                text = strip_ledger_noise((entry.get("text") or "").strip())
+                raw_text = (
+                    entry.get("summary")
+                    or entry.get("text")
+                    or entry.get("snippet")
+                )
+                text = strip_ledger_noise((raw_text or "").strip())
                 if not text:
                     continue
                 lowered = text.lower()
@@ -816,81 +822,23 @@ class MemoryService:
     ) -> str | None:
         if not entity:
             return None
-        if limit is None:
-            limit = estimate_quote_count(query)
-        derived_since, derived_until = derive_time_filters(query)
-        if since is None:
-            since = derived_since
-        if until is None:
-            until = derived_until
 
-        memories = self.select_context(
+        resolved_limit = limit if limit is not None else estimate_quote_count(query)
+        payload = self.api_service.search(
             entity,
             query,
-            schema,
             ledger_id=ledger_id,
-            limit=limit,
-            since=since,
-            until=until,
-            time_window_hours=168,
+            mode="recall",
+            limit=resolved_limit,
         )
-        if not memories:
-            return None
-
-        lines = ["Here’s what the ledger currently recalls:"]
-        for entry in memories:
-            timestamp = entry.get("timestamp")
-            if timestamp:
-                date_str = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M")
-            else:
-                date_str = "unknown time"
-            text_content = (
-                entry.get("_structured_text")
-                or entry.get("_sanitized_text")
-                or strip_ledger_noise((entry.get("text") or "").strip())
-            )
-            if not text_content:
-                continue
-            prime = entry.get("prime")
-            prime_note = f" • prime {prime}" if prime else ""
-            lines.append(f"[{date_str}{prime_note}] {text_content}")
-
-        if len(lines) == 1:
-            return None
-        return "\n".join(lines)
+        response = payload.get("response") if isinstance(payload, Mapping) else None
+        if isinstance(response, str):
+            response = response.strip()
+        return response or None
 
     # ------------------------------------------------------------------
     # Structured ledger helpers
     # ------------------------------------------------------------------
-    def update_structured_ledger(
-        self,
-        entity: str,
-        payload: Mapping[str, object] | None,
-        *,
-        ledger_id: str | None = None,
-    ) -> None:
-        if not entity:
-            return
-        key = (entity, ledger_id or None)
-        if not payload:
-            self._structured_ledgers.pop(key, None)
-            return
-        slots = payload.get("slots") if isinstance(payload, Mapping) else None
-        if isinstance(slots, list):
-            normalized_slots: list[dict] = []
-            for slot in slots:
-                if isinstance(slot, Mapping):
-                    normalized_slots.append(dict(slot))
-            payload = dict(payload)
-            payload["slots"] = normalized_slots
-        self._structured_ledgers[key] = dict(payload)
-
-    def structured_context(self, entity: str, *, ledger_id: str | None = None) -> dict:
-        if not entity:
-            return {}
-        key = (entity, ledger_id or None)
-        return dict(self._structured_ledgers.get(key, {}))
-
     def realign_with_ledger(
         self,
         entity: str | None,
@@ -957,60 +905,6 @@ class MemoryService:
         )
         refreshed_state["last_refresh"] = current_time
         return True
-
-    def _prepare_structured_entries(self, slots: Sequence[Mapping[str, object]]) -> list[dict]:
-        prepared: list[dict] = []
-        for slot in slots:
-            if not isinstance(slot, Mapping):
-                continue
-            prime = slot.get("prime") if isinstance(slot.get("prime"), int) else None
-            title = slot.get("title") if isinstance(slot.get("title"), str) else None
-            summary = slot.get("summary") if isinstance(slot.get("summary"), str) else None
-            body_source = slot.get("body")
-            if isinstance(body_source, (list, tuple)):
-                body_list = [chunk for chunk in body_source if isinstance(chunk, str)]
-            else:
-                body_list = []
-            snippet = summary or (body_list[0] if body_list else title)
-            snippet = snippet.strip() if isinstance(snippet, str) else ""
-            tags = tuple(tag for tag in (slot.get("tags") or []) if isinstance(tag, str))
-            prepared.append(
-                {
-                    "prime": prime,
-                    "title": title,
-                    "summary": summary,
-                    "tags": tags,
-                    "body": body_list,
-                    "score": float(slot.get("score", 0.0)) if isinstance(slot.get("score"), (int, float)) else 0.0,
-                    "timestamp": slot.get("timestamp") if isinstance(slot.get("timestamp"), (int, float)) else None,
-                    "_structured_text": snippet,
-                    "_sanitized_text": snippet,
-                }
-            )
-        prepared.sort(key=lambda item: (item.get("score", 0.0), item.get("timestamp") or 0), reverse=True)
-        return prepared
-
-    def _prepare_fallback_entries(self, raw_memories: Sequence[Mapping[str, object]], limit: int) -> list[dict]:
-        if limit <= 0:
-            return []
-        sanitized: list[dict] = []
-        seen_summaries: set[str] = set()
-        for entry in raw_memories:
-            if not isinstance(entry, Mapping):
-                continue
-            text = strip_ledger_noise((entry.get("text") or "").strip())
-            if not text or not _is_user_content(text):
-                continue
-            if text in seen_summaries:
-                continue
-            seen_summaries.add(text)
-            payload = dict(entry)
-            payload["_sanitized_text"] = text
-            sanitized.append(payload)
-            if len(sanitized) >= limit * 3:
-                break
-        sanitized.sort(key=lambda item: item.get("timestamp", 0) or 0, reverse=True)
-        return sanitized[:limit]
 
 
 def is_recall_query(text: str) -> bool:

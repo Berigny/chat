@@ -136,6 +136,42 @@ class ApiService:
             modifiers=modifiers,
         )
 
+    def search(
+        self,
+        entity: str,
+        query: str,
+        *,
+        ledger_id: Optional[str] = None,
+        mode: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        return self._client.search(
+            entity,
+            query,
+            ledger_id=ledger_id,
+            mode=mode,
+            limit=limit,
+        )
+
+    def search_slots(
+        self,
+        entity: str,
+        query: str,
+        *,
+        ledger_id: Optional[str] = None,
+        mode: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> List[Dict[str, Any]]:
+        payload = self.search(
+            entity,
+            query,
+            ledger_id=ledger_id,
+            mode=mode,
+            limit=limit,
+        )
+        slots = payload.get("slots") if isinstance(payload, dict) else None
+        return [slot for slot in slots if isinstance(slot, dict)] if isinstance(slots, list) else []
+
     def retrieve(self, entity: str, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
         return self._client.retrieve(entity, ledger_id=ledger_id)
 

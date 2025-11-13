@@ -397,12 +397,10 @@ def _persist_structured_views_from_ledger(entity: str) -> None:
 
     structured = _extract_structured_views(payload)
     if not structured.get("slots"):
-        MEMORY_SERVICE.update_structured_ledger(entity, structured, ledger_id=ledger_id)
         st.session_state.latest_structured_ledger = structured
         return
 
     persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
-    MEMORY_SERVICE.update_structured_ledger(entity, persisted, ledger_id=ledger_id)
     st.session_state.latest_structured_ledger = persisted
 
 
@@ -493,8 +491,7 @@ def _execute_enrichment(entity: str, *, limit: int = 50) -> dict[str, Any]:
         structured = response_payload.get("structured") if isinstance(response_payload, dict) else None
         if structured:
             persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
-            MEMORY_SERVICE.update_structured_ledger(entity, persisted, ledger_id=ledger_id)
-
+            st.session_state.latest_structured_ledger = persisted
         try:
             ledger_snapshot = API_SERVICE.fetch_ledger(entity, ledger_id=ledger_id)
         except requests.RequestException:
@@ -995,16 +992,19 @@ def _maybe_handle_recall_query(text: str) -> bool:
     entity = _get_entity()
     schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
     ledger_id = st.session_state.get("ledger_id")
-    response = MEMORY_SERVICE.build_recall_response(
-        entity,
-        text,
-        schema,
-        ledger_id=ledger_id,
-    )
+    try:
+        response = MEMORY_SERVICE.build_recall_response(
+            entity,
+            text,
+            schema,
+            ledger_id=ledger_id,
+        )
+    except requests.RequestException as exc:
+        st.error(f"Recall failed: {exc}")
+        return True
+
     if response:
         st.session_state.chat_history.append(("Bot", response))
-    else:
-        st.session_state.chat_history.append(("Bot", "I couldn't find any matching memories in the ledger."))
     return True
 
 
@@ -1048,7 +1048,6 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
     structured = ingest_result.get("structured") if isinstance(ingest_result, dict) else {}
     if structured:
         persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
-        MEMORY_SERVICE.update_structured_ledger(entity, persisted, ledger_id=ledger_id)
         st.session_state.latest_structured_ledger = persisted
     else:
         _persist_structured_views_from_ledger(entity)
