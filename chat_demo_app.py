@@ -1476,7 +1476,13 @@ def _render_app():
                         _refresh_capabilities_block()
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Streamlit entry point for the public chat demo."""
+
     _render_app()
-    capabilities_block = st.session_state.get("capabilities_block")
-    capabilities_block = st.session_state.get("capabilities_block") or _refresh_capabilities_block()
+    if not st.session_state.get("capabilities_block"):
+        _refresh_capabilities_block()
+
+
+if __name__ == "__main__":
+    main()
