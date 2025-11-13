@@ -5,7 +5,7 @@ import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any, Mapping, Sequence, TYPE_CHECKING
+from typing import Any, Callable, Mapping, Sequence, TYPE_CHECKING
 
 from prime_tagger import tag_primes
 
