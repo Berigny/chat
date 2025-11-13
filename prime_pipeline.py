@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import json
-from typing import Callable, Dict, List, Sequence
+from typing import Any, Callable, Dict, List, Mapping, Sequence
 
 from prime_tagger import tag_primes
 
 PrimeSchema = Dict[int, Dict[str, object]]
 Factors = List[Dict[str, int]]
+
+S1_PRIMES: tuple[int, ...] = (2, 3, 5, 7)
+S2_PRIMES: tuple[int, ...] = (11, 13, 17, 19)
 
 
 def _normalize_factors_override(factors: object, valid_primes: Sequence[int]) -> Factors:
@@ -151,9 +154,106 @@ def build_anchor_factors(
     return normalized or [{"prime": fallback_prime, "delta": 1}]
 
 
+def _derive_title(text: str, *, max_length: int = 96) -> str | None:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    first_line = cleaned.splitlines()[0]
+    if len(first_line) <= max_length:
+        return first_line
+    trunc = first_line[:max_length].rstrip()
+    return trunc
+
+
+def _derive_summary(text: str, *, max_length: int = 160) -> str | None:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    summary = cleaned.replace("\n", " ")
+    if len(summary) <= max_length:
+        return summary
+    return summary[: max_length - 1].rstrip() + "…"
+
+
+def _merge_metadata(base: Mapping[str, Any] | None, extra: Mapping[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    if isinstance(base, Mapping):
+        for key, value in base.items():
+            if isinstance(key, str):
+                merged[key] = value
+    for key, value in extra.items():
+        if isinstance(key, str):
+            merged.setdefault(key, value)
+    return merged
+
+
+def prepare_ingest_artifacts(
+    text: str,
+    *,
+    metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Return structured slots and body plan for ingest."""
+
+    cleaned = (text or "").strip()
+    base_meta = _merge_metadata(metadata, {"length": len(cleaned), "kind": "memory"})
+    body_key = "body-0"
+    bodies: list[dict[str, Any]] = []
+    slots: list[dict[str, Any]] = []
+    s1_slots: list[dict[str, Any]] = []
+    s2_slots: list[dict[str, Any]] = []
+
+    if cleaned:
+        bodies.append(
+            {
+                "key": body_key,
+                "body": cleaned,
+                "metadata": _merge_metadata(
+                    base_meta,
+                    {
+                        "source_primes": list(S1_PRIMES + S2_PRIMES),
+                        "superseded_primes": list(S1_PRIMES + S2_PRIMES),
+                    },
+                ),
+            }
+        )
+        title = _derive_title(cleaned)
+        summary = _derive_summary(cleaned)
+
+        for prime in S1_PRIMES:
+            slot = {
+                "prime": prime,
+                "value": 1,
+                "title": title,
+                "tags": [],
+                "body": [cleaned],
+                "body_key": body_key,
+                "metadata": _merge_metadata(base_meta, {"tier": "S1"}),
+            }
+            slots.append(slot)
+            s1_slots.append(slot)
+        for prime in S2_PRIMES:
+            slot = {
+                "prime": prime,
+                "summary": summary,
+                "body": [cleaned],
+                "body_key": body_key,
+                "metadata": _merge_metadata(base_meta, {"tier": "S2"}),
+            }
+            slots.append(slot)
+            s2_slots.append(slot)
+
+    return {
+        "slots": slots,
+        "s1": s1_slots,
+        "s2": s2_slots,
+        "bodies": bodies,
+    }
+
+
 __all__ = [
     "build_anchor_factors",
     "call_factor_extraction_llm",
     "map_to_primes",
     "normalize_override_factors",
+    "prepare_ingest_artifacts",
 ]
