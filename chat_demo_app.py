@@ -408,6 +408,7 @@ def _persist_structured_views_from_ledger(entity: str) -> None:
 
 def _execute_enrichment(entity: str, *, limit: int = 50) -> dict[str, Any]:
     ledger_id = st.session_state.get("ledger_id")
+    MEMORY_SERVICE.maybe_refresh_mobius_alignment(entity, ledger_id=ledger_id)
     try:
         memories = API_SERVICE.fetch_memories(
             entity,
@@ -470,11 +471,21 @@ def _execute_enrichment(entity: str, *, limit: int = 50) -> dict[str, Any]:
                 body_chunks=[text],
                 metadata={"source": "enrichment"},
                 ledger_id=ledger_id,
+                schema=schema,
             )
         except requests.RequestException as exc:
             stamp = entry.get("timestamp")
             label = str(stamp) if stamp else "unknown"
             summary.setdefault("failures", []).append(f"{label}: {exc}")
+            continue
+
+        flow_errors = (
+            result.get("flow_errors") if isinstance(result, dict) else None
+        )
+        if flow_errors:
+            summary.setdefault("failures", []).append(
+                f"ref {ref_prime}: {'; '.join(flow_errors)}"
+            )
             continue
 
         summary["enriched"] += 1
@@ -1004,12 +1015,14 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
         return False
 
     schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+    ledger_id = st.session_state.get("ledger_id")
+    MEMORY_SERVICE.maybe_refresh_mobius_alignment(entity, ledger_id=ledger_id)
     try:
         ingest_result = PRIME_SERVICE.ingest(
             entity,
             text,
             schema,
-            ledger_id=st.session_state.get("ledger_id"),
+            ledger_id=ledger_id,
             factors_override=factors_override,
             llm_extractor=_llm_factor_extractor,
             metadata={"source": "chat_demo"},
@@ -1022,8 +1035,17 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
 
     st.session_state.last_anchor_error = None
     _refresh_capabilities_block()
+    flow_errors = (
+        ingest_result.get("flow_errors")
+        if isinstance(ingest_result, dict)
+        else None
+    )
+    if flow_errors:
+        message = "; ".join(flow_errors)
+        st.session_state.last_anchor_error = message
+        st.error(f"Anchor blocked: {message}")
+        return False
     structured = ingest_result.get("structured") if isinstance(ingest_result, dict) else {}
-    ledger_id = st.session_state.get("ledger_id")
     if structured:
         persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
         MEMORY_SERVICE.update_structured_ledger(entity, persisted, ledger_id=ledger_id)
@@ -1614,11 +1636,12 @@ def _render_app():
                 if not entity:
                     st.warning("No active entity.")
                     return
+                ledger_id = st.session_state.get("ledger_id")
                 try:
                     data = perform_lattice_rotation(
                         API_SERVICE,
                         entity,
-                        ledger_id=st.session_state.get("ledger_id"),
+                        ledger_id=ledger_id,
                         axis=(0.0, 0.0, 1.0),
                         angle=1.0472,
                     )
@@ -1627,9 +1650,10 @@ def _render_app():
                         f"checksum {data.get('original_checksum')} → {data.get('rotated_checksum')}."
                     )
                     _load_ledger()
+                    MEMORY_SERVICE.note_mobius_rotation(entity, ledger_id=ledger_id)
                     MEMORY_SERVICE.realign_with_ledger(
                         entity,
-                        ledger_id=st.session_state.get("ledger_id"),
+                        ledger_id=ledger_id,
                     )
                     if st.session_state.ledger_state:
                         st.caption("Updated ledger snapshot after Möbius transform:")

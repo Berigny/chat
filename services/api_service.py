@@ -11,6 +11,8 @@ if TYPE_CHECKING:
     from services.prime_service import PrimeService
 
 
+from flow_rules import FlowAssessment, assess_enrichment_path
+
 def _normalize_deltas(entries: Sequence[Mapping[str, Any]] | None) -> list[dict[str, int]]:
     """Return a sanitized list of deltas ready for the enrichment endpoint."""
 
@@ -90,10 +92,29 @@ class EnrichmentHelper:
         body_chunks: Iterable[str] | None = None,
         metadata: Mapping[str, Any] | None = None,
         ledger_id: str | None = None,
+        schema: Mapping[int, Mapping[str, object]] | None = None,
     ) -> dict[str, Any]:
         """Call ``/enrich`` and return the request/response envelope."""
 
         normalized_deltas = _normalize_deltas(deltas)
+        flow_assessment: FlowAssessment | None = None
+        if schema:
+            flow_assessment = assess_enrichment_path(ref_prime, normalized_deltas, schema)
+        else:
+            flow_assessment = assess_enrichment_path(ref_prime, normalized_deltas, {})
+        if flow_assessment and not flow_assessment.ok:
+            return {
+                "ref_prime": int(ref_prime),
+                "deltas": normalized_deltas,
+                "bodies": [],
+                "request": None,
+                "response": {},
+                "flow_errors": flow_assessment.messages(),
+                "flow_violations": [
+                    violation.asdict() for violation in flow_assessment.violations
+                ],
+                "flow_assessment": flow_assessment.asdict(),
+            }
         minted_bodies = self._mint_bodies(
             entity,
             ref_prime=ref_prime,

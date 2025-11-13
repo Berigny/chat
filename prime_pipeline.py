@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Dict, List, Mapping, Sequence
 
+from flow_rules import FlowAssessment, assess_write_path
 from prime_tagger import tag_primes
 
 PrimeSchema = Dict[int, Dict[str, object]]
@@ -154,6 +155,15 @@ def build_anchor_factors(
     return normalized or [{"prime": fallback_prime, "delta": 1}]
 
 
+def assess_factor_flow(
+    factors: Sequence[Mapping[str, int]] | Sequence[int],
+    schema: Mapping[int, Mapping[str, object]],
+) -> FlowAssessment:
+    """Assess factor ordering for illegal even→C→odd transitions."""
+
+    return assess_write_path(factors, schema)
+
+
 def _derive_title(text: str, *, max_length: int = 96) -> str | None:
     cleaned = (text or "").strip()
     if not cleaned:
@@ -256,4 +266,5 @@ __all__ = [
     "map_to_primes",
     "normalize_override_factors",
     "prepare_ingest_artifacts",
+    "assess_factor_flow",
 ]
