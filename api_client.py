@@ -122,6 +122,33 @@ class DualSubstrateClient:
         payload = resp.json()
         return payload if isinstance(payload, dict) else {}
 
+    def search(
+        self,
+        entity: str,
+        query: str,
+        *,
+        ledger_id: str | None = None,
+        mode: str | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Call the `/search` endpoint for recall and slot lookups."""
+
+        params: dict[str, Any] = {"entity": entity, "q": query}
+        if mode:
+            params["mode"] = mode
+        if limit is not None:
+            params["limit"] = int(limit)
+
+        resp = requests.get(
+            f"{self.base_url}/search",
+            params=params,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload if isinstance(payload, dict) else {}
+
     def latest_memory_text(
         self,
         entity: str,

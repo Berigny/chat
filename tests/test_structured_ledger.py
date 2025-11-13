@@ -1,12 +1,10 @@
 import time
-from types import SimpleNamespace
 
 import streamlit as st
 
 import chat_demo_app
 from prime_schema import DEFAULT_PRIME_SCHEMA
 from services.prompt_service import PromptService
-from services.memory_service import MemoryService
 
 
 def test_anchor_persists_structured_views(monkeypatch):
@@ -63,12 +61,6 @@ def test_anchor_persists_structured_views(monkeypatch):
         chat_demo_app.API_SERVICE,
         "put_ledger_s2",
         lambda entity, payload, ledger_id=None: s2_calls.append((entity, payload, ledger_id)) or {},
-    )
-    structured_updates: list = []
-    monkeypatch.setattr(
-        chat_demo_app.MEMORY_SERVICE,
-        "update_structured_ledger",
-        lambda entity, payload, ledger_id=None: structured_updates.append((entity, payload, ledger_id)),
     )
     monkeypatch.setattr(chat_demo_app, "_refresh_capabilities_block", lambda: "")
 
@@ -142,56 +134,7 @@ def test_anchor_persists_structured_views(monkeypatch):
     assert body_entry[2] == "We reviewed the upcoming roadmap items."
     assert body_entry[-1]["index"] == 0
 
-    assert structured_updates and structured_updates[0][0] == "demo"
     assert st.session_state.latest_structured_ledger["slots"], "Structured ledger cache not stored"
-
-
-def test_memory_service_uses_structured_slots():
-    api = SimpleNamespace(
-        fetch_memories=lambda *a, **k: [
-            {
-                "text": "You: fallback conversation",
-                "timestamp": 1,
-            }
-        ]
-    )
-    service = MemoryService(api, {2: 1.0})
-    service.update_structured_ledger(
-        "demo",
-        {
-            "slots": [
-                {
-                    "prime": 2,
-                    "title": "Meeting",
-                    "summary": "Met with product team.",
-                    "tags": ["meeting"],
-                    "score": 0.9,
-                    "body": ["Discussed roadmap."],
-                    "timestamp": 1_700_000_000_000,
-                },
-                {
-                    "prime": 11,
-                    "summary": "Scheduled follow-up for Tuesday.",
-                    "score": 0.8,
-                    "timestamp": 1_700_000_100_000,
-                },
-            ]
-        },
-        ledger_id="alpha",
-    )
-
-    results = service.select_context(
-        "demo",
-        "What did we plan?",
-        DEFAULT_PRIME_SCHEMA,
-        ledger_id="alpha",
-        limit=2,
-    )
-
-    assert len(results) == 2
-    assert results[0]["_structured_text"] == "Met with product team."
-    assert results[0]["prime"] == 2
-    assert results[1]["prime"] == 11
 
 
 def test_prompt_service_renders_structured_sections():

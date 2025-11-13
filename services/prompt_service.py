@@ -142,7 +142,13 @@ class PromptService:
                 continue
             prime = entry.get("prime") if isinstance(entry.get("prime"), int) else None
             title = entry.get("title") or entry.get("summary") or (f"Prime {prime}" if prime else None)
-            body_chunks = entry.get("body") if isinstance(entry.get("body"), Sequence) else []
+            body_source = entry.get("body")
+            if isinstance(body_source, Sequence) and not isinstance(body_source, (str, bytes)):
+                body_chunks = [chunk for chunk in body_source if isinstance(chunk, str)]
+            elif isinstance(body_source, str):
+                body_chunks = [body_source]
+            else:
+                body_chunks = []
             chunk_text = None
             for chunk in body_chunks:
                 if isinstance(chunk, str) and chunk.strip():
@@ -194,8 +200,19 @@ class PromptService:
             legacy_bodies: list[str] = []
             for entry in memories:
                 prime = entry.get("prime") if isinstance(entry.get("prime"), int) else None
-                summary = entry.get("summary") or entry.get("_structured_text") or entry.get("_sanitized_text")
-                summary = _trim_snippet(summary or "", LEDGER_SNIPPET_CHARS)
+                raw_summary = (
+                    entry.get("summary")
+                    or entry.get("text")
+                    or entry.get("snippet")
+                    or entry.get("_structured_text")
+                    or entry.get("_sanitized_text")
+                )
+                if isinstance(raw_summary, Sequence) and not isinstance(raw_summary, (str, bytes)):
+                    for chunk in raw_summary:
+                        if isinstance(chunk, str) and chunk.strip():
+                            raw_summary = chunk
+                            break
+                summary = _trim_snippet(str(raw_summary or ""), LEDGER_SNIPPET_CHARS)
                 title = entry.get("title") or (f"Prime {prime}" if prime else None)
                 tags = [tag for tag in entry.get("tags", ()) if tag]
                 tag_block = f" [tags: {', '.join(tags[:3])}]" if tags else ""
@@ -216,7 +233,13 @@ class PromptService:
                     else:
                         legacy_s2.append(line)
 
-                body_chunks = entry.get("body") if isinstance(entry.get("body"), list) else []
+                body_source = entry.get("body")
+                if isinstance(body_source, Sequence) and not isinstance(body_source, (str, bytes)):
+                    body_chunks = [chunk for chunk in body_source if isinstance(chunk, str)]
+                elif isinstance(body_source, str):
+                    body_chunks = [body_source]
+                else:
+                    body_chunks = []
                 for chunk in body_chunks[:LEDGER_SNIPPET_LIMIT]:
                     snippet = _trim_snippet(chunk, LEDGER_SNIPPET_CHARS)
                     if snippet:
