@@ -1,6 +1,8 @@
 """Sequence validation logic."""
 import re
-from typing import Dict, List
+from typing import Dict, Iterable, List, Mapping
+
+from flow_rules import FlowAssessment, assess_write_path
 
 def get_tier_value(prime: int, schema: Dict[int, Dict]) -> int:
     """Converts tier string to a numeric value."""
@@ -46,3 +48,12 @@ def validate_prime_sequence(sequence: List[Dict], schema: Dict[int, Dict]) -> bo
             return False
 
     return True
+
+
+def assess_even_c_odd_path(
+    entries: Iterable[Mapping[str, object] | int],
+    schema: Mapping[int, Mapping[str, object]],
+) -> FlowAssessment:
+    """Return flow assessment for write paths enforcing even→C→odd sequencing."""
+
+    return assess_write_path(entries, schema)

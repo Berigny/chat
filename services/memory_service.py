@@ -90,6 +90,7 @@ TIME_RANGE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ASSEMBLY_CACHE_TTL = 1.5
+MOBIUS_REFRESH_INTERVAL = 180.0
 
 
 def _keywords_from_prompt(text: str) -> list[str]:
@@ -364,6 +365,9 @@ class MemoryService:
         tuple[float, dict[str, list[dict]]],
     ] = field(default_factory=dict, init=False, repr=False)
     _body_cache: dict[int, list[str]] = field(default_factory=dict, init=False, repr=False)
+    _mobius_state: dict[tuple[str, str | None], dict[str, float]] = field(
+        default_factory=dict, init=False, repr=False
+    )
 
     def clear_entity_cache(self, *, entity: str | None = None, ledger_id: str | None = None) -> None:
         """Clear cached assembly data for the provided entity/ledger."""
@@ -910,6 +914,49 @@ class MemoryService:
             # Assembly fetch is best-effort; surface resets still succeed even
             # if the remote API temporarily fails.
             return
+        key = (entity, ledger_id or None)
+        state = self._mobius_state.setdefault(key, {"last_rotation": 0.0, "last_refresh": 0.0})
+        state["last_refresh"] = time.time()
+
+    def note_mobius_rotation(
+        self,
+        entity: str | None,
+        *,
+        ledger_id: str | None = None,
+        timestamp: float | None = None,
+    ) -> None:
+        if not entity:
+            return
+        key = (entity, ledger_id or None)
+        state = self._mobius_state.setdefault(key, {"last_rotation": 0.0, "last_refresh": 0.0})
+        recorded = timestamp if isinstance(timestamp, (int, float)) else time.time()
+        state["last_rotation"] = float(recorded)
+
+    def maybe_refresh_mobius_alignment(
+        self,
+        entity: str | None,
+        *,
+        ledger_id: str | None = None,
+        now: float | None = None,
+        force: bool = False,
+    ) -> bool:
+        if not entity:
+            return False
+        key = (entity, ledger_id or None)
+        state = self._mobius_state.get(key)
+        if not state:
+            return False
+        current_time = float(now if isinstance(now, (int, float)) else time.time())
+        last_rotation = float(state.get("last_rotation", 0.0))
+        last_refresh = float(state.get("last_refresh", 0.0))
+        if not force and (not last_rotation or current_time - last_refresh < MOBIUS_REFRESH_INTERVAL):
+            return False
+        self.realign_with_ledger(entity, ledger_id=ledger_id)
+        refreshed_state = self._mobius_state.setdefault(
+            key, {"last_rotation": last_rotation, "last_refresh": current_time}
+        )
+        refreshed_state["last_refresh"] = current_time
+        return True
 
     def _prepare_structured_entries(self, slots: Sequence[Mapping[str, object]]) -> list[dict]:
         prepared: list[dict] = []

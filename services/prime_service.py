@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
 from prime_pipeline import (
+    assess_factor_flow,
     build_anchor_factors,
     normalize_override_factors,
     prepare_ingest_artifacts,
@@ -191,6 +192,18 @@ class PrimeService:
             factors_override=factors_override,
             llm_extractor=llm_extractor,
         )
+        flow_assessment = assess_factor_flow(factors, schema)
+        if not flow_assessment.ok:
+            return {
+                "text": normalized_text,
+                "factors": factors,
+                "structured": {},
+                "flow_errors": flow_assessment.messages(),
+                "flow_violations": [
+                    violation.asdict() for violation in flow_assessment.violations
+                ],
+                "flow_assessment": flow_assessment.asdict(),
+            }
         plan = prepare_ingest_artifacts(normalized_text, metadata=metadata)
         minted_bodies = self.persist_bodies(
             entity,

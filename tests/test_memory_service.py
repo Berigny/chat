@@ -1,6 +1,6 @@
 import pytest
 
-from services.memory_service import MemoryService
+from services.memory_service import MOBIUS_REFRESH_INTERVAL, MemoryService
 
 
 BERIGNY_EXCERPT = """Light for the million Religion of God and not of man\nFirst Lecture (Delivered before the Truth-seekers Free Debating society, on May 28, 1863, by Dr Berigny) God; Considered scientifically, morally and philosophically\nAll weak minds move with the atmosphere of public opinion, yet the discourse insists that knowledge alone restores religious harmony."""
@@ -38,3 +38,35 @@ def test_prepare_fallback_entries_deduplicates_matching_memories() -> None:
 
     assert len(fallback) == 1
     assert fallback[0]["timestamp"] == 12
+
+
+class DummyAssemblyApi:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def fetch_assembly(self, *_, **__):
+        self.calls += 1
+        return {"summaries": [], "bodies": [], "claims": []}
+
+
+def test_mobius_refresh_waits_for_rotation() -> None:
+    api = DummyAssemblyApi()
+    service = MemoryService(api_service=api, prime_weights={})
+
+    triggered = service.maybe_refresh_mobius_alignment("demo", ledger_id="alpha")
+    assert not triggered
+    assert api.calls == 0
+
+
+def test_mobius_refresh_triggers_after_interval() -> None:
+    api = DummyAssemblyApi()
+    service = MemoryService(api_service=api, prime_weights={})
+
+    service.note_mobius_rotation("demo", ledger_id="alpha", timestamp=1.0)
+
+    triggered = service.maybe_refresh_mobius_alignment(
+        "demo", ledger_id="alpha", now=MOBIUS_REFRESH_INTERVAL + 1
+    )
+
+    assert triggered
+    assert api.calls == 1

@@ -66,3 +66,24 @@ def test_enrichment_helper_mints_bodies_and_calls_enrich():
 
     assert result["deltas"] == [{"prime": 2, "delta": 1}]
     assert result["bodies"][0]["metadata"]["superseded_by"] == 29
+
+
+def test_enrichment_helper_blocks_flow_violation():
+    api = DummyApiService()
+    primes = DummyPrimeService()
+    helper = EnrichmentHelper(api, primes)
+
+    schema = {2: {"tier": "S"}, 11: {"tier": "A"}, 37: {"tier": "C"}}
+
+    result = helper.submit(
+        "demo",
+        ref_prime=2,
+        deltas=[{"prime": 11, "delta": 1}],
+        body_chunks=["text"],
+        metadata={},
+        schema=schema,
+    )
+
+    assert result["flow_errors"]
+    assert api.enrich_calls == []
+    assert api.body_calls == []

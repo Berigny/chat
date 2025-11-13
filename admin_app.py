@@ -237,6 +237,18 @@ def _anchor(
     if record_chat:
         st.session_state.chat_history.append({"role": "user", "content": text})
     st.session_state.last_anchor_status = "ok"
+    flow_errors = (
+        ingest_result.get("flow_errors")
+        if isinstance(ingest_result, dict)
+        else None
+    )
+    if flow_errors:
+        message = "; ".join(flow_errors)
+        st.error(f"Anchor blocked: {message}")
+        st.session_state.last_anchor_status = "error"
+        if notify:
+            st.toast("Anchor blocked", icon="⚠️")
+        return False
     structured = ingest_result.get("structured") if isinstance(ingest_result, dict) else {}
     if structured:
         persisted = persist_structured_views(
@@ -486,11 +498,21 @@ def _run_enrichment(limit: int = 50, reset_first: bool = True) -> dict | None:
                 body_chunks=[text],
                 metadata={"source": "enrichment"},
                 ledger_id=ledger_id,
+                schema=schema,
             )
         except requests.RequestException as exc:
             stamp = entry.get("timestamp")
             label = str(stamp) if stamp else "unknown"
             summary["failures"].append(f"{label}: {exc}")
+            continue
+
+        flow_errors = (
+            result.get("flow_errors") if isinstance(result, dict) else None
+        )
+        if flow_errors:
+            summary["failures"].append(
+                f"ref {ref_prime}: {'; '.join(flow_errors)}"
+            )
             continue
 
         summary["enriched"] += 1
