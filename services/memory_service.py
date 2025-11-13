@@ -887,6 +887,30 @@ class MemoryService:
         key = (entity, ledger_id or None)
         return dict(self._structured_ledgers.get(key, {}))
 
+    def realign_with_ledger(
+        self,
+        entity: str | None,
+        *,
+        ledger_id: str | None = None,
+        quote_safe: bool | None = None,
+    ) -> None:
+        """Clear caches and warm context following Möbius/enrichment events."""
+
+        if not entity:
+            return
+
+        self.clear_entity_cache(entity=entity, ledger_id=ledger_id)
+        try:
+            self.assemble_context(
+                entity,
+                ledger_id=ledger_id,
+                quote_safe=quote_safe,
+            )
+        except Exception:
+            # Assembly fetch is best-effort; surface resets still succeed even
+            # if the remote API temporarily fails.
+            return
+
     def _prepare_structured_entries(self, slots: Sequence[Mapping[str, object]]) -> list[dict]:
         prepared: list[dict] = []
         for slot in slots:

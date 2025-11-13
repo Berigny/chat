@@ -289,6 +289,26 @@ class DualSubstrateClient:
         data = resp.json()
         return data if isinstance(data, dict) else {}
 
+    def enrich(
+        self,
+        entity: str,
+        payload: dict[str, Any],
+        *,
+        ledger_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Call the enrichment endpoint with deltas and minted body refs."""
+
+        request_payload = {"entity": entity, **(payload or {})}
+        resp = requests.post(
+            f"{self.base_url}/enrich",
+            json=request_payload,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
     def put_ledger_s2(
         self,
         entity: str,
