@@ -24,6 +24,9 @@ __all__ = [
 
 
 _QUOTE_KEYWORD_PATTERN = re.compile(r"\b(remember|recall|quote|show)\b")
+_DIALOGUE_LABEL_PATTERN = re.compile(
+    r"^(?:you|user|assistant|bot|system|model|ai|llm)\s*:", re.IGNORECASE
+)
 _PREFIXES = (
     "what did we talk about",
     "what did we discuss",
@@ -109,8 +112,9 @@ def strip_ledger_noise(text: str, *, user_only: bool = False) -> str:
 
 
 def _is_user_content(text: str) -> bool:
-    normalized = (text or "").strip().lower()
-    if len(normalized) < 20:
+    normalized = (text or "").strip()
+    lowered = normalized.lower()
+    if len(lowered) < 20:
         return False
     bot_prefixes = (
         "bot:",
@@ -122,10 +126,15 @@ def _is_user_content(text: str) -> bool:
         "response:",
         "here’s what the ledger currently recalls:",
         "[",
+        "you:",
+        "user:",
     )
-    if normalized.startswith(bot_prefixes):
+    if lowered.startswith(bot_prefixes):
         return False
-    if "• ledger" in normalized and "ledger factor" in normalized:
+    lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+    if len(lines) >= 2 and all(_DIALOGUE_LABEL_PATTERN.match(line) for line in lines):
+        return False
+    if "• ledger" in lowered and "ledger factor" in lowered:
         return False
     return True
 
