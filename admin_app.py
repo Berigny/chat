@@ -9,11 +9,12 @@ import requests
 import streamlit as st
 
 from composer import compose_summary
-from flow_safe import sequence as flow_sequence
 from intent_map import intent_primes, route_topic
 from ledger_store import open_kv, query_shards
 from prime_schema import DEFAULT_PRIME_SCHEMA, fetch_schema, schema_block
-from prime_tagger import tag_modifiers, tag_primes
+from prime_tagger import tag_modifiers
+from services.api import ApiService
+from services.prime_service import create_prime_service
 
 
 API_URL = os.getenv("DUALSUBSTRATE_API", "https://dualsubstrate-commercial.fly.dev")
@@ -22,13 +23,44 @@ LEDGER_PATH = os.getenv("LEDGER_PATH", "ledger_db")
 DEFAULT_LEDGER_ID = os.getenv("DEFAULT_LEDGER_ID", "default")
 
 
-def _headers(*, include_ledger: bool = True) -> Dict[str, str]:
+def _api_key() -> str | None:
     secrets = getattr(st, "secrets", {}) or {}
-    key = secrets.get("DUALSUBSTRATE_API_KEY") or os.getenv("DUALSUBSTRATE_API_KEY")
+    return secrets.get("DUALSUBSTRATE_API_KEY") or os.getenv("DUALSUBSTRATE_API_KEY")
+
+
+def _ledger_id() -> str | None:
+    if hasattr(st, "session_state"):
+        ledger_id = st.session_state.get("ledger_id")
+    else:
+        ledger_id = None
+    return ledger_id or DEFAULT_LEDGER_ID
+
+
+def _api_service() -> ApiService:
+    key = "__api_service__"
+    service = st.session_state.get(key) if hasattr(st, "session_state") else None
+    if service is None:
+        service = ApiService(API_URL, _api_key())
+        if hasattr(st, "session_state"):
+            st.session_state[key] = service
+    return service
+
+
+def _prime_service() -> "PrimeService":
+    key = "__prime_service__"
+    service = st.session_state.get(key) if hasattr(st, "session_state") else None
+    if service is None:
+        service = create_prime_service(_api_service(), min(DEFAULT_PRIME_SCHEMA))
+        if hasattr(st, "session_state"):
+            st.session_state[key] = service
+    return service
+
+
+def _headers(*, include_ledger: bool = True) -> Dict[str, str]:
+    key = _api_key()
     headers = {"x-api-key": key} if key else {}
     if include_ledger:
-        ledger_id = st.session_state.get("ledger_id") if hasattr(st, "session_state") else None
-        ledger_id = ledger_id or DEFAULT_LEDGER_ID
+        ledger_id = _ledger_id()
         if ledger_id:
             headers["X-Ledger-ID"] = ledger_id
     return headers
@@ -137,27 +169,10 @@ def _load_ledger() -> Dict[str, Dict]:
     return data
 
 
-def _is_flow_safe_sequence(seq: Iterable) -> bool:
-    items = list(seq or [])
-    if not items or len(items) % 2:
-        return False
-    for idx in range(0, len(items), 2):
-        first, second = items[idx], items[idx + 1]
-        if not isinstance(first, dict) or not isinstance(second, dict):
-            return False
-        prime_a = first.get("prime", first.get("p"))
-        prime_b = second.get("prime", second.get("p"))
-        delta_a = first.get("delta", first.get("d", 1))
-        delta_b = second.get("delta", second.get("d", 1))
-        if prime_a != prime_b or int(delta_a) != int(delta_b):
-            return False
-    return True
-
-
-def _flow_safe_sequence(entries: Optional[Iterable], *, default_delta: int = 1) -> List[Dict[str, int]]:
-    safe: List[Dict[str, int]] = []
+def _coerce_override_factors(entries: Optional[Iterable], *, default_delta: int = 1) -> List[Dict[str, int]]:
+    factors: List[Dict[str, int]] = []
     if entries is None:
-        return flow_sequence([min(DEFAULT_PRIME_SCHEMA)], delta=default_delta)
+        return factors
 
     for entry in entries:
         if isinstance(entry, dict):
@@ -168,9 +183,12 @@ def _flow_safe_sequence(entries: Optional[Iterable], *, default_delta: int = 1) 
             delta = default_delta
         if prime is None:
             continue
-        safe.extend(flow_sequence([int(prime)], delta=int(delta)))
+        try:
+            factors.append({"prime": int(prime), "delta": int(delta)})
+        except (TypeError, ValueError):
+            continue
 
-    return safe or flow_sequence([min(DEFAULT_PRIME_SCHEMA)], delta=default_delta)
+    return factors
 
 
 def _anchor(
@@ -188,35 +206,22 @@ def _anchor(
     schema = st.session_state.get("prime_schema") or DEFAULT_PRIME_SCHEMA
 
     modifiers = tag_modifiers(text, schema)
+    override = (
+        _coerce_override_factors(factors_override)
+        if factors_override is not None
+        else None
+    )
 
-    if factors_override is None:
-        primes = tag_primes(text, schema)
-        safe_seq = flow_sequence(primes)
-    else:
-        override = list(factors_override)
-        if override and isinstance(override[0], dict):
-            if _is_flow_safe_sequence(override):
-                safe_seq = [
-                    {"prime": int(item.get("prime", item.get("p"))), "delta": int(item.get("delta", item.get("d", 1)))}
-                    for item in override
-                    if item.get("prime", item.get("p")) is not None
-                ]
-            else:
-                safe_seq = _flow_safe_sequence(override)
-        else:
-            safe_seq = _flow_safe_sequence(override)
-
-    payload = {"entity": entity, "text": text, "factors": safe_seq}
-    if modifiers:
-        payload["modifiers"] = modifiers
+    prime_service = _prime_service()
     try:
-        resp = requests.post(
-            f"{API_URL}/anchor",
-            json=payload,
-            headers=_headers(),
-            timeout=5,
+        prime_service.anchor(
+            entity,
+            text,
+            schema,
+            ledger_id=_ledger_id(),
+            factors_override=override,
+            modifiers=modifiers or None,
         )
-        resp.raise_for_status()
     except requests.RequestException as exc:
         st.error(f"Anchor failed: {exc}")
         st.session_state.last_anchor_status = "error"
@@ -236,35 +241,28 @@ def _reset_entity_factors() -> bool:
     entity = st.session_state.get("entity")
     if not entity:
         return False
+    schema = st.session_state.get("prime_schema") or DEFAULT_PRIME_SCHEMA
     try:
-        resp = requests.get(
-            f"{API_URL}/ledger",
-            params={"entity": entity},
-            headers=_headers(),
-            timeout=5,
-        )
-        resp.raise_for_status()
+        payload = _api_service().fetch_ledger(entity, ledger_id=_ledger_id())
     except requests.RequestException as exc:
         st.error(f"Could not fetch ledger: {exc}")
         return False
 
-    data = resp.json()
-    factors = data.get("factors") or []
+    factors = payload.get("factors") if isinstance(payload, dict) else []
     for entry in factors:
         prime = entry.get("prime")
         value = entry.get("value")
         if not isinstance(prime, int) or not value:
             continue
         delta = -abs(int(value))
-        seq = flow_sequence([prime], delta=delta)
         try:
-            post = requests.post(
-                f"{API_URL}/anchor",
-                json={"entity": entity, "factors": seq},
-                headers=_headers(),
-                timeout=5,
+            _prime_service().anchor(
+                entity,
+                f"[reset] prime {prime}",
+                schema,
+                ledger_id=_ledger_id(),
+                factors_override=[{"prime": prime, "delta": delta}],
             )
-            post.raise_for_status()
         except requests.RequestException as exc:
             st.error(f"Reset failed for prime {prime}: {exc}")
             return False
@@ -281,43 +279,32 @@ def _run_enrichment(limit: int = 50, reset_first: bool = True) -> None:
             return
 
     try:
-        resp = requests.get(
-            f"{API_URL}/memories",
-            params={"entity": entity, "limit": max(1, min(limit, 100))},
-            headers=_headers(),
-            timeout=5,
+        memories = _api_service().fetch_memories(
+            entity,
+            ledger_id=_ledger_id(),
+            limit=max(1, min(limit, 100)),
         )
-        resp.raise_for_status()
     except requests.RequestException as exc:
         st.error(f"Failed to load memories: {exc}")
         return
 
-    try:
-        memories = resp.json()
-    except ValueError:
-        memories = []
-
     schema = st.session_state.get("prime_schema") or DEFAULT_PRIME_SCHEMA
     enriched = 0
     failures: List[str] = []
+    prime_service = _prime_service()
     for entry in memories:
         text = (entry.get("text") or "").strip()
         if not text:
             continue
-        primes = tag_primes(text, schema)
         modifiers = tag_modifiers(text, schema)
-        safe_seq = flow_sequence(primes)
-        payload = {"entity": entity, "text": text, "factors": safe_seq}
-        if modifiers:
-            payload["modifiers"] = modifiers
         try:
-            post = requests.post(
-                f"{API_URL}/anchor",
-                json=payload,
-                headers=_headers(),
-                timeout=5,
+            prime_service.anchor(
+                entity,
+                text,
+                schema,
+                ledger_id=_ledger_id(),
+                modifiers=modifiers or None,
             )
-            post.raise_for_status()
         except requests.RequestException as exc:
             stamp = entry.get("timestamp")
             label = str(stamp) if stamp else "unknown"
@@ -392,8 +379,8 @@ def _maybe_handle_recall_query(question: str) -> bool:
 
     required_primes = list(required)
     safe_primes = sorted(set(required_primes + [5, 19]))
-    safe_seq = flow_sequence(safe_primes)
-    _anchor(summary, record_chat=False, notify=False, factors_override=safe_seq)
+    safe_factors = [{"prime": prime, "delta": 1} for prime in safe_primes]
+    _anchor(summary, record_chat=False, notify=False, factors_override=safe_factors)
     st.session_state.last_prompt = _build_lawful_augmentation_prompt(question, shards)
     return True
 

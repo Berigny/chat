@@ -134,12 +134,15 @@ class DualSubstrateClient:
         *,
         ledger_id: str | None = None,
         text: str | None = None,
+        modifiers: Iterable[int] | None = None,
     ) -> None:
         """Anchor factors (and optional text) into the ledger."""
 
         payload: dict[str, Any] = {"entity": entity, "factors": list(factors)}
         if text:
             payload["text"] = text
+        if modifiers:
+            payload["modifiers"] = list(modifiers)
         resp = requests.post(
             f"{self.base_url}/anchor",
             json=payload,
