@@ -27,6 +27,11 @@ _QUOTE_KEYWORD_PATTERN = re.compile(r"\b(remember|recall|quote|show)\b")
 _DIALOGUE_LABEL_PATTERN = re.compile(
     r"^(?:you|user|assistant|bot|system|model|ai|llm)\s*:", re.IGNORECASE
 )
+_LEDGER_RECALL_PREFIXES = (
+    "here’s what the ledger currently recalls:",
+    "here's what the ledger currently recalls:",
+)
+_TIMESTAMP_INLINE_PATTERN = re.compile(r"\[\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}")
 _PREFIXES = (
     "what did we talk about",
     "what did we discuss",
@@ -103,12 +108,33 @@ def strip_ledger_noise(text: str, *, user_only: bool = False) -> str:
             continue
         if lowered.startswith("bot:") or "• ledger" in lowered:
             continue
+        if _DIALOGUE_LABEL_PATTERN.match(stripped):
+            continue
         if user_only and lowered.startswith(("assistant:", "system:")):
             continue
         has_quote = any(q in stripped for q in ('"', "“", "”", "‘", "’"))
         if len(stripped) > 20 or has_quote:
             clean_lines.append(stripped)
     return "\n".join(clean_lines)
+
+
+def _looks_like_transcript(text: str) -> bool:
+    if not text:
+        return False
+
+    timestamp_hits = _TIMESTAMP_INLINE_PATTERN.findall(text)
+    if len(timestamp_hits) >= 2:
+        return True
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+
+    timestamp_lines = sum(1 for line in lines if _TIMESTAMP_INLINE_PATTERN.search(line))
+    if timestamp_lines >= max(1, len(lines) // 2):
+        return True
+
+    return False
 
 
 def _is_user_content(text: str) -> bool:
@@ -124,17 +150,21 @@ def _is_user_content(text: str) -> bool:
         "ai:",
         "llm:",
         "response:",
-        "here’s what the ledger currently recalls:",
         "[",
         "you:",
         "user:",
     )
     if lowered.startswith(bot_prefixes):
         return False
+    ascii_lowered = lowered.replace("’", "'")
+    if ascii_lowered.startswith(tuple(prefix.replace("’", "'") for prefix in _LEDGER_RECALL_PREFIXES)):
+        return False
     lines = [line.strip() for line in normalized.splitlines() if line.strip()]
     if len(lines) >= 2 and all(_DIALOGUE_LABEL_PATTERN.match(line) for line in lines):
         return False
     if "• ledger" in lowered and "ledger factor" in lowered:
+        return False
+    if _looks_like_transcript(normalized):
         return False
     return True
 
@@ -568,12 +598,16 @@ class MemoryService:
         if limit <= 0:
             return []
         sanitized: list[dict] = []
+        seen_summaries: set[str] = set()
         for entry in raw_memories:
             if not isinstance(entry, Mapping):
                 continue
             text = strip_ledger_noise((entry.get("text") or "").strip())
             if not text or not _is_user_content(text):
                 continue
+            if text in seen_summaries:
+                continue
+            seen_summaries.add(text)
             payload = dict(entry)
             payload["_sanitized_text"] = text
             sanitized.append(payload)
