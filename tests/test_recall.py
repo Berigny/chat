@@ -1,7 +1,10 @@
+from types import SimpleNamespace
+
 import streamlit as st
 
 import admin_app
 from prime_schema import DEFAULT_PRIME_SCHEMA
+from services.memory_service import MemoryService
 
 
 class _DummyApi:
@@ -59,4 +62,34 @@ def test_recall_structured_response(monkeypatch):
     assert "Meeting summary" in entry["content"]
     assert entry["recall"]["s2"], "Structured S2 entries missing"
     assert api.query_calls[0]["query"] == "meeting recap"
+
+
+def test_recall_filters_transcript_memories():
+    api = SimpleNamespace(
+        fetch_memories=lambda *a, **k: [
+            {
+                "text": (
+                    "You: Did we finalise the investor deck yet?\n"
+                    "Assistant: Not yet, but we scheduled time tomorrow."
+                ),
+                "timestamp": 1_700_000_000_000,
+            },
+            {
+                "text": "Met Priya to review the investor deck timeline and action items for launch.",
+                "timestamp": 1_700_000_100_000,
+            },
+        ]
+    )
+    service = MemoryService(api, {2: 1.0})
+
+    response = service.build_recall_response(
+        "demo",
+        "recall investor deck details",
+        DEFAULT_PRIME_SCHEMA,
+        limit=2,
+    )
+
+    assert response is not None
+    assert "Met Priya to review the investor deck timeline" in response
+    assert "You:" not in response
 
