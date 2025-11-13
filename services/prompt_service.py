@@ -14,7 +14,7 @@ S1_PRIMES = {2, 3, 5, 7}
 S2_PRIMES = {11, 13, 17, 19}
 
 
-__all__ = ["PromptService", "create_prompt_service"]
+__all__ = ["PromptService", "create_prompt_service", "LEDGER_SNIPPET_LIMIT"]
 
 logger = logging.getLogger(__name__)
 
@@ -66,9 +66,11 @@ class PromptService:
         chat_history: Sequence[tuple[str, str]],
         ledger_id: str | None = None,
         attachments: Iterable[Mapping[str, object]] | None = None,
+        assembly: Mapping[str, Sequence[Mapping[str, object]]] | None = None,
         time_window_hours: int = 168,
         since: int | None = None,
         until: int | None = None,
+        quote_safe: bool = False,
     ) -> str:
         prompt_lines = [
             "You are a helpful assistant with access to a perfect, exact memory ledger.",
@@ -78,32 +80,53 @@ class PromptService:
             "Your response should be helpful and conversational, not a rigid report.",
         ]
 
-        if entity:
-            memories = self.memory_service.select_context(
+        if entity and assembly is None and hasattr(self.memory_service, "assemble_context"):
+            assembly = self.memory_service.assemble_context(
                 entity,
-                question,
-                schema,
                 ledger_id=ledger_id,
-                limit=LEDGER_SNIPPET_LIMIT,
-                time_window_hours=time_window_hours,
+                k=LEDGER_SNIPPET_LIMIT,
+                quote_safe=quote_safe,
                 since=since,
-                until=until,
             )
+
+        if entity:
+            memories: list[dict] = []
+            if not assembly or not any(assembly.get(section) for section in ("summaries", "bodies", "claims")):
+                memories = self.memory_service.select_context(
+                    entity,
+                    question,
+                    schema,
+                    ledger_id=ledger_id,
+                    limit=LEDGER_SNIPPET_LIMIT,
+                    time_window_hours=time_window_hours,
+                    since=since,
+                    until=until,
+                )
         else:
             memories = []
 
-        s1_lines: list[str] = []
-        s2_lines: list[str] = []
-        body_lines: list[str] = []
+        summary_entries: list[Mapping[str, object]] = []
+        body_entries: list[Mapping[str, object]] = []
+        claim_entries: list[Mapping[str, object]] = []
+        if isinstance(assembly, Mapping):
+            summary_entries = [dict(entry) for entry in assembly.get("summaries", []) if isinstance(entry, Mapping)]
+            body_entries = [dict(entry) for entry in assembly.get("bodies", []) if isinstance(entry, Mapping)]
+            claim_entries = [dict(entry) for entry in assembly.get("claims", []) if isinstance(entry, Mapping)]
 
-        for entry in memories:
-            prime = entry.get("prime")
-            summary = entry.get("summary") or entry.get("_structured_text") or entry.get("_sanitized_text")
-            summary = _trim_snippet(summary or "", LEDGER_SNIPPET_CHARS)
+        summary_entries.sort(key=lambda entry: entry.get("timestamp") or 0, reverse=True)
+        body_entries.sort(key=lambda entry: entry.get("timestamp") or 0, reverse=True)
+        claim_entries.sort(key=lambda entry: entry.get("timestamp") or 0, reverse=True)
+
+        summary_lines: list[str] = []
+        for entry in summary_entries[:LEDGER_SNIPPET_LIMIT]:
+            summary = _trim_snippet(str(entry.get("summary") or ""), LEDGER_SNIPPET_CHARS)
+            if not summary:
+                continue
+            prime = entry.get("prime") if isinstance(entry.get("prime"), int) else None
             title = entry.get("title") or (f"Prime {prime}" if prime else None)
-            tags = [tag for tag in entry.get("tags", ()) if tag]
+            tags = [tag for tag in entry.get("tags", ()) if isinstance(tag, str) and tag]
             tag_block = f" [tags: {', '.join(tags[:3])}]" if tags else ""
-            timestamp = entry.get("timestamp")
+            timestamp = entry.get("timestamp") if isinstance(entry.get("timestamp"), (int, float)) else None
             ts_label = (
                 datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M")
                 if timestamp
@@ -111,35 +134,107 @@ class PromptService:
             )
             label_parts = [part for part in (ts_label, title) if part]
             label = " | ".join(label_parts) if label_parts else title or ts_label or "Ledger"
-            if summary:
-                line = f"- {label}{tag_block}: {summary}"
-                if prime in S1_PRIMES:
-                    s1_lines.append(line)
-                elif prime in S2_PRIMES:
-                    s2_lines.append(line)
-                else:
-                    s2_lines.append(line)
+            summary_lines.append(f"- {label}{tag_block}: {summary}")
 
-            body_chunks = entry.get("body") if isinstance(entry.get("body"), list) else []
-            for chunk in body_chunks[:LEDGER_SNIPPET_LIMIT]:
-                snippet = _trim_snippet(chunk, LEDGER_SNIPPET_CHARS)
-                if snippet:
-                    label = title or f"Prime {prime}"
-                    body_lines.append(f"- {label}: {snippet}")
+        body_lines: list[str] = []
+        for entry in body_entries[:LEDGER_SNIPPET_LIMIT]:
+            if entry.get("quote_safe") is False:
+                continue
+            prime = entry.get("prime") if isinstance(entry.get("prime"), int) else None
+            title = entry.get("title") or entry.get("summary") or (f"Prime {prime}" if prime else None)
+            body_chunks = entry.get("body") if isinstance(entry.get("body"), Sequence) else []
+            chunk_text = None
+            for chunk in body_chunks:
+                if isinstance(chunk, str) and chunk.strip():
+                    chunk_text = chunk.strip()
+                    break
+            if not chunk_text:
+                summary_text = entry.get("summary") if isinstance(entry.get("summary"), str) else None
+                chunk_text = summary_text.strip() if summary_text else None
+            if not chunk_text:
+                continue
+            snippet = _trim_snippet(chunk_text, LEDGER_SNIPPET_CHARS)
+            if not snippet:
+                continue
+            tags = [tag for tag in entry.get("tags", ()) if isinstance(tag, str) and tag]
+            tag_block = f" [tags: {', '.join(tags[:3])}]" if tags else ""
+            body_lines.append(f"- {title or f'Prime {prime}'}{tag_block}: {snippet}")
+
+        claim_lines: list[str] = []
+        for entry in claim_entries[:LEDGER_SNIPPET_LIMIT]:
+            claim_text = entry.get("claim") or entry.get("summary")
+            if not isinstance(claim_text, str):
+                continue
+            snippet = _trim_snippet(claim_text, LEDGER_SNIPPET_CHARS)
+            if not snippet:
+                continue
+            prime = entry.get("prime") if isinstance(entry.get("prime"), int) else None
+            title = entry.get("title") or (f"Prime {prime}" if prime else "Claim")
+            tags = [tag for tag in entry.get("tags", ()) if isinstance(tag, str) and tag]
+            tag_block = f" [tags: {', '.join(tags[:3])}]" if tags else ""
+            claim_lines.append(f"- {title}{tag_block}: {snippet}")
 
         structured_rendered = False
-        if s1_lines:
-            structured_rendered = True
-            prompt_lines.append("\n--- Ledger S1 Slots ---")
-            prompt_lines.extend(s1_lines[:LEDGER_SNIPPET_LIMIT])
-        if s2_lines:
+        if summary_lines:
             structured_rendered = True
             prompt_lines.append("\n--- Ledger S2 Summaries ---")
-            prompt_lines.extend(s2_lines[:LEDGER_SNIPPET_LIMIT])
+            prompt_lines.extend(summary_lines)
+        if claim_lines:
+            structured_rendered = True
+            prompt_lines.append("\n--- Ledger S2 Claims ---")
+            prompt_lines.extend(claim_lines)
         if body_lines:
             structured_rendered = True
             prompt_lines.append("\n--- Ledger Bodies ---")
-            prompt_lines.extend(body_lines[:LEDGER_SNIPPET_LIMIT])
+            prompt_lines.extend(body_lines)
+
+        if not structured_rendered and memories:
+            legacy_s1: list[str] = []
+            legacy_s2: list[str] = []
+            legacy_bodies: list[str] = []
+            for entry in memories:
+                prime = entry.get("prime") if isinstance(entry.get("prime"), int) else None
+                summary = entry.get("summary") or entry.get("_structured_text") or entry.get("_sanitized_text")
+                summary = _trim_snippet(summary or "", LEDGER_SNIPPET_CHARS)
+                title = entry.get("title") or (f"Prime {prime}" if prime else None)
+                tags = [tag for tag in entry.get("tags", ()) if tag]
+                tag_block = f" [tags: {', '.join(tags[:3])}]" if tags else ""
+                timestamp = entry.get("timestamp")
+                ts_label = (
+                    datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M")
+                    if timestamp
+                    else None
+                )
+                label_parts = [part for part in (ts_label, title) if part]
+                label = " | ".join(label_parts) if label_parts else title or ts_label or "Ledger"
+                if summary:
+                    line = f"- {label}{tag_block}: {summary}"
+                    if prime in S1_PRIMES:
+                        legacy_s1.append(line)
+                    elif prime in S2_PRIMES:
+                        legacy_s2.append(line)
+                    else:
+                        legacy_s2.append(line)
+
+                body_chunks = entry.get("body") if isinstance(entry.get("body"), list) else []
+                for chunk in body_chunks[:LEDGER_SNIPPET_LIMIT]:
+                    snippet = _trim_snippet(chunk, LEDGER_SNIPPET_CHARS)
+                    if snippet:
+                        label = title or f"Prime {prime}" or "Ledger"
+                        legacy_bodies.append(f"- {label}: {snippet}")
+
+            if legacy_s1:
+                structured_rendered = True
+                prompt_lines.append("\n--- Ledger S1 Slots ---")
+                prompt_lines.extend(legacy_s1[:LEDGER_SNIPPET_LIMIT])
+            if legacy_s2:
+                structured_rendered = True
+                prompt_lines.append("\n--- Ledger S2 Summaries ---")
+                prompt_lines.extend(legacy_s2[:LEDGER_SNIPPET_LIMIT])
+            if legacy_bodies:
+                structured_rendered = True
+                prompt_lines.append("\n--- Ledger Bodies ---")
+                prompt_lines.extend(legacy_bodies[:LEDGER_SNIPPET_LIMIT])
 
         if not structured_rendered:
             prompt_lines.append("\n--- Ledger Memories ---")
