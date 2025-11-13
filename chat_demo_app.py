@@ -47,7 +47,7 @@ from services.memory_service import (
     is_recall_query,
     strip_ledger_noise,
 )
-from services.prompt_service import create_prompt_service
+from services.prompt_service import LEDGER_SNIPPET_LIMIT, create_prompt_service
 from services.prime_service import create_prime_service
 from services.ledger_service import persist_structured_views
 from services.ledger_tasks import (
@@ -153,6 +153,7 @@ def _create_or_switch_ledger(ledger_id: str, *, notify: bool = True) -> bool:
         return False
 
     st.session_state.ledger_id = ledger_id
+    MEMORY_SERVICE.clear_entity_cache(entity=_get_entity(), ledger_id=ledger_id)
     if notify:
         st.toast(f"Ledger ready: {ledger_id}", icon="📚")
     return True
@@ -536,11 +537,25 @@ def _refresh_capabilities_block() -> str:
     return block
 
 
-def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None) -> str:
+def _augment_prompt(
+    user_question: str,
+    *,
+    attachments: list[dict] | None = None,
+    assembly: dict | None = None,
+    since: int | None = None,
+    until: int | None = None,
+    quote_safe: bool | None = None,
+) -> str:
     entity = _get_entity()
     schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
     ledger_id = st.session_state.get("ledger_id")
-    since, until = derive_time_filters(user_question)
+    derived_since, derived_until = derive_time_filters(user_question)
+    if since is None:
+        since = derived_since
+    if until is None:
+        until = derived_until
+    if quote_safe is None:
+        quote_safe = is_recall_query(user_question)
     history = st.session_state.get("chat_history") or []
     return PROMPT_SERVICE.build_augmented_prompt(
         entity=entity,
@@ -549,8 +564,10 @@ def _augment_prompt(user_question: str, *, attachments: list[dict] | None = None
         chat_history=history,
         ledger_id=ledger_id,
         attachments=attachments or [],
+        assembly=assembly,
         since=since,
         until=until,
+        quote_safe=quote_safe,
     )
 
 
@@ -939,7 +956,37 @@ def _chat_response(
 ):
     """Generate a chat response, unshackling the LLM to use the full context."""
     # The new prompt augmentation function provides all the necessary context.
-    llm_prompt = _augment_prompt(prompt, attachments=attachments)
+    entity = _get_entity()
+    ledger_id = st.session_state.get("ledger_id")
+    since, until = derive_time_filters(prompt)
+    quote_mode = quote_count is not None and quote_count > 0
+    assembly = None
+    if entity:
+        k = quote_count if quote_count else LEDGER_SNIPPET_LIMIT
+        assembly = MEMORY_SERVICE.assemble_context(
+            entity,
+            ledger_id=ledger_id,
+            k=k,
+            quote_safe=quote_mode,
+            since=since,
+        )
+        st.session_state.latest_assembly = {
+            "entity": entity,
+            "ledger_id": ledger_id,
+            "k": k,
+            "quote_safe": quote_mode,
+            "since": since,
+            "captured_at": time.time(),
+            "payload": assembly,
+        }
+    llm_prompt = _augment_prompt(
+        prompt,
+        attachments=attachments,
+        assembly=assembly,
+        since=since,
+        until=until,
+        quote_safe=quote_mode,
+    )
 
     if use_openai:
         if not (OpenAI and OPENAI_API_KEY):
@@ -1056,6 +1103,7 @@ def _handle_login():
     st.session_state.authenticated = True
     st.session_state.entity = user_data["entity"]
     st.session_state.user_type = user_type
+    MEMORY_SERVICE.clear_entity_cache()
     _reset_chat_state(clear_query=False)
 
     if user_type == "Demo user":

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import copy
 import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Mapping, Sequence, TYPE_CHECKING
+from typing import Any, Mapping, Sequence, TYPE_CHECKING
 
 from prime_tagger import tag_primes
 
@@ -88,6 +89,7 @@ TIME_RANGE_PATTERN = re.compile(
     r"(?:yesterday|today)\s+between\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\s*-\s*(\d{1,2})(?::(\d{2}))?\s*(am|pm)?",
     re.IGNORECASE,
 )
+ASSEMBLY_CACHE_TTL = 1.5
 
 
 def _keywords_from_prompt(text: str) -> list[str]:
@@ -167,6 +169,36 @@ def _is_user_content(text: str) -> bool:
     if _looks_like_transcript(normalized):
         return False
     return True
+
+
+def _coerce_mapping_sequence(value: Any) -> list[Mapping[str, Any]]:
+    if isinstance(value, Mapping):
+        return [value]
+    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+        return [item for item in value if isinstance(item, Mapping)]
+    return []
+
+
+def _normalize_timestamp(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return int(value)
+    return None
+
+
+def _normalize_tags(raw: Any) -> tuple[str, ...]:
+    if isinstance(raw, Mapping):
+        raw = list(raw.values())
+    if isinstance(raw, Sequence) and not isinstance(raw, (str, bytes)):
+        tags = []
+        for item in raw:
+            if isinstance(item, str):
+                stripped = item.strip()
+                if stripped:
+                    tags.append(stripped)
+        return tuple(tags)
+    return ()
 
 
 def _encode_prime_signature(
@@ -327,6 +359,299 @@ class MemoryService:
     api_service: "ApiService"
     prime_weights: Mapping[int, float]
     _structured_ledgers: dict[tuple[str, str | None], dict] = field(default_factory=dict, init=False, repr=False)
+    _assembly_cache: dict[
+        tuple[str, str | None, int | None, bool, int | None],
+        tuple[float, dict[str, list[dict]]],
+    ] = field(default_factory=dict, init=False, repr=False)
+    _body_cache: dict[int, list[str]] = field(default_factory=dict, init=False, repr=False)
+
+    def clear_entity_cache(self, *, entity: str | None = None, ledger_id: str | None = None) -> None:
+        """Clear cached assembly data for the provided entity/ledger."""
+
+        if entity is None and ledger_id is None:
+            self._assembly_cache.clear()
+            self._body_cache.clear()
+            return
+
+        ledger_key = ledger_id or None
+        keys_to_drop = [
+            key
+            for key in self._assembly_cache.keys()
+            if (entity is None or key[0] == entity) and (ledger_id is None or key[1] == ledger_key)
+        ]
+        for key in keys_to_drop:
+            self._assembly_cache.pop(key, None)
+
+        if entity is not None or ledger_id is not None:
+            self._body_cache.clear()
+
+    def assemble_context(
+        self,
+        entity: str | None,
+        *,
+        ledger_id: str | None = None,
+        k: int | None = None,
+        quote_safe: bool | None = None,
+        since: int | None = None,
+    ) -> dict[str, list[dict]]:
+        """Fetch prompt assembly payloads (S2 summaries, S1 bodies, claims)."""
+
+        if not entity or not getattr(self, "api_service", None):
+            return {"summaries": [], "bodies": [], "claims": []}
+
+        normalized_k = int(k) if isinstance(k, (int, float)) else None
+        normalized_quote_safe = None if quote_safe is None else bool(quote_safe)
+        cache_key = (entity, ledger_id or None, normalized_k, normalized_quote_safe, since or None)
+
+        cached = self._assembly_cache.get(cache_key)
+        now = time.time()
+        if cached and now - cached[0] <= ASSEMBLY_CACHE_TTL:
+            return copy.deepcopy(cached[1])
+
+        try:
+            payload = self.api_service.fetch_assembly(
+                entity,
+                ledger_id=ledger_id,
+                k=normalized_k,
+                quote_safe=normalized_quote_safe,
+                since=since,
+            )
+        except Exception:
+            if cached:
+                return copy.deepcopy(cached[1])
+            return {"summaries": [], "bodies": [], "claims": []}
+
+        filter_quote_safe = bool(normalized_quote_safe)
+        normalized = self._normalize_assembly_payload(payload, quote_safe=filter_quote_safe)
+        normalized_copy = copy.deepcopy(normalized)
+        self._assembly_cache[cache_key] = (now, normalized_copy)
+        return copy.deepcopy(normalized_copy)
+
+    def _normalize_assembly_payload(
+        self,
+        payload: Mapping[str, Any] | None,
+        *,
+        quote_safe: bool,
+    ) -> dict[str, list[dict]]:
+        result: dict[str, list[dict]] = {"summaries": [], "bodies": [], "claims": []}
+        if not isinstance(payload, Mapping):
+            return result
+
+        s2_section = payload.get("s2") if isinstance(payload.get("s2"), Mapping) else None
+        summary_candidates: list[Mapping[str, Any]] = []
+        if isinstance(s2_section, Mapping):
+            summary_candidates.extend(_coerce_mapping_sequence(s2_section.get("summaries")))
+            summary_candidates.extend(_coerce_mapping_sequence(s2_section.get("summary_refs")))
+            summary_candidates.extend(_coerce_mapping_sequence(s2_section.get("refs")))
+        summary_candidates.extend(_coerce_mapping_sequence(payload.get("summaries")))
+        summary_candidates.extend(_coerce_mapping_sequence(payload.get("summary_refs")))
+
+        summaries: list[dict] = []
+        for entry in summary_candidates:
+            normalized = self._normalize_summary_entry(entry)
+            if not normalized:
+                continue
+            if quote_safe and normalized.get("quote_safe") is False:
+                continue
+            summaries.append(normalized)
+
+        bodies_section = payload.get("s1") if isinstance(payload.get("s1"), Mapping) else None
+        body_candidates: list[Mapping[str, Any]] = []
+        if isinstance(bodies_section, Mapping):
+            body_candidates.extend(_coerce_mapping_sequence(bodies_section.get("bodies")))
+            body_candidates.extend(_coerce_mapping_sequence(bodies_section.get("body_refs")))
+        body_candidates.extend(_coerce_mapping_sequence(payload.get("bodies")))
+        body_candidates.extend(_coerce_mapping_sequence(payload.get("body_refs")))
+
+        bodies: list[dict] = []
+        for entry in body_candidates:
+            normalized = self._normalize_body_entry(entry)
+            if not normalized:
+                continue
+            if quote_safe and normalized.get("quote_safe") is False:
+                continue
+            bodies.append(normalized)
+
+        claim_candidates: list[Mapping[str, Any]] = []
+        if isinstance(s2_section, Mapping):
+            claim_candidates.extend(_coerce_mapping_sequence(s2_section.get("claims")))
+        claim_candidates.extend(_coerce_mapping_sequence(payload.get("claims")))
+
+        claims: list[dict] = []
+        for entry in claim_candidates:
+            normalized = self._normalize_claim_entry(entry)
+            if not normalized:
+                continue
+            claims.append(normalized)
+
+        summaries = self._dedupe_and_sort(
+            summaries,
+            key=lambda item: (item.get("prime"), item.get("summary")),
+            sort_key=lambda item: (item.get("timestamp") or 0, item.get("score", 0.0)),
+        )
+        bodies = self._dedupe_and_sort(
+            bodies,
+            key=lambda item: (item.get("prime"), tuple(item.get("body", []))),
+            sort_key=lambda item: (item.get("timestamp") or 0, item.get("prime") or 0),
+        )
+        claims = self._dedupe_and_sort(
+            claims,
+            key=lambda item: (item.get("prime"), item.get("claim")),
+            sort_key=lambda item: (item.get("timestamp") or 0, item.get("score", 0.0)),
+        )
+
+        result["summaries"] = summaries
+        result["bodies"] = bodies
+        result["claims"] = claims
+        return result
+
+    def _dedupe_and_sort(
+        self,
+        items: list[dict],
+        *,
+        key: Callable[[dict], Any],
+        sort_key: Callable[[dict], Any],
+    ) -> list[dict]:
+        seen: set = set()
+        ordered: list[dict] = []
+        for item in items:
+            try:
+                marker = key(item)
+            except Exception:
+                marker = None
+            if marker in seen:
+                continue
+            seen.add(marker)
+            ordered.append(item)
+        ordered.sort(key=lambda item: sort_key(item), reverse=True)
+        return ordered
+
+    def _normalize_summary_entry(self, entry: Mapping[str, Any]) -> dict | None:
+        summary = entry.get("summary") or entry.get("text") or entry.get("content")
+        if not isinstance(summary, str):
+            return None
+        summary_text = summary.strip()
+        if not summary_text:
+            return None
+
+        prime = entry.get("prime")
+        if not isinstance(prime, int):
+            candidate = entry.get("prime_ref") or entry.get("summary_prime") or entry.get("id")
+            prime = candidate if isinstance(candidate, int) else None
+
+        title = entry.get("title") or entry.get("name")
+        title = title.strip() if isinstance(title, str) else None
+
+        timestamp = _normalize_timestamp(entry.get("timestamp") or entry.get("ts") or entry.get("time"))
+        score_raw = entry.get("score")
+        score = float(score_raw) if isinstance(score_raw, (int, float)) else 0.0
+        quote_flag = entry.get("quote_safe")
+        if isinstance(quote_flag, bool):
+            quote_safe = quote_flag
+        else:
+            quote_safe = bool(entry.get("quoteSafe") or entry.get("quote_allowed"))
+
+        body_prime = (
+            entry.get("body_prime")
+            or entry.get("bodyPrime")
+            or entry.get("prime_ref")
+            or entry.get("body_ref")
+        )
+
+        normalized = {
+            "prime": prime,
+            "title": title,
+            "summary": summary_text,
+            "tags": _normalize_tags(entry.get("tags") or entry.get("labels")),
+            "timestamp": timestamp,
+            "score": score,
+            "quote_safe": quote_safe,
+        }
+        if isinstance(body_prime, int):
+            normalized["body_prime"] = body_prime
+        return normalized
+
+    def _normalize_body_entry(self, entry: Mapping[str, Any]) -> dict | None:
+        prime = entry.get("prime") or entry.get("body_prime") or entry.get("prime_ref")
+        if not isinstance(prime, int):
+            candidate = entry.get("bodyPrime") or entry.get("body_ref")
+            prime = candidate if isinstance(candidate, int) else None
+        if prime is None:
+            return None
+
+        body_source = entry.get("body") or entry.get("text") or entry.get("content") or entry.get("chunks")
+        body_chunks: list[str] = []
+        if isinstance(body_source, str):
+            chunk = body_source.strip()
+            if chunk:
+                body_chunks.append(chunk)
+        elif isinstance(body_source, Sequence) and not isinstance(body_source, (str, bytes)):
+            for chunk in body_source:
+                if isinstance(chunk, str):
+                    snippet = chunk.strip()
+                    if snippet:
+                        body_chunks.append(snippet)
+        if not body_chunks:
+            cached = self._body_cache.get(prime)
+            if cached:
+                body_chunks = list(cached)
+        else:
+            self._body_cache[prime] = list(body_chunks)
+
+        summary = entry.get("summary")
+        if isinstance(summary, str):
+            summary = summary.strip() or None
+        else:
+            summary = None
+
+        title = entry.get("title") or entry.get("name")
+        title = title.strip() if isinstance(title, str) else None
+        timestamp = _normalize_timestamp(entry.get("timestamp") or entry.get("ts") or entry.get("time"))
+        tags = _normalize_tags(entry.get("tags") or entry.get("labels"))
+        quote_flag = entry.get("quote_safe")
+        if isinstance(quote_flag, bool):
+            quote_safe = quote_flag
+        else:
+            quote_safe = bool(entry.get("quoteSafe") or entry.get("quote_allowed"))
+
+        if not body_chunks and not summary:
+            return None
+
+        payload = {
+            "prime": prime,
+            "title": title,
+            "summary": summary,
+            "body": body_chunks,
+            "tags": tags,
+            "timestamp": timestamp,
+            "quote_safe": quote_safe,
+        }
+        return payload
+
+    def _normalize_claim_entry(self, entry: Mapping[str, Any]) -> dict | None:
+        claim_text = entry.get("claim") or entry.get("text") or entry.get("content") or entry.get("summary")
+        if not isinstance(claim_text, str):
+            return None
+        claim = claim_text.strip()
+        if not claim:
+            return None
+
+        prime = entry.get("prime") or entry.get("prime_ref") or entry.get("claim_prime")
+        if not isinstance(prime, int):
+            prime = None
+
+        timestamp = _normalize_timestamp(entry.get("timestamp") or entry.get("ts") or entry.get("time"))
+        tags = _normalize_tags(entry.get("tags") or entry.get("labels"))
+        score_raw = entry.get("score")
+        score = float(score_raw) if isinstance(score_raw, (int, float)) else 0.0
+
+        return {
+            "prime": prime,
+            "claim": claim,
+            "tags": tags,
+            "timestamp": timestamp,
+            "score": score,
+        }
 
     def memory_lookup(
         self,

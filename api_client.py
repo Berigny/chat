@@ -93,6 +93,35 @@ class DualSubstrateClient:
         data = resp.json()
         return data if isinstance(data, list) else []
 
+    def assemble_context(
+        self,
+        entity: str,
+        *,
+        ledger_id: str | None = None,
+        k: int | None = None,
+        quote_safe: bool | None = None,
+        since: int | None = None,
+    ) -> dict[str, Any]:
+        """Call the `/assemble` endpoint for pre-formatted prompt material."""
+
+        params: dict[str, Any] = {"entity": entity}
+        if k is not None:
+            params["k"] = int(k)
+        if quote_safe is not None:
+            params["quote_safe"] = "true" if quote_safe else "false"
+        if since is not None:
+            params["since"] = since
+
+        resp = requests.get(
+            f"{self.base_url}/assemble",
+            params=params,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload if isinstance(payload, dict) else {}
+
     def latest_memory_text(
         self,
         entity: str,

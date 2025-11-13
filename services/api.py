@@ -84,6 +84,23 @@ class ApiService:
     ) -> List[Dict[str, Any]]:
         return self._client.fetch_memories(entity, ledger_id=ledger_id, limit=limit, since=since)
 
+    def fetch_assembly(
+        self,
+        entity: str,
+        *,
+        ledger_id: Optional[str] = None,
+        k: int | None = None,
+        quote_safe: bool | None = None,
+        since: int | None = None,
+    ) -> Dict[str, Any]:
+        return self._client.assemble_context(
+            entity,
+            ledger_id=ledger_id,
+            k=k,
+            quote_safe=quote_safe,
+            since=since,
+        )
+
     def latest_memory_text(
         self,
         entity: str,
