@@ -4,6 +4,7 @@ import hashlib
 import html
 import io
 import json
+import logging
 import mimetypes
 import os
 import re
@@ -224,6 +225,197 @@ FALLBACK_PRIME = PRIME_ARRAY[0]
 PRIME_SERVICE = create_prime_service(API_SERVICE, FALLBACK_PRIME)
 MEMORY_SERVICE = MemoryService(API_SERVICE, PRIME_WEIGHTS)
 PROMPT_SERVICE = create_prompt_service(MEMORY_SERVICE)
+
+LOGGER = logging.getLogger(__name__)
+
+S1_PRIMES = {2, 3, 5, 7}
+S2_PRIMES = {11, 13, 17, 19}
+
+
+def _coerce_string(value) -> str | None:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return stripped or None
+    return None
+
+
+def _as_string_list(value) -> list[str]:
+    if isinstance(value, str):
+        value = [value]
+    if not isinstance(value, list):
+        return []
+    result: list[str] = []
+    for item in value:
+        if isinstance(item, str):
+            cleaned = item.strip()
+            if cleaned:
+                result.append(cleaned)
+    return result
+
+
+def _body_chunks(value) -> list[str]:
+    if isinstance(value, str):
+        return [value.strip()] if value.strip() else []
+    chunks: list[str] = []
+    if isinstance(value, list):
+        for item in value:
+            if isinstance(item, str):
+                cleaned = item.strip()
+                if cleaned:
+                    chunks.append(cleaned)
+            elif isinstance(item, dict):
+                text = _coerce_string(item.get("text"))
+                if text:
+                    chunks.append(text)
+    return chunks
+
+
+def _normalize_slot(slot: dict) -> dict | None:
+    if not isinstance(slot, dict):
+        return None
+    prime = slot.get("prime")
+    if not isinstance(prime, int):
+        return None
+    title = _coerce_string(slot.get("title") or slot.get("name"))
+    summary = _coerce_string(slot.get("summary") or slot.get("synopsis") or slot.get("description"))
+    tags = _as_string_list(slot.get("tags"))
+    score = slot.get("score")
+    if isinstance(score, (int, float)):
+        score_value = float(score)
+    else:
+        score_value = 0.0
+    timestamp = slot.get("timestamp")
+    if isinstance(timestamp, (int, float)):
+        timestamp_value = int(timestamp)
+    else:
+        timestamp_value = None
+    body_candidates = slot.get("body") or slot.get("chunks") or slot.get("body_chunks")
+    bodies = _body_chunks(body_candidates)
+    normalized = {
+        "prime": prime,
+        "title": title,
+        "summary": summary,
+        "tags": tags,
+        "score": score_value,
+        "timestamp": timestamp_value,
+        "body": bodies,
+        "raw": slot,
+    }
+    return normalized
+
+
+def _extract_structured_views(payload: dict | None) -> dict:
+    payload = payload or {}
+    slots_raw = payload.get("slots") if isinstance(payload, dict) else None
+    if not isinstance(slots_raw, list):
+        slots_raw = []
+    normalized_slots = [slot for slot in (_normalize_slot(item) for item in slots_raw) if slot]
+    ranked_slots = sorted(
+        normalized_slots,
+        key=lambda item: (item.get("score", 0.0), item.get("timestamp") or 0),
+        reverse=True,
+    )
+
+    s1_slots = []
+    s2_slots = []
+    body_entries = []
+    for slot in ranked_slots:
+        prime = slot["prime"]
+        if prime in S1_PRIMES and (slot.get("title") or slot.get("tags")):
+            s1_slots.append({
+                "prime": prime,
+                "title": slot.get("title"),
+                "tags": slot.get("tags"),
+                "score": slot.get("score", 0.0),
+            })
+        if prime in S2_PRIMES and (slot.get("summary") or slot.get("body")):
+            s2_slots.append({
+                "prime": prime,
+                "summary": slot.get("summary"),
+                "score": slot.get("score", 0.0),
+            })
+        if slot.get("body"):
+            for idx, chunk in enumerate(slot["body"]):
+                body_entries.append(
+                    {
+                        "prime": prime,
+                        "body": chunk,
+                        "metadata": {
+                            "index": idx,
+                            "title": slot.get("title"),
+                            "summary": slot.get("summary"),
+                            "tags": slot.get("tags"),
+                            "score": slot.get("score", 0.0),
+                        },
+                    }
+                )
+
+    return {
+        "raw": payload or {},
+        "slots": ranked_slots,
+        "s1": s1_slots,
+        "s2": s2_slots,
+        "bodies": body_entries,
+        "updated_at": time.time(),
+    }
+
+
+def _persist_structured_views(entity: str, structured: dict, *, ledger_id: str | None) -> None:
+    if not structured:
+        return
+    s1_slots = [slot for slot in structured.get("s1", []) if slot]
+    s2_slots = [slot for slot in structured.get("s2", []) if slot]
+    body_entries = [entry for entry in structured.get("bodies", []) if entry]
+
+    if s1_slots:
+        payload = {"slots": s1_slots}
+        try:
+            API_SERVICE.put_ledger_s1(entity, payload, ledger_id=ledger_id)
+        except requests.RequestException as exc:
+            LOGGER.warning("Failed to persist S1 ledger slots: %s", exc)
+
+    if s2_slots:
+        payload = {"slots": s2_slots}
+        try:
+            API_SERVICE.put_ledger_s2(entity, payload, ledger_id=ledger_id)
+        except requests.RequestException as exc:
+            LOGGER.warning("Failed to persist S2 ledger slots: %s", exc)
+
+    for entry in body_entries:
+        prime = entry.get("prime")
+        chunk = entry.get("body")
+        if not isinstance(prime, int) or not isinstance(chunk, str) or not chunk:
+            continue
+        metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else None
+        try:
+            API_SERVICE.put_ledger_body(
+                entity,
+                prime,
+                chunk,
+                ledger_id=ledger_id,
+                metadata=metadata,
+            )
+        except requests.RequestException as exc:
+            LOGGER.warning("Failed to persist ledger body chunk for prime %s: %s", prime, exc)
+
+
+def _persist_structured_views_from_ledger(entity: str) -> None:
+    ledger_id = st.session_state.get("ledger_id")
+    try:
+        payload = API_SERVICE.fetch_ledger(entity, ledger_id=ledger_id)
+    except requests.RequestException as exc:
+        LOGGER.warning("Failed to refresh ledger after anchor: %s", exc)
+        return
+
+    structured = _extract_structured_views(payload)
+    if not structured.get("slots"):
+        MEMORY_SERVICE.update_structured_ledger(entity, structured, ledger_id=ledger_id)
+        st.session_state.latest_structured_ledger = structured
+        return
+
+    _persist_structured_views(entity, structured, ledger_id=ledger_id)
+    MEMORY_SERVICE.update_structured_ledger(entity, structured, ledger_id=ledger_id)
+    st.session_state.latest_structured_ledger = structured
 
 
 def _prime_semantics_block() -> str:
@@ -685,6 +877,7 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
 
     st.session_state.last_anchor_error = None
     _refresh_capabilities_block()
+    _persist_structured_views_from_ledger(entity)
     if record_chat:
         st.session_state.chat_history.append(("You", text))
     if notify:

@@ -10,6 +10,10 @@ from typing import Iterable, Mapping, Sequence
 from .memory_service import MemoryService, strip_ledger_noise
 
 
+S1_PRIMES = {2, 3, 5, 7}
+S2_PRIMES = {11, 13, 17, 19}
+
+
 __all__ = ["PromptService", "create_prompt_service"]
 
 logger = logging.getLogger(__name__)
@@ -88,25 +92,74 @@ class PromptService:
         else:
             memories = []
 
-        if memories:
-            prompt_lines.append("\n--- Ledger Memories (most relevant first) ---")
-            for entry in memories[:LEDGER_SNIPPET_LIMIT]:
-                sanitized = entry.get("_sanitized_text") or strip_ledger_noise((entry.get("text") or "").strip())
-                if not sanitized:
-                    continue
-                timestamp = entry.get("timestamp")
-                if timestamp:
-                    ts = (
-                        datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M")
-                        if timestamp
-                        else "No timestamp"
-                    )
+        s1_lines: list[str] = []
+        s2_lines: list[str] = []
+        body_lines: list[str] = []
+
+        for entry in memories:
+            prime = entry.get("prime")
+            summary = entry.get("summary") or entry.get("_structured_text") or entry.get("_sanitized_text")
+            summary = _trim_snippet(summary or "", LEDGER_SNIPPET_CHARS)
+            title = entry.get("title") or (f"Prime {prime}" if prime else None)
+            tags = [tag for tag in entry.get("tags", ()) if tag]
+            tag_block = f" [tags: {', '.join(tags[:3])}]" if tags else ""
+            timestamp = entry.get("timestamp")
+            ts_label = (
+                datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M")
+                if timestamp
+                else None
+            )
+            label_parts = [part for part in (ts_label, title) if part]
+            label = " | ".join(label_parts) if label_parts else title or ts_label or "Ledger"
+            if summary:
+                line = f"- {label}{tag_block}: {summary}"
+                if prime in S1_PRIMES:
+                    s1_lines.append(line)
+                elif prime in S2_PRIMES:
+                    s2_lines.append(line)
                 else:
-                    ts = "No timestamp"
-                prompt_lines.append(f"[{ts}] {_trim_snippet(sanitized, LEDGER_SNIPPET_CHARS)}")
-        else:
+                    s2_lines.append(line)
+
+            body_chunks = entry.get("body") if isinstance(entry.get("body"), list) else []
+            for chunk in body_chunks[:LEDGER_SNIPPET_LIMIT]:
+                snippet = _trim_snippet(chunk, LEDGER_SNIPPET_CHARS)
+                if snippet:
+                    label = title or f"Prime {prime}"
+                    body_lines.append(f"- {label}: {snippet}")
+
+        structured_rendered = False
+        if s1_lines:
+            structured_rendered = True
+            prompt_lines.append("\n--- Ledger S1 Slots ---")
+            prompt_lines.extend(s1_lines[:LEDGER_SNIPPET_LIMIT])
+        if s2_lines:
+            structured_rendered = True
+            prompt_lines.append("\n--- Ledger S2 Summaries ---")
+            prompt_lines.extend(s2_lines[:LEDGER_SNIPPET_LIMIT])
+        if body_lines:
+            structured_rendered = True
+            prompt_lines.append("\n--- Ledger Bodies ---")
+            prompt_lines.extend(body_lines[:LEDGER_SNIPPET_LIMIT])
+
+        if not structured_rendered:
             prompt_lines.append("\n--- Ledger Memories ---")
-            prompt_lines.append("(No specific memories matched the query, but the full ledger is available.)")
+            if memories:
+                for entry in memories[:LEDGER_SNIPPET_LIMIT]:
+                    sanitized = entry.get("_sanitized_text") or strip_ledger_noise((entry.get("text") or "").strip())
+                    if not sanitized:
+                        continue
+                    timestamp = entry.get("timestamp")
+                    if timestamp:
+                        ts = (
+                            datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M")
+                            if timestamp
+                            else "No timestamp"
+                        )
+                    else:
+                        ts = "No timestamp"
+                    prompt_lines.append(f"[{ts}] {_trim_snippet(sanitized, LEDGER_SNIPPET_CHARS)}")
+            else:
+                prompt_lines.append("(No specific memories matched the query, but the full ledger is available.)")
 
         chat_block = _recent_chat_block(chat_history)
         if chat_block:

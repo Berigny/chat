@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Mapping, Sequence, TYPE_CHECKING
 
@@ -287,6 +287,7 @@ class MemoryService:
 
     api_service: "ApiService"
     prime_weights: Mapping[int, float]
+    _structured_ledgers: dict[tuple[str, str | None], dict] = field(default_factory=dict, init=False, repr=False)
 
     def memory_lookup(
         self,
@@ -321,8 +322,7 @@ class MemoryService:
         since: int | None = None,
         until: int | None = None,
     ) -> list[dict]:
-        keywords = _keywords_from_prompt(query)
-        fetch_limit = min(100, max(limit * 5, 25))
+        fetch_limit = min(100, max(limit * 3, 25))
         window_start = since
         if window_start is None:
             window_start = int((time.time() - time_window_hours * 3600) * 1000)
@@ -336,36 +336,18 @@ class MemoryService:
         if until is not None:
             raw_memories = [m for m in raw_memories if m.get("timestamp", 0) <= until]
 
-        scored_memories = []
-        now = time.time()
-        query_sig = _encode_prime_signature(query, schema, self.prime_weights)
+        structured = self.structured_context(entity, ledger_id=ledger_id)
+        structured_slots = structured.get("slots", []) if isinstance(structured, dict) else []
+        structured_entries = self._prepare_structured_entries(structured_slots)
 
-        for entry in raw_memories:
-            text = strip_ledger_noise(entry.get("text", ""))
-            if not text or not _is_user_content(text):
-                continue
+        if len(structured_entries) >= limit:
+            return structured_entries[:limit]
 
-            score = 0.0
-            lowered = text.lower()
-            for keyword in keywords:
-                score += lowered.count(keyword.lower())
+        fallback_needed = max(0, limit - len(structured_entries))
+        fallback_entries = self._prepare_fallback_entries(raw_memories, fallback_needed)
 
-            timestamp = entry.get("timestamp", 0)
-            age_hours = (now - timestamp / 1000) / 3600 if timestamp else 0
-            score += max(0.0, 10.0 - age_hours * 0.1)
-
-            memory_sig = _encode_prime_signature(text, schema, self.prime_weights)
-            distance = _prime_topological_distance(query_sig, memory_sig, self.prime_weights)
-            score -= distance * 0.5
-
-            payload = dict(entry)
-            payload["_sanitized_text"] = text
-            payload["_score"] = score
-            payload["_timestamp"] = timestamp
-            scored_memories.append(payload)
-
-        scored_memories.sort(key=lambda item: item.get("_score", 0.0), reverse=True)
-        return scored_memories[:limit]
+        combined = structured_entries + fallback_entries
+        return combined[:limit]
 
     def latest_user_transcript(
         self,
@@ -403,34 +385,47 @@ class MemoryService:
     ) -> str:
         if not entity:
             return ""
-        fetch_limit = limit
-        if keywords:
-            fetch_limit = min(100, max(limit * 4, 20))
-        entries = self.memory_lookup(
-            entity,
-            ledger_id=ledger_id,
-            limit=fetch_limit,
-            since=since,
-        )
+        structured = self.structured_context(entity, ledger_id=ledger_id)
+        slots = structured.get("slots") if isinstance(structured, dict) else []
         snippets: list[str] = []
-        normalized_keywords = [k.lower() for k in (keywords or []) if len(k) >= 3]
-        for entry in entries:
-            text = strip_ledger_noise((entry.get("text") or "").strip())
-            if not text:
+        for slot in slots:
+            title = slot.get("title")
+            summary = slot.get("summary")
+            body = slot.get("body") if isinstance(slot.get("body"), list) else []
+            snippet = summary or (body[0] if body else title)
+            snippet = (snippet or "").strip()
+            if not snippet:
                 continue
-            lowered = text.lower()
-            if lowered.startswith("(ledger reset"):
-                continue
-            if normalized_keywords and not any(k in lowered for k in normalized_keywords):
-                continue
-            source = entry.get("meta", {}).get("source") or entry.get("name") or entry.get("attachment") or ""
-            snippet = text[:240].replace("\n", " ")
-            if len(text) > len(snippet):
-                snippet += "…"
-            label = f" ({source})" if source else ""
+            tags = slot.get("tags") or []
+            label = f" [tags: {', '.join(tags[:3])}]" if tags else ""
             snippets.append(f"- {snippet}{label}")
             if len(snippets) >= limit:
                 break
+        if not snippets:
+            entries = self.memory_lookup(
+                entity,
+                ledger_id=ledger_id,
+                limit=limit,
+                since=since,
+            )
+            normalized_keywords = [k.lower() for k in (keywords or []) if len(k) >= 3]
+            for entry in entries:
+                text = strip_ledger_noise((entry.get("text") or "").strip())
+                if not text:
+                    continue
+                lowered = text.lower()
+                if lowered.startswith("(ledger reset"):
+                    continue
+                if normalized_keywords and not any(k in lowered for k in normalized_keywords):
+                    continue
+                source = entry.get("meta", {}).get("source") or entry.get("name") or entry.get("attachment") or ""
+                snippet = text[:240].replace("\n", " ")
+                if len(text) > len(snippet):
+                    snippet += "…"
+                label = f" ({source})" if source else ""
+                snippets.append(f"- {snippet}{label}")
+                if len(snippets) >= limit:
+                    break
         if not snippets and keywords:
             focus = ", ".join(list(keywords)[:3])
             return f"- No ledger memories matched the topic ({focus})."
@@ -477,14 +472,102 @@ class MemoryService:
                 date_str = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M")
             else:
                 date_str = "unknown time"
-            text_content = entry.get("_sanitized_text") or strip_ledger_noise((entry.get("text") or "").strip())
+            text_content = (
+                entry.get("_structured_text")
+                or entry.get("_sanitized_text")
+                or strip_ledger_noise((entry.get("text") or "").strip())
+            )
             if not text_content:
                 continue
-            lines.append(f"[{date_str} • ledger] {text_content}")
+            prime = entry.get("prime")
+            prime_note = f" • prime {prime}" if prime else ""
+            lines.append(f"[{date_str}{prime_note}] {text_content}")
 
         if len(lines) == 1:
             return None
         return "\n".join(lines)
+
+    # ------------------------------------------------------------------
+    # Structured ledger helpers
+    # ------------------------------------------------------------------
+    def update_structured_ledger(
+        self,
+        entity: str,
+        payload: Mapping[str, object] | None,
+        *,
+        ledger_id: str | None = None,
+    ) -> None:
+        if not entity:
+            return
+        key = (entity, ledger_id or None)
+        if not payload:
+            self._structured_ledgers.pop(key, None)
+            return
+        slots = payload.get("slots") if isinstance(payload, Mapping) else None
+        if isinstance(slots, list):
+            normalized_slots: list[dict] = []
+            for slot in slots:
+                if isinstance(slot, Mapping):
+                    normalized_slots.append(dict(slot))
+            payload = dict(payload)
+            payload["slots"] = normalized_slots
+        self._structured_ledgers[key] = dict(payload)
+
+    def structured_context(self, entity: str, *, ledger_id: str | None = None) -> dict:
+        if not entity:
+            return {}
+        key = (entity, ledger_id or None)
+        return dict(self._structured_ledgers.get(key, {}))
+
+    def _prepare_structured_entries(self, slots: Sequence[Mapping[str, object]]) -> list[dict]:
+        prepared: list[dict] = []
+        for slot in slots:
+            if not isinstance(slot, Mapping):
+                continue
+            prime = slot.get("prime") if isinstance(slot.get("prime"), int) else None
+            title = slot.get("title") if isinstance(slot.get("title"), str) else None
+            summary = slot.get("summary") if isinstance(slot.get("summary"), str) else None
+            body_source = slot.get("body")
+            if isinstance(body_source, (list, tuple)):
+                body_list = [chunk for chunk in body_source if isinstance(chunk, str)]
+            else:
+                body_list = []
+            snippet = summary or (body_list[0] if body_list else title)
+            snippet = snippet.strip() if isinstance(snippet, str) else ""
+            tags = tuple(tag for tag in (slot.get("tags") or []) if isinstance(tag, str))
+            prepared.append(
+                {
+                    "prime": prime,
+                    "title": title,
+                    "summary": summary,
+                    "tags": tags,
+                    "body": body_list,
+                    "score": float(slot.get("score", 0.0)) if isinstance(slot.get("score"), (int, float)) else 0.0,
+                    "timestamp": slot.get("timestamp") if isinstance(slot.get("timestamp"), (int, float)) else None,
+                    "_structured_text": snippet,
+                    "_sanitized_text": snippet,
+                }
+            )
+        prepared.sort(key=lambda item: (item.get("score", 0.0), item.get("timestamp") or 0), reverse=True)
+        return prepared
+
+    def _prepare_fallback_entries(self, raw_memories: Sequence[Mapping[str, object]], limit: int) -> list[dict]:
+        if limit <= 0:
+            return []
+        sanitized: list[dict] = []
+        for entry in raw_memories:
+            if not isinstance(entry, Mapping):
+                continue
+            text = strip_ledger_noise((entry.get("text") or "").strip())
+            if not text or not _is_user_content(text):
+                continue
+            payload = dict(entry)
+            payload["_sanitized_text"] = text
+            sanitized.append(payload)
+            if len(sanitized) >= limit * 3:
+                break
+        sanitized.sort(key=lambda item: item.get("timestamp", 0) or 0, reverse=True)
+        return sanitized[:limit]
 
 
 def is_recall_query(text: str) -> bool:
