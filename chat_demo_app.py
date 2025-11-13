@@ -1038,11 +1038,11 @@ def _get_digest(key: str, fallback: str | None = None) -> str | None:
 DEMO_USERS = {
     "Developer": {
         "entity": "Demo_dev",
-        "digest": _get_digest("DEMO_DEV_DIGEST", "92bfc5adfab78a72"),
+        "digest": _get_digest("DEMO_DEV_DIGEST", "21e467a7efd35f56"),
     },
     "Demo user": {
         "entity": "Demo_new",
-        "digest": _get_digest("DEMO_NEW_DIGEST", "6f6850b5f086fb49"),
+        "digest": _get_digest("DEMO_NEW_DIGEST", "2de003d819aafc55"),
     },
 }
 
@@ -1476,7 +1476,13 @@ def _render_app():
                         _refresh_capabilities_block()
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """Streamlit entry point for the public chat demo."""
+
     _render_app()
-    capabilities_block = st.session_state.get("capabilities_block")
-    capabilities_block = st.session_state.get("capabilities_block") or _refresh_capabilities_block()
+    if not st.session_state.get("capabilities_block"):
+        _refresh_capabilities_block()
+
+
+if __name__ == "__main__":
+    main()

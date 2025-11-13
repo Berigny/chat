@@ -127,6 +127,41 @@ class DualSubstrateClient:
         data = resp.json()
         return data if isinstance(data, dict) else {}
 
+    def query_ledger(
+        self,
+        entity: str,
+        query: str,
+        *,
+        ledger_id: str | None = None,
+        limit: int | None = None,
+        topic: str | None = None,
+        required: Iterable[int] | None = None,
+        preferred: Iterable[int] | None = None,
+        modifiers: Iterable[int] | None = None,
+    ) -> dict[str, Any]:
+        """Query the remote ledger for structured recall."""
+
+        params: dict[str, Any] = {"entity": entity, "query": query}
+        if limit is not None:
+            params["limit"] = limit
+        if topic:
+            params["topic"] = topic
+        if required:
+            params["required"] = list(required)
+        if preferred:
+            params["preferred"] = list(preferred)
+        if modifiers:
+            params["modifiers"] = list(modifiers)
+        resp = requests.get(
+            f"{self.base_url}/query",
+            params=params,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
     def anchor(
         self,
         entity: str,

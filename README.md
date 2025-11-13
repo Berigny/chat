@@ -36,7 +36,7 @@ return {
 
 ## Prompt patterns that trigger ledger retrieval
 
-The chat client will reach into the DualSubstrate RocksDB-backed memory when a typed
+The chat client will reach into the DualSubstrate remote ledger memory when a typed
 prompt meets any of the following heuristics:
 
 - **Command prefixes:** `/q …`, `@ledger …`, or `::memory …`.
