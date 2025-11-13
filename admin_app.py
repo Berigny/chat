@@ -12,6 +12,8 @@ from intent_map import intent_primes, route_topic
 from prime_schema import DEFAULT_PRIME_SCHEMA, fetch_schema, schema_block
 from prime_tagger import tag_modifiers
 from services.api import ApiService
+from services.api_service import EnrichmentHelper
+from services.ethics_service import EthicsService
 from services.prime_service import create_prime_service
 from services.ledger_service import persist_structured_views
 
@@ -156,6 +158,8 @@ def _init_session() -> None:
         st.session_state.ledgers = []
     if "ledger_refresh_error" not in st.session_state:
         st.session_state.ledger_refresh_error = None
+    if "last_enrichment_report" not in st.session_state:
+        st.session_state.last_enrichment_report = None
 
 
 def _load_ledger() -> Dict[str, Dict]:
@@ -403,62 +407,181 @@ def _reset_entity_factors() -> bool:
     return True
 
 
-def _run_enrichment(limit: int = 50, reset_first: bool = True) -> None:
+def _run_enrichment(limit: int = 50, reset_first: bool = True) -> dict | None:
     entity = st.session_state.get("entity")
     if not entity:
-        return
-    if reset_first:
-        if not _reset_entity_factors():
-            st.error("Reset failed; enrichment skipped.")
-            return
+        st.warning("No active entity selected for enrichment.")
+        return None
+
+    ledger_id = _ledger_id()
+    window = max(1, min(int(limit or 0), 200))
+
+    if reset_first and not _reset_entity_factors():
+        st.error("Reset failed; enrichment skipped.")
+        return None
 
     try:
         memories = _api_service().fetch_memories(
             entity,
-            ledger_id=_ledger_id(),
-            limit=max(1, min(limit, 100)),
+            ledger_id=ledger_id,
+            limit=window,
         )
     except requests.RequestException as exc:
         st.error(f"Failed to load memories: {exc}")
-        return
+        return None
+
+    if not isinstance(memories, list) or not memories:
+        st.info("No memories available for enrichment.")
+        summary = {"enriched": 0, "total": 0, "failures": [], "reports": []}
+        st.session_state.last_enrichment_report = summary
+        return summary
 
     schema = st.session_state.get("prime_schema") or DEFAULT_PRIME_SCHEMA
-    enriched = 0
-    failures: List[str] = []
     prime_service = _prime_service()
+    helper = EnrichmentHelper(_api_service(), prime_service)
+    ethics_service = EthicsService(schema=schema)
+
+    summary: dict[str, Any] = {
+        "enriched": 0,
+        "total": len(memories),
+        "failures": [],
+        "reports": [],
+    }
+
+    ledger_snapshot: Dict[str, Any] | None = _load_ledger()
+
     for entry in memories:
+        if not isinstance(entry, dict):
+            continue
         text = (entry.get("text") or "").strip()
         if not text:
             continue
+
+        ref_prime = None
+        for key in ("prime", "body_prime", "prime_ref"):
+            value = entry.get(key)
+            if isinstance(value, int):
+                ref_prime = value
+                break
+        if ref_prime is None:
+            factors = entry.get("factors") if isinstance(entry.get("factors"), list) else []
+            for factor in factors:
+                if isinstance(factor, dict) and isinstance(factor.get("prime"), int):
+                    ref_prime = factor["prime"]
+                    break
+        if ref_prime is None:
+            ref_prime = prime_service.fallback_prime
+
         try:
-            ingest_result = prime_service.ingest(
-                entity,
+            factor_deltas = prime_service.build_factors(
                 text,
                 schema,
-                ledger_id=_ledger_id(),
+                factors_override=None,
                 llm_extractor=None,
-                metadata={"source": "enrichment"},
             )
-            structured = ingest_result.get("structured") if isinstance(ingest_result, dict) else {}
-            if structured:
+            result = helper.submit(
+                entity,
+                ref_prime=ref_prime,
+                deltas=factor_deltas,
+                body_chunks=[text],
+                metadata={"source": "enrichment"},
+                ledger_id=ledger_id,
+            )
+        except requests.RequestException as exc:
+            stamp = entry.get("timestamp")
+            label = str(stamp) if stamp else "unknown"
+            summary["failures"].append(f"{label}: {exc}")
+            continue
+
+        summary["enriched"] += 1
+        response_payload = result.get("response") if isinstance(result, dict) else {}
+        structured = response_payload.get("structured") if isinstance(response_payload, dict) else None
+        if structured:
+            try:
                 persist_structured_views(
                     _api_service(),
                     entity,
                     structured,
-                    ledger_id=_ledger_id(),
+                    ledger_id=ledger_id,
                 )
-        except requests.RequestException as exc:
-            stamp = entry.get("timestamp")
-            label = str(stamp) if stamp else "unknown"
-            failures.append(f"{label}: {exc}")
-            continue
-        enriched += 1
-    if failures:
-        st.warning(
-            "Enrichment completed with failures. Retry details: "
-            + "; ".join(failures)
+            except requests.RequestException as exc:
+                summary["failures"].append(f"Structured persist failed: {exc}")
+
+        try:
+            ledger_snapshot = _api_service().fetch_ledger(entity, ledger_id=ledger_id)
+        except requests.RequestException:
+            pass
+
+        ethics = ethics_service.evaluate(
+            ledger_snapshot if isinstance(ledger_snapshot, dict) else {},
+            deltas=result.get("deltas"),
+            minted_bodies=result.get("bodies"),
         )
-    st.success(f"Enrichment finished: {enriched}/{len(memories)} entries.")
+        result["ethics"] = ethics.asdict()
+        result["text"] = text
+        summary["reports"].append(result)
+
+    if summary["failures"]:
+        st.warning(
+            "Enrichment completed with warnings. Details: "
+            + "; ".join(summary["failures"])
+        )
+    st.success(f"Enrichment finished: {summary['enriched']}/{summary['total']} entries.")
+
+    st.session_state.last_enrichment_report = summary
+    _load_ledger()
+    return summary
+
+
+def _render_enrichment_report(report: Dict[str, Any] | None) -> None:
+    if not report:
+        return
+
+    enriched = report.get("enriched", 0)
+    total = report.get("total", 0)
+    st.markdown("### Enrichment ethics review")
+    st.caption(f"Processed {enriched}/{total} memories during the latest run.")
+
+    reports = report.get("reports") if isinstance(report, dict) else None
+    if not isinstance(reports, list) or not reports:
+        st.info("No enrichment artefacts recorded yet.")
+        return
+
+    for idx, entry in enumerate(reports, start=1):
+        if not isinstance(entry, dict):
+            continue
+        ref_prime = entry.get("ref_prime")
+        header = f"Memory {idx}"
+        if isinstance(ref_prime, int):
+            header += f" • ref prime {ref_prime}"
+        st.markdown(f"**{header}**")
+
+        ethics = entry.get("ethics") if isinstance(entry.get("ethics"), dict) else {}
+        lawfulness = float(ethics.get("lawfulness", 0.0))
+        evidence = float(ethics.get("evidence", 0.0))
+        non_harm = float(ethics.get("non_harm", 0.0))
+        coherence = float(ethics.get("coherence", 0.0))
+        cols = st.columns(4)
+        cols[0].metric("Lawfulness", f"{lawfulness:.2f}")
+        cols[1].metric("Evidence", f"{evidence:.2f}")
+        cols[2].metric("Non-harm", f"{non_harm:.2f}")
+        cols[3].metric("Coherence", f"{coherence:.2f}")
+
+        notes = ethics.get("notes") if isinstance(ethics.get("notes"), list) else []
+        if notes:
+            for note in notes[:4]:
+                st.caption(f"• {note}")
+        bodies = entry.get("bodies") if isinstance(entry.get("bodies"), list) else []
+        if bodies:
+            snippets = []
+            for body_entry in bodies[:2]:
+                text = body_entry.get("body") if isinstance(body_entry, dict) else None
+                if isinstance(text, str) and text.strip():
+                    snippets.append(text.strip()[:160])
+            if snippets:
+                st.caption("Minted evidence:")
+                for snippet in snippets:
+                    st.caption(f"› {snippet}")
 
 
 def _latest_user_transcript() -> Optional[str]:
@@ -832,6 +955,26 @@ def main() -> None:
     if st.sidebar.button("Backfill body primes"):
         _backfill_body_primes()
 
+    with st.sidebar.expander("Enrichment workflow", expanded=False):
+        enrichment_limit = st.number_input(
+            "Replay memories",
+            min_value=1,
+            max_value=200,
+            value=25,
+            step=1,
+            key="enrichment_limit_input",
+        )
+        reset_before = st.checkbox(
+            "Reset discrete primes first",
+            value=True,
+            key="enrichment_reset_checkbox",
+        )
+        if st.button("Run enrichment", key="enrichment_run_btn"):
+            with st.spinner("Running enrichment cycle…"):
+                report = _run_enrichment(limit=int(enrichment_limit), reset_first=reset_before)
+            if report is not None:
+                st.session_state.last_enrichment_report = report
+
     ledger_payload = json.dumps(_load_ledger(), indent=2)
     st.sidebar.download_button(
         "Download ledger JSON",
@@ -841,6 +984,7 @@ def main() -> None:
     )
 
     st.title("Ledger Recall Assistant")
+    _render_enrichment_report(st.session_state.get("last_enrichment_report"))
     _render_history()
 
     user_input = st.chat_input("Ask the ledger")

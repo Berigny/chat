@@ -157,6 +157,15 @@ class ApiService:
     ) -> Dict[str, Any]:
         return self._client.put_ledger_body(entity, prime, body_text, ledger_id=ledger_id, metadata=metadata)
 
+    def enrich(
+        self,
+        entity: str,
+        payload: Dict[str, Any],
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self._client.enrich(entity, payload, ledger_id=ledger_id)
+
     def put_ledger_s2(self, entity: str, payload: Dict[str, Any], *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
         return self._client.put_ledger_s2(entity, payload, ledger_id=ledger_id)
 
