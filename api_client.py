@@ -148,6 +148,115 @@ class DualSubstrateClient:
         )
         resp.raise_for_status()
 
+    def put_ledger_s1(
+        self,
+        entity: str,
+        payload: dict[str, Any],
+        *,
+        ledger_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Write S1 facets (primes 2/3/5/7) to the ledger."""
+
+        body = {"entity": entity, **(payload or {})}
+        resp = requests.put(
+            f"{self.base_url}/ledger/s1",
+            json=body,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
+    def put_ledger_body(
+        self,
+        entity: str,
+        prime: int,
+        body_text: str,
+        *,
+        ledger_id: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Store long-form body text against a higher prime."""
+
+        payload = {
+            "entity": entity,
+            "body": body_text,
+            "prime": prime,
+        }
+        if metadata:
+            payload["meta"] = metadata
+        resp = requests.put(
+            f"{self.base_url}/ledger/body",
+            params={"prime": prime},
+            json=payload,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
+    def put_ledger_s2(
+        self,
+        entity: str,
+        payload: dict[str, Any],
+        *,
+        ledger_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Store enrichment output (summaries, ontology references, etc.)."""
+
+        body = {"entity": entity, **(payload or {})}
+        resp = requests.put(
+            f"{self.base_url}/ledger/s2",
+            json=body,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
+    def update_lawfulness(
+        self,
+        entity: str,
+        payload: dict[str, Any],
+        *,
+        ledger_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Adjust lawfulness metrics via the engine guardrail endpoint."""
+
+        body = {"entity": entity, **(payload or {})}
+        resp = requests.put(
+            f"{self.base_url}/ledger/lawfulness",
+            json=body,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
+    def update_metrics(
+        self,
+        entity: str,
+        payload: dict[str, Any],
+        *,
+        ledger_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Update ℝ metrics; server enforces bounds."""
+
+        body = {"entity": entity, **(payload or {})}
+        resp = requests.put(
+            f"{self.base_url}/ledger/metrics",
+            json=body,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
     def retrieve(self, entity: str, *, ledger_id: str | None = None) -> dict[str, Any]:
         """Retrieve ledger memories for the entity."""
 

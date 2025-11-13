@@ -72,5 +72,29 @@ class ApiService:
     def fetch_metrics(self, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
         return self._client.fetch_metrics(ledger_id=ledger_id)
 
+    # Structured ledger writes -----------------------------------------
+    def put_ledger_s1(self, entity: str, payload: Dict[str, Any], *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._client.put_ledger_s1(entity, payload, ledger_id=ledger_id)
+
+    def put_ledger_body(
+        self,
+        entity: str,
+        prime: int,
+        body_text: str,
+        *,
+        ledger_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        return self._client.put_ledger_body(entity, prime, body_text, ledger_id=ledger_id, metadata=metadata)
+
+    def put_ledger_s2(self, entity: str, payload: Dict[str, Any], *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._client.put_ledger_s2(entity, payload, ledger_id=ledger_id)
+
+    def update_lawfulness(self, entity: str, payload: Dict[str, Any], *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._client.update_lawfulness(entity, payload, ledger_id=ledger_id)
+
+    def update_metrics(self, entity: str, payload: Dict[str, Any], *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._client.update_metrics(entity, payload, ledger_id=ledger_id)
+
 
 __all__ = ["ApiService", "requests"]

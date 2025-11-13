@@ -307,34 +307,7 @@ class MemoryService:
                 return data
         except Exception:
             pass
-
-        try:
-            ledger_payload = self.api_service.fetch_ledger(entity, ledger_id=ledger_id)
-        except Exception:
-            return []
-
-        factors = []
-        if isinstance(ledger_payload, dict):
-            factors = ledger_payload.get("factors") or []
-
-        now_ms = int(time.time() * 1000)
-        synthetic: list[dict] = []
-        for entry in factors:
-            if len(synthetic) >= max(1, limit):
-                break
-            if not isinstance(entry, dict):
-                continue
-            prime = entry.get("prime")
-            value = entry.get("value", 0)
-            if isinstance(prime, int) and value:
-                synthetic.append(
-                    {
-                        "timestamp": now_ms,
-                        "text": f"(Ledger factor) Prime {prime} = {value}",
-                        "meta": {"source": "ledger"},
-                    }
-                )
-        return synthetic
+        return []
 
     def select_context(
         self,
