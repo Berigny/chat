@@ -43,12 +43,16 @@ def test_anchor_persists_structured_views(monkeypatch):
         ]
     }
 
-    monkeypatch.setattr(chat_demo_app.PRIME_SERVICE, "anchor", lambda *a, **k: {"response": {}})
-    monkeypatch.setattr(chat_demo_app.API_SERVICE, "fetch_ledger", lambda *a, **k: ledger_payload)
+    body_calls: list = []
+
+    def fake_put_body(entity, prime, body_text, ledger_id=None, metadata=None):
+        body_calls.append((entity, prime, body_text, ledger_id, metadata))
+        return {}
+
+    monkeypatch.setattr(chat_demo_app.API_SERVICE, "put_ledger_body", fake_put_body)
 
     s1_calls: list = []
     s2_calls: list = []
-    body_calls: list = []
 
     monkeypatch.setattr(
         chat_demo_app.API_SERVICE,
@@ -60,15 +64,6 @@ def test_anchor_persists_structured_views(monkeypatch):
         "put_ledger_s2",
         lambda entity, payload, ledger_id=None: s2_calls.append((entity, payload, ledger_id)) or {},
     )
-    monkeypatch.setattr(
-        chat_demo_app.API_SERVICE,
-        "put_ledger_body",
-        lambda entity, prime, body_text, ledger_id=None, metadata=None: body_calls.append(
-            (entity, prime, body_text, ledger_id, metadata)
-        )
-        or {},
-    )
-
     structured_updates: list = []
     monkeypatch.setattr(
         chat_demo_app.MEMORY_SERVICE,
@@ -76,6 +71,58 @@ def test_anchor_persists_structured_views(monkeypatch):
         lambda entity, payload, ledger_id=None: structured_updates.append((entity, payload, ledger_id)),
     )
     monkeypatch.setattr(chat_demo_app, "_refresh_capabilities_block", lambda: "")
+
+    minted_sequence = [29, 31]
+
+    def fake_ingest(entity, text, schema, *, ledger_id=None, **kwargs):
+        bodies = []
+        s1_slots = []
+        s2_slots = []
+        slots_with_primes = []
+        for idx, slot in enumerate(ledger_payload["slots"]):
+            prime = slot["prime"]
+            minted_prime = minted_sequence[idx]
+            chunk = slot["body"][0]
+            metadata = {"index": 0, "source_prime": prime}
+            fake_put_body(entity, minted_prime, chunk, ledger_id=ledger_id, metadata=metadata)
+            slots_with_primes.append({**slot, "body_prime": minted_prime})
+            bodies.append({"prime": minted_prime, "body": chunk, "metadata": metadata, "key": f"{prime}:0"})
+            if prime in {2, 3, 5, 7}:
+                s1_slots.append(
+                    {
+                        "prime": prime,
+                        "value": 1,
+                        "title": slot.get("title"),
+                        "tags": slot.get("tags"),
+                        "body_prime": minted_prime,
+                        "metadata": {"tier": "S1"},
+                    }
+                )
+            elif prime in {11, 13, 17, 19}:
+                s2_slots.append(
+                    {
+                        "prime": prime,
+                        "summary": slot.get("summary"),
+                        "body_prime": minted_prime,
+                        "metadata": {"tier": "S2"},
+                    }
+                )
+        return {
+            "structured": {
+                "slots": slots_with_primes,
+                "s1": s1_slots,
+                "s2": s2_slots,
+                "bodies": bodies,
+            },
+            "payload": {
+                "s1": s1_slots,
+                "s2": s2_slots,
+                "bodies": [{"prime": entry["prime"], "metadata": entry.get("metadata", {})} for entry in bodies],
+            },
+            "response": {},
+        }
+
+    monkeypatch.setattr(chat_demo_app.PRIME_SERVICE, "ingest", fake_ingest)
 
     result = chat_demo_app._anchor("Test entry", record_chat=False, notify=False)
 
@@ -85,11 +132,11 @@ def test_anchor_persists_structured_views(monkeypatch):
     assert body_calls, "Expected body persistence calls"
 
     s1_payload = s1_calls[0][1]
-    assert s1_payload["slots"][0]["title"] == "Meeting with Alice"
-    assert "tags" in s1_payload["slots"][0]
+    assert s1_payload["slots"][0]["value"] == 1
+    assert s1_payload["slots"][0]["body_prime"] == 29
 
     s2_payload = s2_calls[0][1]
-    assert any(slot.get("summary") for slot in s2_payload["slots"])
+    assert any(slot.get("body_prime") for slot in s2_payload["slots"])
 
     body_entry = body_calls[0]
     assert body_entry[2] == "We reviewed the upcoming roadmap items."

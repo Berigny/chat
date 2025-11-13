@@ -10,6 +10,9 @@ class FailingPrimeService:
     def anchor(self, *_, **__):
         raise requests.HTTPError("boom")
 
+    def ingest(self, *_, **__):
+        raise requests.HTTPError("boom")
+
 
 @pytest.fixture(autouse=True)
 def clear_state():

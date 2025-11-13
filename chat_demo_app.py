@@ -49,6 +49,7 @@ from services.memory_service import (
 )
 from services.prompt_service import create_prompt_service
 from services.prime_service import create_prime_service
+from services.ledger_service import persist_structured_views
 from services.ledger_tasks import (
     fetch_metrics_snapshot,
     perform_lattice_rotation,
@@ -360,43 +361,20 @@ def _extract_structured_views(payload: dict | None) -> dict:
     }
 
 
-def _persist_structured_views(entity: str, structured: dict, *, ledger_id: str | None) -> None:
+def _persist_structured_views(entity: str, structured: dict, *, ledger_id: str | None) -> dict:
     if not structured:
-        return
-    s1_slots = [slot for slot in structured.get("s1", []) if slot]
-    s2_slots = [slot for slot in structured.get("s2", []) if slot]
-    body_entries = [entry for entry in structured.get("bodies", []) if entry]
-
-    if s1_slots:
-        payload = {"slots": s1_slots}
-        try:
-            API_SERVICE.put_ledger_s1(entity, payload, ledger_id=ledger_id)
-        except requests.RequestException as exc:
-            LOGGER.warning("Failed to persist S1 ledger slots: %s", exc)
-
-    if s2_slots:
-        payload = {"slots": s2_slots}
-        try:
-            API_SERVICE.put_ledger_s2(entity, payload, ledger_id=ledger_id)
-        except requests.RequestException as exc:
-            LOGGER.warning("Failed to persist S2 ledger slots: %s", exc)
-
-    for entry in body_entries:
-        prime = entry.get("prime")
-        chunk = entry.get("body")
-        if not isinstance(prime, int) or not isinstance(chunk, str) or not chunk:
-            continue
-        metadata = entry.get("metadata") if isinstance(entry.get("metadata"), dict) else None
-        try:
-            API_SERVICE.put_ledger_body(
-                entity,
-                prime,
-                chunk,
-                ledger_id=ledger_id,
-                metadata=metadata,
-            )
-        except requests.RequestException as exc:
-            LOGGER.warning("Failed to persist ledger body chunk for prime %s: %s", prime, exc)
+        return {"slots": [], "s1": [], "s2": [], "bodies": []}
+    try:
+        persisted = persist_structured_views(
+            API_SERVICE,
+            entity,
+            structured,
+            ledger_id=ledger_id,
+        )
+    except requests.RequestException as exc:
+        LOGGER.warning("Failed to persist structured views: %s", exc)
+        return structured or {"slots": [], "s1": [], "s2": [], "bodies": []}
+    return persisted
 
 
 def _persist_structured_views_from_ledger(entity: str) -> None:
@@ -413,9 +391,9 @@ def _persist_structured_views_from_ledger(entity: str) -> None:
         st.session_state.latest_structured_ledger = structured
         return
 
-    _persist_structured_views(entity, structured, ledger_id=ledger_id)
-    MEMORY_SERVICE.update_structured_ledger(entity, structured, ledger_id=ledger_id)
-    st.session_state.latest_structured_ledger = structured
+    persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
+    MEMORY_SERVICE.update_structured_ledger(entity, persisted, ledger_id=ledger_id)
+    st.session_state.latest_structured_ledger = persisted
 
 
 def _prime_semantics_block() -> str:
@@ -861,13 +839,14 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
 
     schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
     try:
-        PRIME_SERVICE.anchor(
+        ingest_result = PRIME_SERVICE.ingest(
             entity,
             text,
             schema,
             ledger_id=st.session_state.get("ledger_id"),
             factors_override=factors_override,
             llm_extractor=_llm_factor_extractor,
+            metadata={"source": "chat_demo"},
         )
     except requests.RequestException as exc:
         st.session_state.last_anchor_error = str(exc)
@@ -877,7 +856,14 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
 
     st.session_state.last_anchor_error = None
     _refresh_capabilities_block()
-    _persist_structured_views_from_ledger(entity)
+    structured = ingest_result.get("structured") if isinstance(ingest_result, dict) else {}
+    ledger_id = st.session_state.get("ledger_id")
+    if structured:
+        persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
+        MEMORY_SERVICE.update_structured_ledger(entity, persisted, ledger_id=ledger_id)
+        st.session_state.latest_structured_ledger = persisted
+    else:
+        _persist_structured_views_from_ledger(entity)
     if record_chat:
         st.session_state.chat_history.append(("You", text))
     if notify:

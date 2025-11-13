@@ -54,6 +54,15 @@ class ApiService:
             modifiers=modifiers,
         )
 
+    def ingest(
+        self,
+        entity: str,
+        payload: Dict[str, Any],
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self._client.ingest(entity, payload, ledger_id=ledger_id)
+
     def rotate(
         self,
         entity: str,
