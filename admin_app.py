@@ -1,16 +1,14 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-from datetime import datetime
-from typing import Dict, Iterable, List, Optional
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import requests
 import streamlit as st
 
-from composer import compose_summary
 from intent_map import intent_primes, route_topic
-from ledger_store import open_kv, query_shards
 from prime_schema import DEFAULT_PRIME_SCHEMA, fetch_schema, schema_block
 from prime_tagger import tag_modifiers
 from services.api import ApiService
@@ -19,8 +17,10 @@ from services.prime_service import create_prime_service
 
 API_URL = os.getenv("DUALSUBSTRATE_API", "https://dualsubstrate-commercial.fly.dev")
 DEFAULT_ENTITY = os.getenv("DEFAULT_ENTITY", "demo_user")
-LEDGER_PATH = os.getenv("LEDGER_PATH", "ledger_db")
 DEFAULT_LEDGER_ID = os.getenv("DEFAULT_LEDGER_ID", "default")
+
+S1_PRIMES = {2, 3, 5, 7}
+S2_PRIMES = {11, 13, 17, 19}
 
 
 def _api_key() -> str | None:
@@ -158,15 +158,14 @@ def _init_session() -> None:
 
 
 def _load_ledger() -> Dict[str, Dict]:
-    kv = open_kv(LEDGER_PATH)
-    data: Dict[str, Dict] = {}
-    for key, value in kv.items():
-        try:
-            data[key] = json.loads(value)
-        except json.JSONDecodeError:
-            continue
-    kv.close()
-    return data
+    entity = st.session_state.get("entity")
+    if not entity:
+        return {}
+    try:
+        payload = _api_service().fetch_ledger(entity, ledger_id=_ledger_id())
+    except requests.RequestException:
+        return {}
+    return payload if isinstance(payload, dict) else {}
 
 
 def _coerce_override_factors(entries: Optional[Iterable], *, default_delta: int = 1) -> List[Dict[str, int]]:
@@ -326,34 +325,190 @@ def _latest_user_transcript() -> Optional[str]:
     return None
 
 
-def _write_tombstone(topic: str, primes: Iterable[int], summary: str) -> None:
-    kv = open_kv(LEDGER_PATH)
-    key = f"tombstone::{topic}::{datetime.utcnow().date().isoformat()}"
-    record = {
-        "topic": topic,
-        "primes": list(primes),
-        "summary": summary,
-        "tombstone": True,
+def _normalize_slot(slot: Dict) -> Optional[Dict[str, object]]:
+    if not isinstance(slot, dict):
+        return None
+    prime = slot.get("prime")
+    if not isinstance(prime, int):
+        return None
+    title = slot.get("title") or slot.get("name") or slot.get("label")
+    summary = slot.get("summary") or slot.get("synopsis") or slot.get("description")
+    tags = slot.get("tags") or []
+    body_source = slot.get("body") or slot.get("chunks") or slot.get("body_chunks")
+    if isinstance(tags, (list, tuple)):
+        tag_list = [tag for tag in tags if isinstance(tag, str)]
+    else:
+        tag_list = []
+    if isinstance(body_source, (list, tuple)):
+        bodies = [chunk for chunk in body_source if isinstance(chunk, str) and chunk.strip()]
+    else:
+        bodies = []
+    score = slot.get("score")
+    if isinstance(score, (int, float)):
+        score_value = float(score)
+    else:
+        score_value = 0.0
+    timestamp = slot.get("timestamp")
+    if isinstance(timestamp, (int, float)):
+        timestamp_value: Optional[int] = int(timestamp)
+    else:
+        timestamp_value = None
+    normalized = {
+        "prime": prime,
+        "title": str(title).strip() if isinstance(title, str) else None,
+        "summary": str(summary).strip() if isinstance(summary, str) else None,
+        "tags": tag_list,
+        "body": bodies,
+        "score": score_value,
+        "timestamp": timestamp_value,
+        "raw": slot,
     }
-    kv.put(key, json.dumps(record))
-    kv.close()
+    return normalized
 
 
-def _build_lawful_augmentation_prompt(question: str, shards: List[Dict]) -> str:
+def _normalize_query_payload(payload: Dict | None) -> Dict[str, object]:
+    payload = payload or {}
+    raw_slots = payload.get("slots") if isinstance(payload, dict) else None
+    if not isinstance(raw_slots, list):
+        raw_slots = []
+    normalized_slots = [slot for slot in (_normalize_slot(item) for item in raw_slots) if slot]
+    normalized_slots.sort(key=lambda item: (item.get("score", 0.0), item.get("timestamp") or 0), reverse=True)
+
+    s1_slots: List[Dict[str, object]] = []
+    s2_slots: List[Dict[str, object]] = []
+    body_entries: List[Dict[str, object]] = []
+    for slot in normalized_slots:
+        prime = slot.get("prime")
+        if isinstance(prime, int) and prime in S1_PRIMES and (slot.get("title") or slot.get("tags")):
+            s1_slots.append({
+                "prime": prime,
+                "title": slot.get("title"),
+                "tags": slot.get("tags"),
+                "score": slot.get("score", 0.0),
+            })
+        if isinstance(prime, int) and prime in S2_PRIMES and (slot.get("summary") or slot.get("body")):
+            s2_slots.append({
+                "prime": prime,
+                "summary": slot.get("summary"),
+                "score": slot.get("score", 0.0),
+            })
+        if slot.get("body"):
+            for idx, chunk in enumerate(slot["body"]):
+                body_entries.append(
+                    {
+                        "prime": prime,
+                        "body": chunk,
+                        "metadata": {
+                            "index": idx,
+                            "title": slot.get("title"),
+                            "summary": slot.get("summary"),
+                            "tags": slot.get("tags"),
+                            "score": slot.get("score", 0.0),
+                        },
+                    }
+                )
+
+    memories_raw = payload.get("memories") if isinstance(payload, dict) else None
+    memories: List[Dict[str, object]] = []
+    if isinstance(memories_raw, list):
+        for entry in memories_raw:
+            if isinstance(entry, dict):
+                memories.append(entry)
+
+    lawful_prompt = payload.get("lawful_prompt") if isinstance(payload, dict) else None
+    if not isinstance(lawful_prompt, str):
+        lawful_prompt = None
+
+    return {
+        "slots": normalized_slots,
+        "s1": s1_slots,
+        "s2": s2_slots,
+        "bodies": body_entries,
+        "memories": memories,
+        "lawful_prompt": lawful_prompt,
+    }
+
+
+def _render_slot_snippets(slots: Sequence[Dict[str, object]]) -> List[str]:
+    snippets: List[str] = []
+    for slot in slots:
+        summary = slot.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            snippets.append(summary.strip())
+            continue
+        body = slot.get("body") if isinstance(slot.get("body"), list) else None
+        if body:
+            for chunk in body:
+                if isinstance(chunk, str) and chunk.strip():
+                    snippets.append(chunk.strip())
+    return snippets
+
+
+def _compose_recall_summary(question: str, payload: Dict[str, object]) -> Tuple[str, str, Dict[str, object]]:
+    slots: Sequence[Dict[str, object]] = payload.get("slots", []) if isinstance(payload, dict) else []
+    s2_slots: Sequence[Dict[str, object]] = payload.get("s2", []) if isinstance(payload, dict) else []
+    bodies: Sequence[Dict[str, object]] = payload.get("bodies", []) if isinstance(payload, dict) else []
+
+    summary_sources: List[str] = []
+    for entry in s2_slots:
+        summary = entry.get("summary")
+        if isinstance(summary, str) and summary.strip():
+            summary_sources.append(summary.strip())
+    if not summary_sources:
+        for slot in slots:
+            snippet = slot.get("summary") or slot.get("title")
+            if isinstance(snippet, str) and snippet.strip():
+                summary_sources.append(snippet.strip())
+    if not summary_sources:
+        for entry in bodies:
+            chunk = entry.get("body")
+            if isinstance(chunk, str) and chunk.strip():
+                summary_sources.append(chunk.strip())
+
+    summary_text = " ".join(summary_sources).strip()
+    if not summary_text:
+        summary_text = "I couldn’t find enough grounded material to answer that yet."
+
+    prime_set = sorted({slot.get("prime") for slot in slots if isinstance(slot.get("prime"), int)})
+    metadata_parts: List[str] = []
+    if prime_set:
+        metadata_parts.append("primes " + ", ".join(str(prime) for prime in prime_set[:6]))
+    slot_count = len(slots)
+    if slot_count:
+        metadata_parts.append(f"{slot_count} structured slot{'s' if slot_count != 1 else ''}")
+    body_count = len(bodies)
+    if body_count:
+        metadata_parts.append(f"{body_count} body chunk{'s' if body_count != 1 else ''}")
+
+    signature = hashlib.sha1(f"{question}|{summary_text}".encode("utf-8")).hexdigest()[:12]
+    metadata_parts.append(f"sig {signature}")
+    footer = "Sources: " + "; ".join(metadata_parts)
+
+    return summary_text, footer, payload
+
+
+def _build_lawful_augmentation_prompt(question: str, payload: Dict[str, object]) -> str:
     block = schema_block(st.session_state.get("prime_schema"))
-    snippet_lines: List[str] = []
-    for shard in shards:
-        for snippet in shard.get("snippets", []):
-            text = snippet.get("text", "")
-            if text:
-                snippet_lines.append(text)
-    snippets = "\n".join(snippet_lines) or "(no snippets)"
+    snippets: List[str] = []
+    snippets.extend(_render_slot_snippets(payload.get("s2", [])))
+    if not snippets:
+        snippets.extend(_render_slot_snippets(payload.get("slots", [])))
+    if not snippets:
+        for entry in payload.get("bodies", []):
+            chunk = entry.get("body") if isinstance(entry, dict) else None
+            if isinstance(chunk, str) and chunk.strip():
+                snippets.append(chunk.strip())
+    normalized_snippets = []
+    for item in snippets:
+        if isinstance(item, str) and item.strip():
+            normalized_snippets.append(item.strip())
+    snippet_block = "\n".join(normalized_snippets) if normalized_snippets else "(no snippets)"
     return (
         "Only quote snippets provided below. Do not invent memories.\n"
         "If no snippet matches, say so explicitly.\n"
         f"{block}\n"
         f"Question: {question}\n"
-        f"Snippets:\n{snippets}"
+        f"Snippets:\n{snippet_block}"
     )
 
 
@@ -361,27 +516,57 @@ def _maybe_handle_recall_query(question: str) -> bool:
     topic = route_topic(question)
     required, preferred, modifiers = intent_primes(question)
     tag_modifiers(question, st.session_state.get("prime_schema"))
-    shards = query_shards(topic, required, preferred, modifiers, limit=5)
-    if not shards:
+    entity = st.session_state.get("entity")
+    if not entity:
+        return False
+    try:
+        query_payload = _api_service().query_ledger(
+            entity,
+            question,
+            ledger_id=_ledger_id(),
+            limit=5,
+            topic=topic,
+            required=list(required),
+            preferred=list(preferred),
+            modifiers=list(modifiers),
+        )
+    except requests.RequestException as exc:
+        st.error(f"Recall failed: {exc}")
+        return False
+
+    normalized = _normalize_query_payload(query_payload if isinstance(query_payload, dict) else {})
+    if not normalized.get("slots") and not normalized.get("memories"):
         message = f"No stored memories matched “{question}” yet."
-        st.session_state.chat_history.append({"role": "assistant", "content": message})
-        _write_tombstone(topic, required, message)
+        recent_snippets: List[str] = []
+        try:
+            recent = _api_service().fetch_memories(entity, ledger_id=_ledger_id(), limit=3)
+        except requests.RequestException:
+            recent = []
+        for entry in recent:
+            text = (entry.get("text") or "") if isinstance(entry, dict) else ""
+            if isinstance(text, str):
+                snippet = text.strip()
+                if snippet:
+                    recent_snippets.append(snippet[:240])
+        st.session_state.chat_history.append(
+            {
+                "role": "assistant",
+                "content": message,
+                "recent_memories": recent_snippets,
+            }
+        )
         return True
 
-    reply = compose_summary(shards, question)
-    if "\n\n" in reply:
-        summary, footer = reply.rsplit("\n\n", 1)
-    else:
-        summary, footer = reply, ""
+    summary, footer, enriched = _compose_recall_summary(question, normalized)
     st.session_state.chat_history.append(
-        {"role": "assistant", "content": summary, "footer": footer, "shards": shards}
+        {"role": "assistant", "content": summary, "footer": footer, "recall": enriched}
     )
 
     required_primes = list(required)
     safe_primes = sorted(set(required_primes + [5, 19]))
     safe_factors = [{"prime": prime, "delta": 1} for prime in safe_primes]
     _anchor(summary, record_chat=False, notify=False, factors_override=safe_factors)
-    st.session_state.last_prompt = _build_lawful_augmentation_prompt(question, shards)
+    st.session_state.last_prompt = _build_lawful_augmentation_prompt(question, enriched)
     return True
 
 
@@ -405,18 +590,41 @@ def _render_history() -> None:
             if footer:
                 st.caption(footer)
 
-            shards = message.get("shards") or []
-            for shard in shards:
-                for snippet in shard.get("snippets", []):
-                    text = snippet.get("text", "")
-                    modifiers = snippet.get("modifiers") or []
-                    if not text:
-                        continue
-                    if modifiers:
-                        modifier_str = ", ".join(str(mod) for mod in modifiers)
-                        st.caption(f"• {text} (modifiers: {modifier_str})")
-                    else:
-                        st.caption(f"• {text}")
+            recall = message.get("recall") or {}
+            if recall:
+                s1_slots = recall.get("s1") or []
+                if s1_slots:
+                    st.caption("Structured S1 slots:")
+                    for slot in s1_slots:
+                        title = slot.get("title") or "(untitled)"
+                        tags = slot.get("tags") or []
+                        if tags:
+                            tag_str = ", ".join(str(tag) for tag in tags[:3])
+                            st.caption(f"• {title} [tags: {tag_str}]")
+                        else:
+                            st.caption(f"• {title}")
+
+                s2_slots = recall.get("s2") or []
+                if s2_slots:
+                    st.caption("Structured S2 summaries:")
+                    for slot in s2_slots:
+                        summary = slot.get("summary")
+                        if summary:
+                            st.caption(f"• {summary}")
+
+                body_entries = recall.get("bodies") or []
+                if body_entries:
+                    st.caption("Ledger body excerpts:")
+                    for entry in body_entries[:5]:
+                        chunk = entry.get("body")
+                        if isinstance(chunk, str) and chunk.strip():
+                            st.caption(f"• {chunk.strip()}")
+
+            recent_memories = message.get("recent_memories") or []
+            if recent_memories:
+                st.caption("Latest ledger entries:")
+                for text in recent_memories:
+                    st.caption(f"• {text}")
 
 
 def _render_ledger_controls() -> None:
@@ -437,7 +645,7 @@ def _render_ledger_controls() -> None:
             "Active ledger",
             available,
             index=idx,
-            help="All API calls include X-Ledger-ID so traffic routes to the chosen RocksDB.",
+            help="All API calls include X-Ledger-ID so traffic routes to the selected remote ledger.",
         )
         if selection != current:
             st.session_state.ledger_id = selection
@@ -459,7 +667,7 @@ def _render_ledger_controls() -> None:
             ledger_id = entry.get("ledger_id")
             path = entry.get("path") or "—"
             st.sidebar.caption(f"• {ledger_id}: {path}")
-    st.sidebar.caption("To archive a ledger, stop routing to it and remove the directory from LEDGER_ROOT.")
+    st.sidebar.caption("To archive a ledger, stop routing to it and remove it via the admin API.")
 
 
 def main() -> None:
