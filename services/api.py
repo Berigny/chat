@@ -40,8 +40,15 @@ class ApiService:
     def anchor(self, entity: str, factors: Iterable[Dict[str, Any]], *, ledger_id: Optional[str] = None, text: Optional[str] = None) -> Dict[str, Any]:
         return self._client.anchor(entity, factors, ledger_id=ledger_id, text=text)
 
-    def rotate(self, entity: str, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
-        return self._client.rotate(entity, ledger_id=ledger_id)
+    def rotate(
+        self,
+        entity: str,
+        *,
+        ledger_id: Optional[str] = None,
+        axis: tuple[float, float, float] | None = None,
+        angle: float | None = None,
+    ) -> Dict[str, Any]:
+        return self._client.rotate(entity, ledger_id=ledger_id, axis=axis, angle=angle)
 
     # Ledger and memory -------------------------------------------------
     def fetch_memories(

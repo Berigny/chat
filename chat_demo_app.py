@@ -48,6 +48,12 @@ from services.memory_service import (
 )
 from services.prompt_service import create_prompt_service
 from services.prime_service import create_prime_service
+from services.ledger_tasks import (
+    fetch_metrics_snapshot,
+    perform_lattice_rotation,
+    reset_discrete_ledger,
+    run_enrichment_job,
+)
 from prime_pipeline import (
     call_factor_extraction_llm,
     normalize_override_factors,
@@ -95,6 +101,23 @@ API_SERVICE = ApiService(API, SETTINGS.api_key)
 
 def _get_entity() -> str | None:
     return st.session_state.get("entity")
+
+
+def _reset_discrete_state() -> bool:
+    entity = _get_entity()
+    if not entity:
+        return False
+    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+    ok, error = reset_discrete_ledger(
+        API_SERVICE,
+        PRIME_SERVICE,
+        entity,
+        ledger_id=st.session_state.get("ledger_id"),
+        schema=schema,
+    )
+    if error:
+        st.warning(error)
+    return ok
 
 
 def _refresh_ledgers(*, silent: bool = False) -> None:
@@ -545,109 +568,6 @@ def _maybe_extract_agent_payload(raw_text: str) -> tuple[str, list[dict]] | None
     return text, factors
 
 
-def _extract_json_object(raw: str) -> dict | None:
-    if not raw:
-        return None
-    trimmed = raw.strip()
-    if "{" not in trimmed:
-        return None
-    candidate = trimmed
-    if "```" in trimmed:
-        start = trimmed.find("{")
-        end = trimmed.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            candidate = trimmed[start : end + 1]
-    try:
-        return json.loads(candidate)
-    except json.JSONDecodeError:
-        return None
-
-
-def _reset_entity_factors() -> bool:
-    entity = _get_entity()
-    if not entity:
-        return False
-    try:
-        data = API_SERVICE.fetch_ledger(entity, ledger_id=st.session_state.get("ledger_id"))
-    except requests.RequestException as exc:
-        st.warning(f"Could not fetch ledger for reset: {exc}")
-        return False
-
-    factors = data.get("factors") if isinstance(data, dict) else None
-    if not isinstance(factors, list):
-        return False
-    reset_deltas: list[dict] = []
-    for entry in factors:
-        prime = entry.get("prime")
-        value = entry.get("value", 0)
-        if prime in PRIME_ARRAY and value:
-            try:
-                reset_deltas.append({"prime": int(prime), "delta": -int(value)})
-            except (TypeError, ValueError):
-                continue
-    if not reset_deltas:
-        return True
-    schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
-    try:
-        PRIME_SERVICE.anchor(
-            entity,
-            "",
-            schema,
-            ledger_id=st.session_state.get("ledger_id"),
-            factors_override=reset_deltas,
-        )
-    except requests.RequestException as exc:
-        st.warning(f"Ledger reset failed: {exc}")
-        return False
-    return True
-
-
-def _run_enrichment(limit: int = 200, reset_first: bool = True):
-    entity = _get_entity()
-    if not entity:
-        return
-    fetch_limit = max(1, min(limit, 100))
-    try:
-        memories = API_SERVICE.fetch_memories(
-            entity,
-            ledger_id=st.session_state.get("ledger_id"),
-            limit=fetch_limit,
-        )
-    except requests.RequestException as exc:
-        st.error(f"Failed to load memories: {exc}")
-        return
-    if not memories:
-        st.info("No memories found to enrich.")
-        return
-
-    if reset_first:
-        ok = _reset_entity_factors()
-        if not ok:
-            st.error("Reset failed – aborting enrichment.")
-            return
-
-    enriched = 0
-    total = len(memories)
-    for entry in memories:
-        text = (entry.get("text") or "").strip()
-        if not text:
-            continue
-        schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
-        try:
-            PRIME_SERVICE.anchor(
-                entity,
-                text,
-                schema,
-                ledger_id=st.session_state.get("ledger_id"),
-                llm_extractor=_llm_factor_extractor,
-            )
-            enriched += 1
-        except requests.RequestException as exc:
-            st.warning(f"Skip enrichment for {entry.get('timestamp')}: {exc}")
-    st.success(f"Enriched {enriched}/{total} memories.")
-    _refresh_capabilities_block()
-
-
 def _latest_user_transcript(current_request: str, *, limit: int = 5) -> str | None:
     entity = _get_entity()
     if not entity:
@@ -911,7 +831,7 @@ def _maybe_handle_demo_mode():
     params = _get_query_params()
     if params.get("demo") not in ("true", "1"):
         return
-    if _reset_entity_factors():
+    if _reset_discrete_state():
         st.toast("Demo mode: Ledger has been reset.", icon="✅")
     else:
         st.toast("Demo mode: Ledger reset failed.", icon="⚠️")
@@ -960,7 +880,7 @@ def _handle_login():
     _reset_chat_state(clear_query=False)
 
     if user_type == "Demo user":
-        if _reset_entity_factors():
+        if _reset_discrete_state():
             st.toast("New demo session started. Ledger has been reset.", icon="✅")
         else:
             st.toast("Ledger reset failed.", icon="⚠️")
@@ -1187,45 +1107,18 @@ def _render_app():
 
     # ---------- investor KPI ----------
     entity = _get_entity()
-    if entity:
-        try:
-            metrics = API_SERVICE.fetch_metrics(ledger_id=st.session_state.get("ledger_id"))
-        except requests.RequestException:
-            metrics = {"tokens_deduped": "N/A", "ledger_integrity": 0.0}
-
-        try:
-            memories = API_SERVICE.fetch_memories(
-                entity,
-                ledger_id=st.session_state.get("ledger_id"),
-                limit=1,
-            )
-        except requests.RequestException:
-            memories = []
-    else:
-        metrics = {"tokens_deduped": "N/A", "ledger_integrity": 0.0}
-        memories = []
-
-    oldest = (
-        memories[-1].get("timestamp", time.time() * 1000) / 1000
-        if isinstance(memories, list) and memories
-        else time.time()
+    snapshot = fetch_metrics_snapshot(
+        API_SERVICE,
+        entity,
+        ledger_id=st.session_state.get("ledger_id"),
+        metric_floors=METRIC_FLOORS,
     )
-    durability_h = (time.time() - oldest) / 3600
-    durability_h = max(durability_h, METRIC_FLOORS["durability_h"])
-
-    tokens_saved_value = _coerce_float(metrics.get("tokens_deduped"))
-    if tokens_saved_value is None:
-        tokens_saved_value = METRIC_FLOORS["tokens_deduped"]
-    else:
-        tokens_saved_value = max(tokens_saved_value, METRIC_FLOORS["tokens_deduped"])
-    tokens_saved = f"{int(tokens_saved_value):,}"
-
-    ledger_integrity_value = _coerce_float(metrics.get("ledger_integrity"))
-    if ledger_integrity_value is None:
-        ledger_integrity_value = METRIC_FLOORS["ledger_integrity"]
-    elif ledger_integrity_value > 1.5:
-        ledger_integrity_value = ledger_integrity_value / 100.0
-    ledger_integrity = max(ledger_integrity_value, METRIC_FLOORS["ledger_integrity"])
+    tokens_saved_value = _coerce_float(snapshot.get("tokens_saved"))
+    ledger_integrity = _coerce_float(snapshot.get("ledger_integrity")) or METRIC_FLOORS["ledger_integrity"]
+    durability_h = _coerce_float(snapshot.get("durability_hours")) or METRIC_FLOORS["durability_h"]
+    tokens_saved = f"{int(tokens_saved_value or 0):,}"
+    if snapshot.get("error"):
+        st.warning(f"Metrics unavailable: {snapshot['error']}")
 
     if st.session_state.input_mode == "mic":
         st.info("Voice mode active – hold to record.")
@@ -1346,7 +1239,8 @@ def _render_app():
                     st.warning("No active entity.")
                     return
                 try:
-                    data = API_SERVICE.rotate(
+                    data = perform_lattice_rotation(
+                        API_SERVICE,
                         entity,
                         ledger_id=st.session_state.get("ledger_id"),
                         axis=(0.0, 0.0, 1.0),
@@ -1365,7 +1259,28 @@ def _render_app():
                     st.error(f"Möbius rotation failed: {exc}")
             if st.button("Initiate Enrichment", help="Replay stored transcripts with richer prime coverage"):
                 with st.spinner("Enriching memories…"):
-                    _run_enrichment()
+                    entity = _get_entity()
+                    if not entity:
+                        st.warning("No active entity.")
+                    else:
+                        schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
+                        result = run_enrichment_job(
+                            API_SERVICE,
+                            PRIME_SERVICE,
+                            entity,
+                            ledger_id=st.session_state.get("ledger_id"),
+                            schema=schema,
+                            llm_extractor=_llm_factor_extractor,
+                        )
+                        if result.get("error"):
+                            st.error(result["error"])
+                        elif result.get("message"):
+                            st.info(result["message"])
+                        else:
+                            st.success(f"Enriched {result.get('enriched', 0)}/{result.get('total', 0)} memories.")
+                            if result.get("failures"):
+                                st.warning("Some entries failed: " + "; ".join(result["failures"]))
+                        _refresh_capabilities_block()
 
 
 if __name__ == "__main__":
