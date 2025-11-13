@@ -386,7 +386,11 @@ class MemoryService:
         if not entity:
             return ""
         structured = self.structured_context(entity, ledger_id=ledger_id)
-        slots = (structured.get("slots") or []) if isinstance(structured, dict) else []
+        raw_slots = structured.get("slots")
+        if isinstance(raw_slots, list):
+            slots = raw_slots
+        else:
+            slots = []
         snippets: list[str] = []
         for slot in slots:
             title = slot.get("title")
