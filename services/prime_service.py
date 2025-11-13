@@ -5,8 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Mapping, Sequence
 
-from flow_safe import sequence as flow_safe_sequence
-from prime_pipeline import build_anchor_batches, normalize_override_factors
+from prime_pipeline import build_anchor_factors, normalize_override_factors
 
 
 Payload = Mapping[str, object]
@@ -19,15 +18,15 @@ class PrimeService:
     api_service: "ApiService"
     fallback_prime: int
 
-    def build_batches(
+    def build_factors(
         self,
         text: str,
         schema: Mapping[int, Mapping[str, object]],
         *,
         factors_override: Sequence[Mapping[str, int]] | None = None,
         llm_extractor=None,
-    ) -> list[list[dict[str, int]]]:
-        """Return flow-safe factor batches ready for anchoring."""
+    ) -> list[dict[str, int]]:
+        """Return normalized factors ready for anchoring."""
 
         valid_primes = tuple(schema.keys()) or (self.fallback_prime,)
         override = (
@@ -35,7 +34,7 @@ class PrimeService:
             if factors_override
             else None
         )
-        return build_anchor_batches(
+        return build_anchor_factors(
             text,
             schema,
             fallback_prime=self.fallback_prime,
@@ -53,25 +52,24 @@ class PrimeService:
         ledger_id: str | None = None,
         factors_override: Sequence[Mapping[str, int]] | None = None,
         llm_extractor=None,
+        modifiers: Sequence[int] | None = None,
     ) -> Payload:
         """Send the text and factors to the engine and return the payload."""
 
-        batches = self.build_batches(
+        factors = self.build_factors(
             text,
             schema,
             factors_override=factors_override,
             llm_extractor=llm_extractor,
         )
-        if not batches:
-            batches = [flow_safe_sequence([self.fallback_prime])]
-        for index, factors in enumerate(batches):
-            self.api_service.anchor(
-                entity,
-                factors,
-                ledger_id=ledger_id,
-                text=text if index == 0 else None,
-            )
-        return {"text": text, "batches": batches}
+        response = self.api_service.anchor(
+            entity,
+            factors,
+            ledger_id=ledger_id,
+            text=text,
+            modifiers=modifiers,
+        )
+        return {"text": text, "factors": factors, "response": response}
 
 
 def create_prime_service(api_service: "ApiService", fallback_prime: int) -> PrimeService:

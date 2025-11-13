@@ -37,8 +37,22 @@ class ApiService:
         return self._client.fetch_prime_schema(entity, ledger_id=ledger_id)
 
     # Anchoring ---------------------------------------------------------
-    def anchor(self, entity: str, factors: Iterable[Dict[str, Any]], *, ledger_id: Optional[str] = None, text: Optional[str] = None) -> Dict[str, Any]:
-        return self._client.anchor(entity, factors, ledger_id=ledger_id, text=text)
+    def anchor(
+        self,
+        entity: str,
+        factors: Iterable[Dict[str, Any]],
+        *,
+        ledger_id: Optional[str] = None,
+        text: Optional[str] = None,
+        modifiers: Optional[Iterable[int]] = None,
+    ) -> Dict[str, Any]:
+        return self._client.anchor(
+            entity,
+            factors,
+            ledger_id=ledger_id,
+            text=text,
+            modifiers=modifiers,
+        )
 
     def rotate(
         self,
