@@ -51,7 +51,6 @@ from services.memory_service import (
 )
 from services.prompt_service import LEDGER_SNIPPET_LIMIT, create_prompt_service
 from services.prime_service import create_prime_service
-from services.ledger_service import persist_structured_views
 from services.ledger_tasks import (
     fetch_metrics_snapshot,
     perform_lattice_rotation,
@@ -234,7 +233,7 @@ FALLBACK_PRIME = PRIME_ARRAY[0]
 
 PRIME_SERVICE = create_prime_service(API_SERVICE, FALLBACK_PRIME)
 MEMORY_SERVICE = MemoryService(API_SERVICE, PRIME_WEIGHTS)
-ENRICHMENT_HELPER = EnrichmentHelper(API_SERVICE, PRIME_SERVICE)
+ENRICHMENT_HELPER = EnrichmentHelper(API_SERVICE)
 PROMPT_SERVICE = create_prompt_service(MEMORY_SERVICE)
 
 LOGGER = logging.getLogger(__name__)
@@ -372,19 +371,7 @@ def _extract_structured_views(payload: dict | None) -> dict:
 
 
 def _persist_structured_views(entity: str, structured: dict, *, ledger_id: str | None) -> dict:
-    if not structured:
-        return {"slots": [], "s1": [], "s2": [], "bodies": []}
-    try:
-        persisted = persist_structured_views(
-            API_SERVICE,
-            entity,
-            structured,
-            ledger_id=ledger_id,
-        )
-    except requests.RequestException as exc:
-        LOGGER.warning("Failed to persist structured views: %s", exc)
-        return structured or {"slots": [], "s1": [], "s2": [], "bodies": []}
-    return persisted
+    return structured or {"slots": [], "s1": [], "s2": [], "bodies": []}
 
 
 def _persist_structured_views_from_ledger(entity: str) -> None:
@@ -400,8 +387,7 @@ def _persist_structured_views_from_ledger(entity: str) -> None:
         st.session_state.latest_structured_ledger = structured
         return
 
-    persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
-    st.session_state.latest_structured_ledger = persisted
+    st.session_state.latest_structured_ledger = structured
 
 
 def _execute_enrichment(entity: str, *, limit: int = 50) -> dict[str, Any]:
@@ -462,14 +448,16 @@ def _execute_enrichment(entity: str, *, limit: int = 50) -> dict[str, Any]:
                 schema,
                 llm_extractor=_llm_factor_extractor,
             )
+            enrichment_payload: Dict[str, Any] = {
+                "ref_prime": ref_prime,
+                "deltas": factor_deltas,
+                "body": text,
+                "metadata": {"source": "enrichment"},
+            }
             result = ENRICHMENT_HELPER.submit(
                 entity,
-                ref_prime=ref_prime,
-                deltas=factor_deltas,
-                body_chunks=[text],
-                metadata={"source": "enrichment"},
+                enrichment_payload,
                 ledger_id=ledger_id,
-                schema=schema,
             )
         except requests.RequestException as exc:
             stamp = entry.get("timestamp")
@@ -477,33 +465,24 @@ def _execute_enrichment(entity: str, *, limit: int = 50) -> dict[str, Any]:
             summary.setdefault("failures", []).append(f"{label}: {exc}")
             continue
 
-        flow_errors = (
-            result.get("flow_errors") if isinstance(result, dict) else None
-        )
-        if flow_errors:
-            summary.setdefault("failures", []).append(
-                f"ref {ref_prime}: {'; '.join(flow_errors)}"
-            )
-            continue
-
         summary["enriched"] += 1
         response_payload = result.get("response") if isinstance(result, dict) else {}
         structured = response_payload.get("structured") if isinstance(response_payload, dict) else None
         if structured:
-            persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
-            st.session_state.latest_structured_ledger = persisted
+            st.session_state.latest_structured_ledger = structured
         try:
             ledger_snapshot = API_SERVICE.fetch_ledger(entity, ledger_id=ledger_id)
         except requests.RequestException:
-            pass
+            ledger_snapshot = {}
 
         ethics = ethics_service.evaluate(
             ledger_snapshot if isinstance(ledger_snapshot, dict) else {},
-            deltas=result.get("deltas"),
-            minted_bodies=result.get("bodies"),
+            deltas=enrichment_payload.get("deltas") if isinstance(enrichment_payload.get("deltas"), list) else [],
+            minted_bodies=response_payload.get("bodies") if isinstance(response_payload, dict) else None,
         )
         result["ethics"] = ethics.asdict()
         result["text"] = text
+        result["request"] = enrichment_payload
         summary["reports"].append(result)
 
     MEMORY_SERVICE.realign_with_ledger(entity, ledger_id=ledger_id)
@@ -1017,15 +996,22 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
     schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
     ledger_id = st.session_state.get("ledger_id")
     MEMORY_SERVICE.maybe_refresh_mobius_alignment(entity, ledger_id=ledger_id)
+    factors = PRIME_SERVICE.build_factors(
+        text,
+        schema,
+        factors_override=factors_override,
+        llm_extractor=_llm_factor_extractor,
+    )
+    payload: Dict[str, Any] = {
+        "text": text,
+        "factors": factors,
+        "metadata": {"source": "chat_demo"},
+    }
     try:
-        ingest_result = PRIME_SERVICE.ingest(
+        ingest_result = API_SERVICE.ingest(
             entity,
-            text,
-            schema,
+            payload,
             ledger_id=ledger_id,
-            factors_override=factors_override,
-            llm_extractor=_llm_factor_extractor,
-            metadata={"source": "chat_demo"},
         )
     except requests.RequestException as exc:
         st.session_state.last_anchor_error = str(exc)
@@ -1035,20 +1021,9 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
 
     st.session_state.last_anchor_error = None
     _refresh_capabilities_block()
-    flow_errors = (
-        ingest_result.get("flow_errors")
-        if isinstance(ingest_result, dict)
-        else None
-    )
-    if flow_errors:
-        message = "; ".join(flow_errors)
-        st.session_state.last_anchor_error = message
-        st.error(f"Anchor blocked: {message}")
-        return False
     structured = ingest_result.get("structured") if isinstance(ingest_result, dict) else {}
     if structured:
-        persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
-        st.session_state.latest_structured_ledger = persisted
+        st.session_state.latest_structured_ledger = structured
     else:
         _persist_structured_views_from_ledger(entity)
     if record_chat:
