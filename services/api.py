@@ -87,6 +87,29 @@ class ApiService:
     def fetch_ledger(self, entity: str, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
         return self._client.fetch_ledger(entity, ledger_id=ledger_id)
 
+    def query_ledger(
+        self,
+        entity: str,
+        query: str,
+        *,
+        ledger_id: Optional[str] = None,
+        limit: int | None = None,
+        topic: str | None = None,
+        required: Iterable[int] | None = None,
+        preferred: Iterable[int] | None = None,
+        modifiers: Iterable[int] | None = None,
+    ) -> Dict[str, Any]:
+        return self._client.query_ledger(
+            entity,
+            query,
+            ledger_id=ledger_id,
+            limit=limit,
+            topic=topic,
+            required=required,
+            preferred=preferred,
+            modifiers=modifiers,
+        )
+
     def retrieve(self, entity: str, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
         return self._client.retrieve(entity, ledger_id=ledger_id)
 
