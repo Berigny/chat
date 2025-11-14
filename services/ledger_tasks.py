@@ -110,19 +110,19 @@ def fetch_metrics_snapshot(
 
         inference_state = _safe_fetch(
             "state",
-            lambda: api_service.fetch_inference_state(ledger_id=ledger_id),
+            lambda: api_service.fetch_inference_state(entity, ledger_id=ledger_id),
         )
         inference_traverse = _safe_fetch(
             "traverse",
-            lambda: api_service.fetch_inference_traverse(ledger_id=ledger_id),
+            lambda: api_service.fetch_inference_traverse(entity, ledger_id=ledger_id),
         )
         inference_memories = _safe_fetch(
             "memories",
-            lambda: api_service.fetch_inference_memories(ledger_id=ledger_id),
+            lambda: api_service.fetch_inference_memories(entity, ledger_id=ledger_id),
         )
         inference_retrieve = _safe_fetch(
             "retrieve",
-            lambda: api_service.fetch_inference_retrieve(ledger_id=ledger_id),
+            lambda: api_service.fetch_inference_retrieve(entity, ledger_id=ledger_id),
         )
 
     tokens_saved = _resolve_metric(
