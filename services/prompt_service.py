@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Iterable, Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
 
 from .memory_service import MemoryService, strip_ledger_noise
 
@@ -51,6 +51,68 @@ def _estimate_tokens(text: str) -> int:
     return max(1, len(text) // 4)
 
 
+def _format_traversal_node(node: Mapping[str, Any]) -> str:
+    label = node.get("label") if isinstance(node.get("label"), str) else None
+    if not label and isinstance(node.get("prime"), int):
+        label = f"Prime {node['prime']}"
+    if not label and isinstance(node.get("note"), str):
+        label = node["note"]
+    label = (label or "node").strip()
+    weight = node.get("weight") if isinstance(node.get("weight"), (int, float)) else None
+    if weight is not None:
+        label = f"{label} ({weight:.2f})"
+    return label
+
+
+def _format_traversal_path(path: Mapping[str, Any]) -> str:
+    nodes = path.get("nodes")
+    labels: list[str] = []
+    if isinstance(nodes, Sequence) and not isinstance(nodes, (str, bytes)):
+        for node in nodes:
+            if isinstance(node, Mapping):
+                labels.append(_format_traversal_node(node))
+    if not labels:
+        labels.append("(no nodes)")
+    joined = " → ".join(labels)
+    score = path.get("score") if isinstance(path.get("score"), (int, float)) else None
+    if score is not None:
+        return f"{joined} — score {score:.2f}"
+    return joined
+
+
+def _format_timestamp(timestamp: Any) -> str | None:
+    if isinstance(timestamp, (int, float)):
+        try:
+            return datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M")
+        except (ValueError, OverflowError, OSError):
+            return None
+    return None
+
+
+def _format_inference_entry(entry: Mapping[str, Any]) -> str:
+    if not isinstance(entry, Mapping):
+        return ""
+    label = entry.get("label") if isinstance(entry.get("label"), str) else None
+    if not label and isinstance(entry.get("prime"), int):
+        label = f"Prime {entry['prime']}"
+    status = entry.get("status") if isinstance(entry.get("status"), str) else None
+    score = entry.get("score") if isinstance(entry.get("score"), (int, float)) else None
+    timestamp = _format_timestamp(entry.get("timestamp"))
+    note = entry.get("note") if isinstance(entry.get("note"), str) else None
+    parts: list[str] = []
+    if label:
+        parts.append(label)
+    if status:
+        parts.append(f"[{status}]")
+    if score is not None:
+        parts.append(f"score {score:.2f}")
+    if timestamp:
+        parts.append(timestamp)
+    if note:
+        parts.append(f"- {note}")
+    return " ".join(parts) if parts else note or "(entry)"
+
+
 @dataclass
 class PromptService:
     """Compose prompts that incorporate ledger memories and chat history."""
@@ -71,6 +133,8 @@ class PromptService:
         since: int | None = None,
         until: int | None = None,
         quote_safe: bool = False,
+        traversal_paths: Mapping[str, Any] | Sequence[Mapping[str, Any]] | None = None,
+        inference_state: Mapping[str, Any] | None = None,
     ) -> str:
         prompt_lines = [
             "You are a helpful assistant with access to a perfect, exact memory ledger.",
@@ -88,6 +152,30 @@ class PromptService:
                 quote_safe=quote_safe,
                 since=since,
             )
+
+        traversal_payload: Mapping[str, Any] | None = None
+        if traversal_paths is None and entity and hasattr(self.memory_service, "traversal_paths"):
+            traversal_payload = self.memory_service.traversal_paths(
+                entity,
+                ledger_id=ledger_id,
+                limit=LEDGER_SNIPPET_LIMIT,
+            )
+        elif isinstance(traversal_paths, Mapping):
+            traversal_payload = traversal_paths
+        elif isinstance(traversal_paths, Sequence) and not isinstance(traversal_paths, (str, bytes)):
+            traversal_payload = {
+                "paths": [dict(entry) for entry in traversal_paths if isinstance(entry, Mapping)]
+            }
+
+        if inference_state is None and entity and hasattr(self.memory_service, "fetch_inference_state"):
+            inference_state = self.memory_service.fetch_inference_state(
+                entity,
+                ledger_id=ledger_id,
+                include_history=False,
+                limit=LEDGER_SNIPPET_LIMIT,
+            )
+        elif inference_state is not None and not isinstance(inference_state, Mapping):
+            inference_state = None
 
         if entity:
             memories: list[dict] = []
@@ -278,6 +366,86 @@ class PromptService:
                     prompt_lines.append(f"[{ts}] {_trim_snippet(sanitized, LEDGER_SNIPPET_CHARS)}")
             else:
                 prompt_lines.append("(No specific memories matched the query, but the full ledger is available.)")
+
+        traversal_supported = True
+        traversal_message = None
+        traversal_list: list[Mapping[str, Any]] = []
+        if isinstance(traversal_payload, Mapping):
+            raw_paths = traversal_payload.get("paths")
+            if isinstance(raw_paths, Sequence) and not isinstance(raw_paths, (str, bytes)):
+                traversal_list = [path for path in raw_paths if isinstance(path, Mapping)]
+            message_value = traversal_payload.get("message")
+            if isinstance(message_value, str) and message_value.strip():
+                traversal_message = message_value.strip()
+            if traversal_payload.get("supported") is False:
+                traversal_supported = False
+
+        if traversal_list:
+            prompt_lines.append("\n--- Ledger Traversal Paths ---")
+            for idx, path in enumerate(traversal_list[:LEDGER_SNIPPET_LIMIT], start=1):
+                formatted = _format_traversal_path(path)
+                prompt_lines.append(f"{idx}. {formatted}")
+        elif not traversal_supported:
+            prompt_lines.append("\n--- Ledger Traversal Paths ---")
+            prompt_lines.append("Traversal endpoint unavailable on this backend.")
+        elif traversal_message:
+            prompt_lines.append("\n--- Ledger Traversal Paths ---")
+            prompt_lines.append(traversal_message)
+
+        inference_supported = True
+        if isinstance(inference_state, Mapping):
+            if inference_state.get("supported") is False:
+                inference_supported = False
+        else:
+            inference_state = None
+
+        if inference_state:
+            status = inference_state.get("status") if isinstance(inference_state.get("status"), str) else None
+            active_entry = inference_state.get("active") if isinstance(inference_state.get("active"), Mapping) else None
+            queue_entries = inference_state.get("queue") if isinstance(inference_state.get("queue"), Sequence) else []
+            history_entries = inference_state.get("history") if isinstance(inference_state.get("history"), Sequence) else []
+            message_value = inference_state.get("message") if isinstance(inference_state.get("message"), str) else None
+            metrics = inference_state.get("metrics") if isinstance(inference_state.get("metrics"), Mapping) else {}
+
+            has_content = bool(status or active_entry or queue_entries)
+            if has_content:
+                prompt_lines.append("\n--- Ledger Inference Status ---")
+                if status:
+                    prompt_lines.append(f"State: {status}")
+                if active_entry:
+                    formatted_active = _format_inference_entry(active_entry)
+                    if formatted_active:
+                        prompt_lines.append(f"Active: {formatted_active}")
+                if queue_entries:
+                    for idx, entry in enumerate(queue_entries[:LEDGER_SNIPPET_LIMIT], start=1):
+                        if isinstance(entry, Mapping):
+                            formatted = _format_inference_entry(entry)
+                            if formatted:
+                                prompt_lines.append(f"Queue {idx}: {formatted}")
+                if metrics:
+                    metric_lines = []
+                    for key, value in metrics.items():
+                        if isinstance(value, (int, float)):
+                            metric_lines.append(f"{key}={value:.2f}")
+                    if metric_lines:
+                        prompt_lines.append("Metrics: " + ", ".join(metric_lines[:6]))
+                if history_entries:
+                    preview = []
+                    for entry in history_entries[:3]:
+                        if isinstance(entry, Mapping):
+                            formatted = _format_inference_entry(entry)
+                            if formatted:
+                                preview.append(formatted)
+                    if preview:
+                        prompt_lines.append("Recent: " + " | ".join(preview))
+                if not queue_entries and message_value:
+                    prompt_lines.append(message_value)
+            elif message_value:
+                prompt_lines.append("\n--- Ledger Inference Status ---")
+                prompt_lines.append(message_value)
+        elif not inference_supported:
+            prompt_lines.append("\n--- Ledger Inference Status ---")
+            prompt_lines.append("Inference state endpoint unavailable on this backend.")
 
         chat_block = _recent_chat_block(chat_history)
         if chat_block:

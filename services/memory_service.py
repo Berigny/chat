@@ -96,6 +96,8 @@ TIME_RANGE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 ASSEMBLY_CACHE_TTL = 1.5
+INFERENCE_CACHE_TTL = 5.0
+TRAVERSAL_CACHE_TTL = 5.0
 MOBIUS_REFRESH_INTERVAL = 180.0
 
 
@@ -373,6 +375,14 @@ class MemoryService:
     _mobius_state: dict[tuple[str, str | None], dict[str, float]] = field(
         default_factory=dict, init=False, repr=False
     )
+    _inference_cache: dict[
+        tuple[str, str | None, bool, int | None],
+        tuple[float, dict[str, Any]],
+    ] = field(default_factory=dict, init=False, repr=False)
+    _traverse_cache: dict[
+        tuple[str, str | None, int | None, int | None, int | None, str | None, bool],
+        tuple[float, dict[str, Any]],
+    ] = field(default_factory=dict, init=False, repr=False)
 
     def clear_entity_cache(self, *, entity: str | None = None, ledger_id: str | None = None) -> None:
         """Clear cached assembly data for the provided entity/ledger."""
@@ -380,6 +390,8 @@ class MemoryService:
         if entity is None and ledger_id is None:
             self._assembly_cache.clear()
             self._body_cache.clear()
+            self._inference_cache.clear()
+            self._traverse_cache.clear()
             return
 
         ledger_key = ledger_id or None
@@ -393,6 +405,25 @@ class MemoryService:
 
         if entity is not None or ledger_id is not None:
             self._body_cache.clear()
+
+        if entity is not None or ledger_id is not None:
+            inference_keys = [
+                key
+                for key in self._inference_cache.keys()
+                if (entity is None or key[0] == entity)
+                and (ledger_id is None or key[1] == ledger_key)
+            ]
+            for key in inference_keys:
+                self._inference_cache.pop(key, None)
+
+            traverse_keys = [
+                key
+                for key in self._traverse_cache.keys()
+                if (entity is None or key[0] == entity)
+                and (ledger_id is None or key[1] == ledger_key)
+            ]
+            for key in traverse_keys:
+                self._traverse_cache.pop(key, None)
 
     def assemble_context(
         self,
@@ -662,6 +693,252 @@ class MemoryService:
             "score": score,
         }
 
+    def _sanitize_inference_entry(self, entry: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(entry, Mapping):
+            return {}
+
+        sanitized: dict[str, Any] = {}
+
+        prime = entry.get("prime") or entry.get("prime_ref") or entry.get("body_prime")
+        if isinstance(prime, int):
+            sanitized["prime"] = prime
+
+        label: str | None = None
+        for key in ("label", "summary", "title", "name", "task", "description"):
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip():
+                label = value.strip()
+                break
+        if label is None and isinstance(prime, int):
+            label = f"Prime {prime}"
+        identifier = entry.get("id") or entry.get("job_id") or entry.get("token")
+        if label is None and isinstance(identifier, str) and identifier.strip():
+            label = identifier.strip()
+        if label:
+            sanitized["label"] = label
+
+        status = entry.get("status") or entry.get("state") or entry.get("phase")
+        if isinstance(status, str) and status.strip():
+            sanitized["status"] = status.strip()
+
+        note = entry.get("note") or entry.get("message") or entry.get("detail")
+        if isinstance(note, str) and note.strip():
+            sanitized["note"] = note.strip()
+
+        score = entry.get("score") or entry.get("weight") or entry.get("confidence")
+        if isinstance(score, (int, float)):
+            sanitized["score"] = float(score)
+
+        timestamp = None
+        for key in ("timestamp", "ts", "updated_at", "queued_at", "started_at", "created_at", "completed_at"):
+            value = entry.get(key)
+            if isinstance(value, (int, float)):
+                timestamp = int(value)
+                break
+        if timestamp is not None:
+            sanitized["timestamp"] = timestamp
+
+        metadata = entry.get("metadata") or entry.get("meta")
+        if isinstance(metadata, Mapping):
+            filtered_meta = {
+                str(key): value
+                for key, value in metadata.items()
+                if isinstance(value, (str, int, float, bool))
+            }
+            if filtered_meta:
+                sanitized["metadata"] = filtered_meta
+
+        if not sanitized:
+            primitive_only = {
+                str(key): value
+                for key, value in entry.items()
+                if isinstance(value, (str, int, float, bool))
+            }
+            if primitive_only:
+                sanitized["raw"] = primitive_only
+        return sanitized
+
+    def _normalize_inference_state(
+        self,
+        payload: Mapping[str, Any] | None,
+        *,
+        include_history: bool,
+    ) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "status": None,
+            "active": None,
+            "queue": [],
+            "history": [],
+            "updated_at": None,
+            "metrics": {},
+            "message": None,
+            "supported": True,
+        }
+        if not isinstance(payload, Mapping):
+            return result
+
+        status = payload.get("status") or payload.get("state")
+        if isinstance(status, str) and status.strip():
+            result["status"] = status.strip()
+
+        active_entry = payload.get("active") or payload.get("current") or payload.get("inflight")
+        if isinstance(active_entry, Mapping):
+            sanitized = self._sanitize_inference_entry(active_entry)
+            result["active"] = sanitized or None
+
+        queue_entries = payload.get("queue") or payload.get("pending") or payload.get("backlog")
+        queue_list: list[dict[str, Any]] = []
+        for entry in _coerce_mapping_sequence(queue_entries):
+            sanitized = self._sanitize_inference_entry(entry)
+            if sanitized:
+                queue_list.append(sanitized)
+        result["queue"] = queue_list
+
+        history_entries = payload.get("history") or payload.get("recent") or payload.get("completed")
+        history_list: list[dict[str, Any]] = []
+        if include_history:
+            for entry in _coerce_mapping_sequence(history_entries):
+                sanitized = self._sanitize_inference_entry(entry)
+                if sanitized:
+                    history_list.append(sanitized)
+        result["history"] = history_list
+
+        updated = payload.get("updated_at") or payload.get("timestamp") or payload.get("ts")
+        if isinstance(updated, (int, float)):
+            result["updated_at"] = int(updated)
+
+        metrics = payload.get("metrics") or payload.get("telemetry")
+        if isinstance(metrics, Mapping):
+            filtered_metrics = {
+                str(key): float(value)
+                for key, value in metrics.items()
+                if isinstance(value, (int, float))
+            }
+            result["metrics"] = filtered_metrics
+
+        message = payload.get("message") or payload.get("detail")
+        if isinstance(message, str) and message.strip():
+            result["message"] = message.strip()
+
+        return result
+
+    def _sanitize_traverse_node(self, entry: Mapping[str, Any]) -> dict[str, Any]:
+        if not isinstance(entry, Mapping):
+            return {}
+
+        sanitized: dict[str, Any] = {}
+        prime = entry.get("prime") or entry.get("prime_ref") or entry.get("node")
+        if isinstance(prime, int):
+            sanitized["prime"] = prime
+
+        label = None
+        for key in ("label", "summary", "title", "name", "mnemonic"):
+            value = entry.get(key)
+            if isinstance(value, str) and value.strip():
+                label = value.strip()
+                break
+        if label is None and isinstance(prime, int):
+            label = f"Prime {prime}"
+        if label:
+            sanitized["label"] = label
+
+        weight = entry.get("weight") or entry.get("score") or entry.get("delta")
+        if isinstance(weight, (int, float)):
+            sanitized["weight"] = float(weight)
+
+        note = entry.get("note") or entry.get("description") or entry.get("text")
+        if isinstance(note, str) and note.strip():
+            sanitized["note"] = note.strip()
+
+        timestamp = entry.get("timestamp") or entry.get("ts")
+        if isinstance(timestamp, (int, float)):
+            sanitized["timestamp"] = int(timestamp)
+
+        tags = entry.get("tags")
+        if isinstance(tags, Mapping):
+            tag_values = [value for value in tags.values() if isinstance(value, str)]
+        elif isinstance(tags, Sequence) and not isinstance(tags, (str, bytes)):
+            tag_values = [str(value) for value in tags if isinstance(value, (str, int))]
+        else:
+            tag_values = []
+        if tag_values:
+            sanitized["tags"] = tag_values[:5]
+
+        if not sanitized:
+            primitive_only = {
+                str(key): value
+                for key, value in entry.items()
+                if isinstance(value, (str, int, float, bool))
+            }
+            if primitive_only:
+                sanitized["raw"] = primitive_only
+        return sanitized
+
+    def _normalize_traverse_payload(self, payload: Mapping[str, Any] | None) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "origin": None,
+            "paths": [],
+            "metadata": {},
+            "message": None,
+            "supported": True,
+        }
+        if not isinstance(payload, Mapping):
+            return result
+
+        origin = payload.get("origin") or payload.get("source_prime") or payload.get("start")
+        if isinstance(origin, int):
+            result["origin"] = origin
+
+        path_candidates: Sequence[Mapping[str, Any]] | None = None
+        for key in ("paths", "traversals", "routes", "walks", "results"):
+            entries = payload.get(key)
+            if isinstance(entries, Sequence) and not isinstance(entries, (str, bytes)):
+                mappings = [entry for entry in entries if isinstance(entry, Mapping)]
+                if mappings:
+                    path_candidates = mappings
+                    break
+
+        normalized_paths: list[dict[str, Any]] = []
+        if path_candidates:
+            for entry in path_candidates:
+                nodes_source = None
+                for node_key in ("nodes", "path", "steps", "primes"):
+                    value = entry.get(node_key)
+                    if isinstance(value, Sequence) and not isinstance(value, (str, bytes)):
+                        nodes_source = value
+                        break
+                nodes = [
+                    self._sanitize_traverse_node(node)
+                    for node in (nodes_source or [])
+                    if isinstance(node, Mapping)
+                ]
+                nodes = [node for node in nodes if node]
+                if not nodes:
+                    continue
+                score = entry.get("score") or entry.get("weight") or entry.get("confidence")
+                normalized_paths.append(
+                    {
+                        "nodes": nodes,
+                        "score": float(score) if isinstance(score, (int, float)) else None,
+                    }
+                )
+        result["paths"] = normalized_paths
+
+        metadata = payload.get("metadata") or payload.get("meta")
+        if isinstance(metadata, Mapping):
+            filtered_meta = {
+                str(key): value
+                for key, value in metadata.items()
+                if isinstance(value, (str, int, float, bool))
+            }
+            result["metadata"] = filtered_meta
+
+        message = payload.get("message") or payload.get("detail")
+        if isinstance(message, str) and message.strip():
+            result["message"] = message.strip()
+
+        return result
+
     def memory_lookup(
         self,
         entity: str,
@@ -682,6 +959,153 @@ class MemoryService:
         except Exception:
             pass
         return []
+
+    def supports_inference_state(self) -> bool:
+        try:
+            return bool(self.api_service.supports_inference_state())
+        except AttributeError:
+            return False
+
+    def supports_traverse(self) -> bool:
+        try:
+            return bool(self.api_service.supports_traverse())
+        except AttributeError:
+            return False
+
+    def fetch_inference_state(
+        self,
+        entity: str | None,
+        *,
+        ledger_id: str | None = None,
+        include_history: bool = False,
+        limit: int | None = None,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        if not entity or not self.supports_inference_state():
+            return {
+                "status": None,
+                "active": None,
+                "queue": [],
+                "history": [],
+                "updated_at": None,
+                "metrics": {},
+                "message": None,
+                "supported": False,
+            }
+
+        cache_key = (entity, ledger_id or None, include_history, limit if isinstance(limit, int) else None)
+        cached = self._inference_cache.get(cache_key)
+        now = time.time()
+        if cached and not refresh and now - cached[0] <= INFERENCE_CACHE_TTL:
+            return copy.deepcopy(cached[1])
+
+        try:
+            payload = self.api_service.fetch_inference_state(
+                entity,
+                ledger_id=ledger_id,
+                include_history=include_history,
+                limit=limit,
+            )
+        except requests.HTTPError as exc:
+            logger.warning("Inference state request failed for %s: %s", entity, exc)
+            normalized = {
+                "status": None,
+                "active": None,
+                "queue": [],
+                "history": [],
+                "updated_at": None,
+                "metrics": {},
+                "message": str(exc),
+                "supported": False,
+            }
+        except requests.RequestException as exc:
+            logger.warning("Inference state request failed for %s: %s", entity, exc)
+            normalized = {
+                "status": None,
+                "active": None,
+                "queue": [],
+                "history": [],
+                "updated_at": None,
+                "metrics": {},
+                "message": str(exc),
+                "supported": False,
+            }
+        else:
+            normalized = self._normalize_inference_state(payload, include_history=include_history)
+            normalized["supported"] = True
+
+        self._inference_cache[cache_key] = (now, copy.deepcopy(normalized))
+        return copy.deepcopy(normalized)
+
+    def traversal_paths(
+        self,
+        entity: str | None,
+        *,
+        ledger_id: str | None = None,
+        origin: int | None = None,
+        limit: int | None = None,
+        depth: int | None = None,
+        direction: str | None = None,
+        include_metadata: bool = False,
+        refresh: bool = False,
+    ) -> dict[str, Any]:
+        if not entity or not self.supports_traverse():
+            return {
+                "origin": origin,
+                "paths": [],
+                "metadata": {},
+                "message": None,
+                "supported": False,
+            }
+
+        cache_key = (
+            entity,
+            ledger_id or None,
+            origin,
+            limit,
+            depth,
+            direction,
+            bool(include_metadata),
+        )
+        cached = self._traverse_cache.get(cache_key)
+        now = time.time()
+        if cached and not refresh and now - cached[0] <= TRAVERSAL_CACHE_TTL:
+            return copy.deepcopy(cached[1])
+
+        try:
+            payload = self.api_service.traverse(
+                entity,
+                ledger_id=ledger_id,
+                origin=origin,
+                limit=limit,
+                depth=depth,
+                direction=direction,
+                include_metadata=include_metadata,
+            )
+        except requests.HTTPError as exc:
+            logger.warning("Traversal request failed for %s: %s", entity, exc)
+            normalized = {
+                "origin": origin,
+                "paths": [],
+                "metadata": {},
+                "message": str(exc),
+                "supported": False,
+            }
+        except requests.RequestException as exc:
+            logger.warning("Traversal request failed for %s: %s", entity, exc)
+            normalized = {
+                "origin": origin,
+                "paths": [],
+                "metadata": {},
+                "message": str(exc),
+                "supported": False,
+            }
+        else:
+            normalized = self._normalize_traverse_payload(payload)
+            normalized["supported"] = True
+
+        self._traverse_cache[cache_key] = (now, copy.deepcopy(normalized))
+        return copy.deepcopy(normalized)
 
     def select_context(
         self,

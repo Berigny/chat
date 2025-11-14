@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from datetime import datetime
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import requests
 import streamlit as st
@@ -13,6 +14,7 @@ from services.api import ApiService
 from services.api_service import EnrichmentHelper
 from services.ethics_service import EthicsService
 from services.prime_service import create_prime_service
+from services.memory_service import MemoryService
 from services.migration_cli import run_ledger_migration
 from services.structured_writer import write_structured_views
 
@@ -20,6 +22,16 @@ from services.structured_writer import write_structured_views
 API_URL = os.getenv("DUALSUBSTRATE_API", "https://dualsubstrate-commercial.fly.dev")
 DEFAULT_ENTITY = os.getenv("DEFAULT_ENTITY", "demo_user")
 DEFAULT_LEDGER_ID = os.getenv("DEFAULT_LEDGER_ID", "default")
+PRIME_WEIGHTS = {
+    2: 1.5,
+    3: 1.5,
+    5: 1.5,
+    7: 1.5,
+    11: 1.0,
+    13: 1.0,
+    17: 1.0,
+    19: 1.0,
+}
 
 def _api_key() -> str | None:
     secrets = getattr(st, "secrets", {}) or {}
@@ -39,6 +51,16 @@ def _api_service() -> ApiService:
     service = st.session_state.get(key) if hasattr(st, "session_state") else None
     if service is None:
         service = ApiService(API_URL, _api_key())
+        if hasattr(st, "session_state"):
+            st.session_state[key] = service
+    return service
+
+
+def _memory_service() -> MemoryService:
+    key = "__memory_service__"
+    service = st.session_state.get(key) if hasattr(st, "session_state") else None
+    if service is None:
+        service = MemoryService(_api_service(), PRIME_WEIGHTS)
         if hasattr(st, "session_state"):
             st.session_state[key] = service
     return service
@@ -132,6 +154,7 @@ def _create_or_switch_ledger(ledger_id: str) -> bool:
         return False
 
     st.session_state.ledger_id = ledger_id
+    _memory_service().clear_entity_cache(ledger_id=ledger_id)
     st.toast(f"Ledger '{ledger_id}' ready", icon="📂")
     return True
 
@@ -668,6 +691,129 @@ def _submit_user_message(text: str) -> None:
     _maybe_handle_recall_query(text)
 
 
+def _render_traversal_panel(entity: str | None) -> None:
+    if not entity:
+        st.info("Select an entity to view traversal paths.")
+        return
+    payload = _memory_service().traversal_paths(
+        entity,
+        ledger_id=_ledger_id(),
+        limit=10,
+    )
+    if not payload.get("supported", True):
+        st.info("Traversal endpoint unavailable on this backend.")
+        return
+    paths = payload.get("paths") if isinstance(payload.get("paths"), Sequence) else []
+    if not paths:
+        message = payload.get("message") if isinstance(payload.get("message"), str) else None
+        st.info(message or "No traversal paths returned yet.")
+        return
+    for idx, path in enumerate(paths[:10], start=1):
+        if not isinstance(path, Mapping):
+            continue
+        nodes = path.get("nodes") if isinstance(path.get("nodes"), Sequence) else []
+        labels: list[str] = []
+        for node in nodes:
+            if not isinstance(node, Mapping):
+                continue
+            label = node.get("label") if isinstance(node.get("label"), str) else None
+            if not label and isinstance(node.get("prime"), int):
+                label = f"Prime {node['prime']}"
+            if not label and isinstance(node.get("note"), str):
+                label = node["note"]
+            weight = node.get("weight") if isinstance(node.get("weight"), (int, float)) else None
+            if weight is not None and label:
+                labels.append(f"{label} ({weight:.2f})")
+            elif label:
+                labels.append(label)
+        if not labels:
+            labels.append("(no nodes)")
+        score = path.get("score") if isinstance(path.get("score"), (int, float)) else None
+        header = f"Path {idx}: {' → '.join(labels)}"
+        if score is not None:
+            header = f"{header} — score {score:.2f}"
+        st.markdown(f"**{header}**")
+        metadata = path.get("metadata") if isinstance(path.get("metadata"), Mapping) else {}
+        if metadata:
+            meta_rows = [f"{key}: {value}" for key, value in metadata.items() if isinstance(value, (str, int, float))]
+            if meta_rows:
+                st.caption("; ".join(meta_rows[:6]))
+        st.divider()
+
+
+def _render_inference_panel(entity: str | None) -> None:
+    if not entity:
+        st.info("Select an entity to view inference status.")
+        return
+    payload = _memory_service().fetch_inference_state(
+        entity,
+        ledger_id=_ledger_id(),
+        include_history=True,
+        limit=10,
+    )
+    if not payload.get("supported", True):
+        st.info("Inference state endpoint unavailable on this backend.")
+        return
+    status = payload.get("status") if isinstance(payload.get("status"), str) else None
+    if status:
+        st.markdown(f"**State:** {status}")
+    active = payload.get("active") if isinstance(payload.get("active"), Mapping) else None
+    if active:
+        st.markdown(f"**Active:** {_format_inference_row_admin(active)}")
+    queue = payload.get("queue") if isinstance(payload.get("queue"), Sequence) else []
+    if queue:
+        st.subheader("Queue")
+        for entry in queue[:10]:
+            summary = _format_inference_row_admin(entry)
+            if summary:
+                st.caption(f"• {summary}")
+    history = payload.get("history") if isinstance(payload.get("history"), Sequence) else []
+    if history:
+        st.subheader("Recent Completions")
+        for entry in history[:10]:
+            summary = _format_inference_row_admin(entry)
+            if summary:
+                st.caption(f"• {summary}")
+    metrics = payload.get("metrics") if isinstance(payload.get("metrics"), Mapping) else {}
+    if metrics:
+        metric_rows = []
+        for key, value in metrics.items():
+            if isinstance(value, (int, float)):
+                metric_rows.append(f"{key}: {value:.2f}")
+        if metric_rows:
+            st.subheader("Metrics")
+            for row in metric_rows[:10]:
+                st.caption(row)
+    message = payload.get("message") if isinstance(payload.get("message"), str) else None
+    if message and not (queue or history or active):
+        st.info(message)
+
+
+def _format_inference_row_admin(entry: Mapping[str, Any]) -> str:
+    if not isinstance(entry, Mapping):
+        return ""
+    label = entry.get("label") if isinstance(entry.get("label"), str) else None
+    if not label and isinstance(entry.get("prime"), int):
+        label = f"Prime {entry['prime']}"
+    status = entry.get("status") if isinstance(entry.get("status"), str) else None
+    score = entry.get("score") if isinstance(entry.get("score"), (int, float)) else None
+    note = entry.get("note") if isinstance(entry.get("note"), str) else None
+    timestamp = entry.get("timestamp") if isinstance(entry.get("timestamp"), (int, float)) else None
+    ts_label = None
+    if timestamp is not None:
+        try:
+            ts_label = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M")
+        except (ValueError, OverflowError, OSError):
+            ts_label = None
+    parts = [part for part in (label, status, ts_label) if part]
+    summary = " | ".join(parts) if parts else "(entry)"
+    if score is not None:
+        summary = f"{summary} — score {score:.2f}"
+    if note:
+        summary = f"{summary} — {note}"
+    return summary
+
+
 def _render_history() -> None:
     for message in st.session_state.chat_history:
         role = message.get("role", "assistant")
@@ -806,12 +952,40 @@ def main() -> None:
     )
 
     st.title("Ledger Recall Assistant")
-    _render_enrichment_report(st.session_state.get("last_enrichment_report"))
-    _render_history()
+    memory_service = _memory_service()
+    traversal_supported = memory_service.supports_traverse()
+    inference_supported = memory_service.supports_inference_state()
 
-    user_input = st.chat_input("Ask the ledger")
-    if user_input:
-        _submit_user_message(user_input.strip())
+    tab_labels = ["Chat"]
+    if traversal_supported:
+        tab_labels.append("Traversal Paths")
+    if inference_supported:
+        tab_labels.append("Inference Status")
+
+    tabs = st.tabs(tab_labels)
+    tab_index = 0
+    chat_tab = tabs[tab_index]
+    tab_index += 1
+    traversal_tab = tabs[tab_index] if traversal_supported else None
+    if traversal_supported:
+        tab_index += 1
+    inference_tab = tabs[tab_index] if inference_supported else None
+
+    with chat_tab:
+        _render_enrichment_report(st.session_state.get("last_enrichment_report"))
+        _render_history()
+
+        user_input = st.chat_input("Ask the ledger")
+        if user_input:
+            _submit_user_message(user_input.strip())
+
+    entity = st.session_state.get("entity")
+    if traversal_supported and traversal_tab is not None:
+        with traversal_tab:
+            _render_traversal_panel(entity)
+    if inference_supported and inference_tab is not None:
+        with inference_tab:
+            _render_inference_panel(entity)
 
 
 if __name__ == "__main__":

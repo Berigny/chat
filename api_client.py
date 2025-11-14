@@ -149,6 +149,32 @@ class DualSubstrateClient:
         payload = resp.json()
         return payload if isinstance(payload, dict) else {}
 
+    def fetch_inference_state(
+        self,
+        entity: str,
+        *,
+        ledger_id: str | None = None,
+        include_history: bool | None = None,
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Return the active inference state for the entity."""
+
+        params: dict[str, Any] = {"entity": entity}
+        if include_history is not None:
+            params["include_history"] = "true" if include_history else "false"
+        if limit is not None:
+            params["limit"] = int(limit)
+
+        resp = requests.get(
+            f"{self.base_url}/inference/state",
+            params=params,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload if isinstance(payload, dict) else {}
+
     def latest_memory_text(
         self,
         entity: str,
