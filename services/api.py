@@ -139,6 +139,46 @@ class ApiService:
             since=since,
         )
 
+    def traverse(
+        self,
+        entity: str,
+        *,
+        ledger_id: Optional[str] = None,
+        origin: Optional[int] = None,
+        limit: Optional[int] = None,
+        depth: Optional[int] = None,
+        direction: Optional[str] = None,
+        include_metadata: Optional[bool] = None,
+        payload: Mapping[str, Any] | list[Any] | None = None,
+    ) -> Dict[str, Any]:
+        """Return traversal paths while tracking capability support."""
+
+        try:
+            response = self._client.traverse(
+                entity,
+                ledger_id=ledger_id,
+                origin=origin,
+                limit=limit,
+                depth=depth,
+                direction=direction,
+                include_metadata=include_metadata,
+                payload=payload,
+            )
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                self._traverse_supported = False
+            raise
+        except requests.RequestException:
+            raise
+        else:
+            self._traverse_supported = True
+
+        if isinstance(response, Mapping):
+            return dict(response)
+        if isinstance(response, list):
+            return {"paths": list(response)}
+        return {}
+
     def latest_memory_text(
         self,
         entity: str,
