@@ -192,8 +192,20 @@ class ApiService:
     def retrieve(self, entity: str, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
         return self._client.retrieve(entity, ledger_id=ledger_id)
 
-    def fetch_metrics(self, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
+    def fetch_metrics(self, *, ledger_id: Optional[str] = None) -> Dict[str, Any] | str:
         return self._client.fetch_metrics(ledger_id=ledger_id)
+
+    def fetch_inference_state(self, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._client.fetch_inference_state(ledger_id=ledger_id)
+
+    def fetch_inference_traverse(self, *, ledger_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        return self._client.fetch_inference_traverse(ledger_id=ledger_id)
+
+    def fetch_inference_memories(self, *, ledger_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        return self._client.fetch_inference_memories(ledger_id=ledger_id)
+
+    def fetch_inference_retrieve(self, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
+        return self._client.fetch_inference_retrieve(ledger_id=ledger_id)
 
     # Structured ledger writes -----------------------------------------
     def put_ledger_s1(
