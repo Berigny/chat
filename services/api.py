@@ -21,6 +21,8 @@ class ApiService:
     def __init__(self, base_url: str, api_key: Optional[str]) -> None:
         self._client = DualSubstrateClient(base_url, api_key)
         self._enrich_supported: bool | None = None
+        self._traverse_supported: bool | None = None
+        self._inference_supported: bool | None = None
 
     @property
     def client(self) -> DualSubstrateClient:
@@ -33,15 +35,33 @@ class ApiService:
         if refresh:
             self._enrich_supported = None
         if self._enrich_supported is None:
-            self._enrich_supported = self._probe_enrich_support()
+            self._enrich_supported = self._probe_endpoint("enrich")
         return bool(self._enrich_supported)
 
-    def _probe_enrich_support(self) -> bool:
-        """Probe the API once to determine whether ``/enrich`` exists."""
+    def supports_traverse(self, *, refresh: bool = False) -> bool:
+        """Return ``True`` if the ``/traverse`` endpoint is reachable."""
+
+        if refresh:
+            self._traverse_supported = None
+        if self._traverse_supported is None:
+            self._traverse_supported = self._probe_endpoint("traverse")
+        return bool(self._traverse_supported)
+
+    def supports_inference_state(self, *, refresh: bool = False) -> bool:
+        """Return ``True`` if ``/inference/state`` is available."""
+
+        if refresh:
+            self._inference_supported = None
+        if self._inference_supported is None:
+            self._inference_supported = self._probe_endpoint("inference/state")
+        return bool(self._inference_supported)
+
+    def _probe_endpoint(self, path: str) -> bool:
+        """Probe a single endpoint via ``OPTIONS`` to detect support."""
 
         try:
             response = requests.options(
-                f"{self._client.base_url}/enrich",
+                f"{self._client.base_url}/{path}",
                 headers=self._client._headers(include_ledger=False),
                 timeout=3,
             )
@@ -130,6 +150,30 @@ class ApiService:
     def fetch_ledger(self, entity: str, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
         return self._client.fetch_ledger(entity, ledger_id=ledger_id)
 
+    def fetch_inference_state(
+        self,
+        entity: str,
+        *,
+        ledger_id: Optional[str] = None,
+        include_history: bool | None = None,
+        limit: int | None = None,
+    ) -> Dict[str, Any]:
+        try:
+            payload = self._client.fetch_inference_state(
+                entity,
+                ledger_id=ledger_id,
+                include_history=include_history,
+                limit=limit,
+            )
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                self._inference_supported = False
+                return {}
+            raise
+        else:
+            self._inference_supported = True
+            return payload
+
     def query_ledger(
         self,
         entity: str,
@@ -195,17 +239,35 @@ class ApiService:
     def fetch_metrics(self, *, ledger_id: Optional[str] = None) -> Dict[str, Any] | str:
         return self._client.fetch_metrics(ledger_id=ledger_id)
 
-    def fetch_inference_state(self, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
-        return self._client.fetch_inference_state(ledger_id=ledger_id)
-
-    def fetch_inference_traverse(self, *, ledger_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        return self._client.fetch_inference_traverse(ledger_id=ledger_id)
-
-    def fetch_inference_memories(self, *, ledger_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        return self._client.fetch_inference_memories(ledger_id=ledger_id)
-
-    def fetch_inference_retrieve(self, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
-        return self._client.fetch_inference_retrieve(ledger_id=ledger_id)
+    def traverse(
+        self,
+        entity: str,
+        *,
+        ledger_id: Optional[str] = None,
+        origin: int | None = None,
+        limit: int | None = None,
+        depth: int | None = None,
+        direction: str | None = None,
+        include_metadata: bool | None = None,
+    ) -> Dict[str, Any]:
+        try:
+            payload = self._client.traverse(
+                entity,
+                ledger_id=ledger_id,
+                origin=origin,
+                limit=limit,
+                depth=depth,
+                direction=direction,
+                include_metadata=include_metadata,
+            )
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                self._traverse_supported = False
+                return {}
+            raise
+        else:
+            self._traverse_supported = True
+            return payload
 
     # Structured ledger writes -----------------------------------------
     def put_ledger_s1(

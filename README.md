@@ -143,3 +143,18 @@ if st.button("♾️ Möbius Transform", help="Reproject the exponent lattice"):
 Behind the scenes `/rotate` pulls the factor vector, runs the quaternion Möbius rotation,
 anchors the new vector via `anchor_batch`, and returns before/after checksums plus energy
 cycles. Triggering it from the CTA keeps the lattice fresh without shell access.
+
+## Traversal & inference observability
+
+The commercial surface now exposes `/traverse` and `/inference/state` so operators can audit
+how the ledger walks across primes and which inference tasks are active. Both Streamlit apps
+surface the data in dedicated tabs:
+
+- **Traversal Paths** renders the top weighted walks returned by `/traverse`, with per-node
+  labels and weights for quick debugging of slot coverage.
+- **Inference Status** shows the active job, queued work, recent completions, and telemetry
+  emitted by `/inference/state`.
+
+Older deployments that do not implement the new endpoints simply hide the tabs and emit a
+“not available” notice. Prompt construction also threads the traversal and inference summaries
+into the augmented prompt so the LLM can acknowledge long-running jobs without manual probing.
