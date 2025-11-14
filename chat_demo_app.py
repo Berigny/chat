@@ -5,6 +5,7 @@ import html
 import io
 import json
 import logging
+from datetime import datetime
 import mimetypes
 import os
 import re
@@ -13,7 +14,7 @@ import wave
 
 from pathlib import Path
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Mapping, Sequence
 import streamlit as st
 try:
     import google.generativeai as genai
@@ -248,6 +249,171 @@ def _coerce_string(value) -> str | None:
         stripped = value.strip()
         return stripped or None
     return None
+
+
+def _supports_traverse() -> bool:
+    key = "__supports_traverse__"
+    cached = st.session_state.get(key)
+    if cached is None:
+        try:
+            cached = MEMORY_SERVICE.supports_traverse()
+        except Exception:
+            cached = False
+        st.session_state[key] = bool(cached)
+    return bool(cached)
+
+
+def _supports_inference_state() -> bool:
+    key = "__supports_inference_state__"
+    cached = st.session_state.get(key)
+    if cached is None:
+        try:
+            cached = MEMORY_SERVICE.supports_inference_state()
+        except Exception:
+            cached = False
+        st.session_state[key] = bool(cached)
+    return bool(cached)
+
+
+def _format_traversal_path_ui(path: Mapping[str, Any]) -> str:
+    nodes = path.get("nodes") if isinstance(path, Mapping) else None
+    labels: list[str] = []
+    if isinstance(nodes, Sequence) and not isinstance(nodes, (str, bytes)):
+        for node in nodes:
+            if not isinstance(node, Mapping):
+                continue
+            label = node.get("label") if isinstance(node.get("label"), str) else None
+            if not label and isinstance(node.get("prime"), int):
+                label = f"Prime {node['prime']}"
+            if not label and isinstance(node.get("note"), str):
+                label = node["note"]
+            label = (label or "node").strip()
+            weight = node.get("weight") if isinstance(node.get("weight"), (int, float)) else None
+            if weight is not None:
+                label = f"{label} ({weight:.2f})"
+            labels.append(label)
+    if not labels:
+        labels.append("(no nodes)")
+    score = path.get("score") if isinstance(path.get("score"), (int, float)) else None
+    joined = " → ".join(labels)
+    if score is not None:
+        return f"{joined} — score {score:.2f}"
+    return joined
+
+
+def _render_traversal_tab(entity: str | None) -> None:
+    if not entity:
+        st.info("Select an entity to inspect traversal paths.")
+        return
+    payload = MEMORY_SERVICE.traversal_paths(
+        entity,
+        ledger_id=st.session_state.get("ledger_id"),
+        limit=8,
+    )
+    if not payload.get("supported", True):
+        st.info("Traversal endpoint unavailable on this backend.")
+        return
+    paths = payload.get("paths")
+    if not isinstance(paths, Sequence) or not paths:
+        message = payload.get("message") if isinstance(payload.get("message"), str) else None
+        if message:
+            st.info(message)
+        else:
+            st.info("No traversal paths available yet. Anchor memories to populate the graph.")
+        return
+    for idx, path in enumerate(paths[:8], start=1):
+        if not isinstance(path, Mapping):
+            continue
+        st.markdown(f"**Path {idx}:** {_format_traversal_path_ui(path)}")
+        nodes = path.get("nodes") if isinstance(path.get("nodes"), Sequence) else []
+        if nodes:
+            for node in nodes:
+                if not isinstance(node, Mapping):
+                    continue
+                prime = node.get("prime")
+                label = node.get("label") if isinstance(node.get("label"), str) else None
+                note = node.get("note") if isinstance(node.get("note"), str) else None
+                weight = node.get("weight") if isinstance(node.get("weight"), (int, float)) else None
+                bullet = label or (f"Prime {prime}" if isinstance(prime, int) else "Node")
+                if weight is not None:
+                    bullet = f"{bullet} ({weight:.2f})"
+                if note:
+                    bullet = f"{bullet} – {note}"
+                st.caption(f"• {bullet}")
+        st.divider()
+
+
+def _format_inference_row(entry: Mapping[str, Any]) -> str:
+    if not isinstance(entry, Mapping):
+        return ""
+    label = entry.get("label") if isinstance(entry.get("label"), str) else None
+    if not label and isinstance(entry.get("prime"), int):
+        label = f"Prime {entry['prime']}"
+    status = entry.get("status") if isinstance(entry.get("status"), str) else None
+    score = entry.get("score") if isinstance(entry.get("score"), (int, float)) else None
+    note = entry.get("note") if isinstance(entry.get("note"), str) else None
+    timestamp = entry.get("timestamp")
+    ts_label = None
+    if isinstance(timestamp, (int, float)):
+        try:
+            ts_label = datetime.fromtimestamp(timestamp / 1000).strftime("%Y-%m-%d %H:%M")
+        except (ValueError, OverflowError, OSError):
+            ts_label = None
+    parts = [part for part in (label, f"[{status}]" if status else None, ts_label) if part]
+    summary = " ".join(parts) if parts else "(entry)"
+    if score is not None:
+        summary = f"{summary} – score {score:.2f}"
+    if note:
+        summary = f"{summary} – {note}"
+    return summary
+
+
+def _render_inference_tab(entity: str | None) -> None:
+    if not entity:
+        st.info("Select an entity to inspect inference status.")
+        return
+    payload = MEMORY_SERVICE.fetch_inference_state(
+        entity,
+        ledger_id=st.session_state.get("ledger_id"),
+        include_history=True,
+        limit=6,
+    )
+    if not payload.get("supported", True):
+        st.info("Inference state endpoint unavailable on this backend.")
+        return
+    status = payload.get("status") if isinstance(payload.get("status"), str) else None
+    if status:
+        st.markdown(f"**State:** {status}")
+    active = payload.get("active") if isinstance(payload.get("active"), Mapping) else None
+    if active:
+        st.markdown(f"**Active:** {_format_inference_row(active)}")
+    queue = payload.get("queue") if isinstance(payload.get("queue"), Sequence) else []
+    if queue:
+        st.markdown("**Queue:**")
+        for entry in queue[:6]:
+            summary = _format_inference_row(entry)
+            if summary:
+                st.caption(f"• {summary}")
+    history = payload.get("history") if isinstance(payload.get("history"), Sequence) else []
+    if history:
+        st.markdown("**Recent Completions:**")
+        for entry in history[:6]:
+            summary = _format_inference_row(entry)
+            if summary:
+                st.caption(f"• {summary}")
+    metrics = payload.get("metrics") if isinstance(payload.get("metrics"), Mapping) else {}
+    if metrics:
+        metric_rows = []
+        for key, value in metrics.items():
+            if isinstance(value, (int, float)):
+                metric_rows.append(f"{key}: {value:.2f}")
+        if metric_rows:
+            st.markdown("**Metrics:**")
+            for row in metric_rows[:8]:
+                st.caption(row)
+    message = payload.get("message") if isinstance(payload.get("message"), str) else None
+    if message and not (queue or history or active):
+        st.info(message)
 
 
 def _as_string_list(value) -> list[str]:
@@ -1591,7 +1757,26 @@ def _render_app():
                 st.warning("Could not read the uploaded attachment.")
             st.session_state.input_mode = "text"
 
-    tab_chat, tab_about = st.tabs(["Chat", "About DualSubstrate"])
+    traversal_supported = _supports_traverse()
+    inference_supported = _supports_inference_state()
+    tab_labels = ["Chat"]
+    if traversal_supported:
+        tab_labels.append("Traversal Paths")
+    if inference_supported:
+        tab_labels.append("Inference Status")
+    tab_labels.append("About DualSubstrate")
+    tabs = st.tabs(tab_labels)
+
+    tab_index = 0
+    tab_chat = tabs[tab_index]
+    tab_index += 1
+    tab_traverse = tabs[tab_index] if traversal_supported else None
+    if traversal_supported:
+        tab_index += 1
+    tab_inference = tabs[tab_index] if inference_supported else None
+    if inference_supported:
+        tab_index += 1
+    tab_about = tabs[tab_index]
 
     with tab_chat:
         recent_history = list(reversed(st.session_state.chat_history[-20:]))
@@ -1612,6 +1797,23 @@ def _render_app():
             stream_html = "<div class='chat-entry'>No chat history yet.</div>"
         st.markdown(f"<div class='chat-stream'>{stream_html}</div>", unsafe_allow_html=True)
         st.markdown("<hr class='full-divider'>", unsafe_allow_html=True)
+
+        if traversal_supported or inference_supported:
+            info_labels: list[str] = []
+            if traversal_supported:
+                info_labels.append("Traversal Snapshot")
+            if inference_supported:
+                info_labels.append("Inference Snapshot")
+            if info_labels:
+                sub_tabs = st.tabs(info_labels)
+                sub_index = 0
+                if traversal_supported:
+                    with sub_tabs[sub_index]:
+                        _render_traversal_tab(entity)
+                    sub_index += 1
+                if inference_supported:
+                    with sub_tabs[sub_index]:
+                        _render_inference_tab(entity)
 
     with tab_about:
         col_left, col_right = st.columns(2)
@@ -1744,6 +1946,13 @@ def _render_app():
                         _refresh_capabilities_block()
             if st.session_state.get("latest_enrichment_report"):
                 _render_enrichment_panel(st.session_state.latest_enrichment_report)
+
+    if traversal_supported and tab_traverse is not None:
+        with tab_traverse:
+            _render_traversal_tab(entity)
+    if inference_supported and tab_inference is not None:
+        with tab_inference:
+            _render_inference_tab(entity)
 
 
 def main() -> None:
