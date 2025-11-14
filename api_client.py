@@ -365,10 +365,15 @@ class DualSubstrateClient:
     ) -> dict[str, Any]:
         """Store long-form body text using the refreshed `/ledger/body` contract."""
 
+        payload: dict[str, Any] = {"entity": entity, "prime": int(prime)}
+
         if isinstance(body_text, Mapping):
-            payload: dict[str, Any] = {key: value for key, value in body_text.items()}
+            for key, value in body_text.items():
+                if key in {"entity", "prime"}:
+                    continue
+                payload[key] = value
         else:
-            payload = {"body": body_text}
+            payload["body"] = body_text
 
         if metadata:
             existing = payload.get("metadata")
