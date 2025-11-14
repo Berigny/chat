@@ -492,41 +492,6 @@ class DualSubstrateClient:
         payload = resp.json()
         return payload if isinstance(payload, dict) else {}
 
-    def traverse(
-        self,
-        entity: str,
-        *,
-        ledger_id: str | None = None,
-        origin: int | None = None,
-        limit: int | None = None,
-        depth: int | None = None,
-        direction: str | None = None,
-        include_metadata: bool | None = None,
-    ) -> dict[str, Any]:
-        """Call the `/traverse` endpoint to explore ledger paths."""
-
-        params: dict[str, Any] = {"entity": entity}
-        if origin is not None:
-            params["origin"] = int(origin)
-        if limit is not None:
-            params["limit"] = int(limit)
-        if depth is not None:
-            params["depth"] = int(depth)
-        if direction:
-            params["direction"] = direction
-        if include_metadata is not None:
-            params["include_metadata"] = "true" if include_metadata else "false"
-
-        resp = requests.get(
-            f"{self.base_url}/traverse",
-            params=params,
-            headers=self._headers(ledger_id=ledger_id),
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-        return payload if isinstance(payload, dict) else {}
-
     def rotate(
         self,
         entity: str,

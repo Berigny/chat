@@ -266,35 +266,84 @@ class ApiService:
     def fetch_metrics(self, *, ledger_id: Optional[str] = None) -> Dict[str, Any] | str:
         return self._client.fetch_metrics(ledger_id=ledger_id)
 
-    def traverse(
+    def _call_inference_endpoint(
         self,
-        entity: str,
+        method_name: str,
+        entity: Optional[str] = None,
         *,
         ledger_id: Optional[str] = None,
-        origin: int | None = None,
-        limit: int | None = None,
-        depth: int | None = None,
-        direction: str | None = None,
-        include_metadata: bool | None = None,
-    ) -> Dict[str, Any]:
+    ):
+        """Invoke an inference telemetry helper while tolerating older clients."""
+
+        method = getattr(self._client, method_name)
+        kwargs: Dict[str, Any] = {}
+        if ledger_id is not None:
+            kwargs["ledger_id"] = ledger_id
+
         try:
-            payload = self._client.traverse(
-                entity,
-                ledger_id=ledger_id,
-                origin=origin,
-                limit=limit,
-                depth=depth,
-                direction=direction,
-                include_metadata=include_metadata,
-            )
-        except requests.HTTPError as exc:
-            if exc.response is not None and exc.response.status_code == 404:
-                self._traverse_supported = False
-                return {}
-            raise
-        else:
-            self._traverse_supported = True
-            return payload
+            # Newer clients accept keyword-only ``ledger_id``.
+            return method(**kwargs)
+        except TypeError as exc:
+            if entity is None:
+                raise
+            try:
+                # Fallback for deployments still expecting a positional entity argument.
+                return method(entity, **kwargs)
+            except TypeError:
+                raise exc
+
+    def fetch_inference_state(
+        self,
+        entity: Optional[str] = None,
+        *,
+        ledger_id: Optional[str] = None,
+        include_history: Optional[bool] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        # ``include_history`` and ``limit`` are currently unused but preserved for
+        # backwards compatibility with callers that may provide them.
+        _ = include_history, limit
+        return self._call_inference_endpoint(
+            "fetch_inference_state",
+            entity,
+            ledger_id=ledger_id,
+        )
+
+    def fetch_inference_traverse(
+        self,
+        entity: Optional[str] = None,
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        return self._call_inference_endpoint(
+            "fetch_inference_traverse",
+            entity,
+            ledger_id=ledger_id,
+        )
+
+    def fetch_inference_memories(
+        self,
+        entity: Optional[str] = None,
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        return self._call_inference_endpoint(
+            "fetch_inference_memories",
+            entity,
+            ledger_id=ledger_id,
+        )
+
+    def fetch_inference_retrieve(
+        self,
+        entity: Optional[str] = None,
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self._call_inference_endpoint(
+            "fetch_inference_retrieve",
+            entity,
+            ledger_id=ledger_id,
+        )
 
     # Structured ledger writes -----------------------------------------
     def put_ledger_s1(

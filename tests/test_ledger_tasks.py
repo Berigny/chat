@@ -41,19 +41,19 @@ class DummyApiService:
         if self._inference_errors:
             raise requests.RequestException(self._inference_errors)
 
-    def fetch_inference_state(self, entity: str, *, ledger_id: Optional[str] = None):
+    def fetch_inference_state(self, entity: Optional[str] = None, *, ledger_id: Optional[str] = None):
         self._maybe_raise()
         return {"status": "idle", "ts": int(time.time())}
 
-    def fetch_inference_traverse(self, entity: str, *, ledger_id: Optional[str] = None):
+    def fetch_inference_traverse(self, entity: Optional[str] = None, *, ledger_id: Optional[str] = None):
         self._maybe_raise()
         return [{"node": "prime", "weight": 0.7}]
 
-    def fetch_inference_memories(self, entity: str, *, ledger_id: Optional[str] = None):
+    def fetch_inference_memories(self, entity: Optional[str] = None, *, ledger_id: Optional[str] = None):
         self._maybe_raise()
         return [{"text": "hello", "score": 0.92}]
 
-    def fetch_inference_retrieve(self, entity: str, *, ledger_id: Optional[str] = None):
+    def fetch_inference_retrieve(self, entity: Optional[str] = None, *, ledger_id: Optional[str] = None):
         self._maybe_raise()
         return {"hits": 3}
 
