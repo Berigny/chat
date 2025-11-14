@@ -13,15 +13,13 @@ from services.api import ApiService
 from services.api_service import EnrichmentHelper
 from services.ethics_service import EthicsService
 from services.prime_service import create_prime_service
+from services.migration_cli import run_ledger_migration
+from services.structured_writer import write_structured_views
 
 
 API_URL = os.getenv("DUALSUBSTRATE_API", "https://dualsubstrate-commercial.fly.dev")
 DEFAULT_ENTITY = os.getenv("DEFAULT_ENTITY", "demo_user")
 DEFAULT_LEDGER_ID = os.getenv("DEFAULT_LEDGER_ID", "default")
-
-S1_PRIMES = {2, 3, 5, 7}
-S2_PRIMES = {11, 13, 17, 19}
-
 
 def _api_key() -> str | None:
     secrets = getattr(st, "secrets", {}) or {}
@@ -241,17 +239,64 @@ def _anchor(
     if record_chat:
         st.session_state.chat_history.append({"role": "user", "content": text})
     st.session_state.last_anchor_status = "ok"
-    if isinstance(ingest_result, dict):
-        structured = ingest_result.get("structured")
-        if isinstance(structured, dict):
-            st.session_state.latest_structured_ledger = structured
+    flow_errors = (
+        ingest_result.get("flow_errors")
+        if isinstance(ingest_result, dict)
+        else None
+    )
+    if flow_errors:
+        message = "; ".join(flow_errors)
+        st.error(f"Anchor blocked: {message}")
+        st.session_state.last_anchor_status = "error"
+        if notify:
+            st.toast("Anchor blocked", icon="⚠️")
+        return False
+    structured = ingest_result.get("structured") if isinstance(ingest_result, dict) else {}
+    if structured:
+        persisted = write_structured_views(
+            _api_service(),
+            entity,
+            structured,
+            ledger_id=_ledger_id(),
+        )
+        st.session_state.latest_structured_ledger = persisted
     if notify:
         st.toast("Anchored", icon="✅")
     return True
 
 
 def _backfill_body_primes() -> None:
-    st.info("Body prime backfill is handled by the engine; no local action required.")
+    entity = st.session_state.get("entity")
+    if not entity:
+        st.warning("Select an entity first.")
+        return
+
+    ledger_id = _ledger_id()
+    sidebar = st.sidebar
+    with sidebar.spinner("Running ledger migration…"):
+        result = run_ledger_migration(
+            entity,
+            ledger_id=ledger_id,
+            extra_args=["--backfill-bodies"],
+        )
+
+    st.session_state.last_migration_result = result.asdict()
+    if result.ok:
+        sidebar.success(f"Backfill completed for {entity}.")
+    else:
+        sidebar.error(
+            f"Backfill failed for {entity} (exit code {result.returncode})."
+        )
+
+    if result.stdout.strip():
+        sidebar.text_area(
+            "Migration stdout",
+            result.stdout,
+            height=200,
+            key="__migration_stdout__",
+        )
+    if result.stderr.strip():
+        sidebar.code(result.stderr, language="text")
 
 
 def _reset_entity_factors() -> bool:
@@ -377,6 +422,18 @@ def _run_enrichment(limit: int = 50, reset_first: bool = True) -> dict | None:
 
         summary["enriched"] += 1
         response_payload = result.get("response") if isinstance(result, dict) else {}
+        structured = response_payload.get("structured") if isinstance(response_payload, dict) else None
+        if structured:
+            try:
+                write_structured_views(
+                    _api_service(),
+                    entity,
+                    structured,
+                    ledger_id=ledger_id,
+                )
+            except requests.RequestException as exc:
+                summary["failures"].append(f"Structured persist failed: {exc}")
+
         try:
             ledger_snapshot = _api_service().fetch_ledger(entity, ledger_id=ledger_id)
         except requests.RequestException:

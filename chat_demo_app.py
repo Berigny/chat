@@ -51,6 +51,7 @@ from services.memory_service import (
 )
 from services.prompt_service import LEDGER_SNIPPET_LIMIT, create_prompt_service
 from services.prime_service import create_prime_service
+from services.structured_writer import write_structured_views
 from services.ledger_tasks import (
     fetch_metrics_snapshot,
     perform_lattice_rotation,
@@ -371,7 +372,19 @@ def _extract_structured_views(payload: dict | None) -> dict:
 
 
 def _persist_structured_views(entity: str, structured: dict, *, ledger_id: str | None) -> dict:
-    return structured or {"slots": [], "s1": [], "s2": [], "bodies": []}
+    if not structured:
+        return {"slots": [], "s1": [], "s2": [], "bodies": []}
+    try:
+        persisted = write_structured_views(
+            API_SERVICE,
+            entity,
+            structured,
+            ledger_id=ledger_id,
+        )
+    except requests.RequestException as exc:
+        LOGGER.warning("Failed to persist structured views: %s", exc)
+        return structured or {"slots": [], "s1": [], "s2": [], "bodies": []}
+    return persisted
 
 
 def _persist_structured_views_from_ledger(entity: str) -> None:
