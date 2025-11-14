@@ -151,47 +151,19 @@ class DualSubstrateClient:
 
     def traverse(
         self,
-        entity: str,
         *,
-        ledger_id: str | None = None,
-        origin: int | None = None,
-        start: int | None = None,
-        limit: int | None = None,
-        depth: int | None = None,
-        direction: str | None = None,
-        include_metadata: bool | None = None,
-        payload: Mapping[str, Any] | None = None,
+        start: int,
+        depth: int = 3,
+        **_: Any,
     ) -> dict[str, Any] | list[Any]:
-        """Call the `/traverse` endpoint to inspect traversal paths."""
+        """Call the `/traverse` endpoint using query parameters only."""
 
-        params: dict[str, Any] = {"entity": entity}
-        if start is not None:
-            params["start"] = int(start)
-        if origin is not None:
-            params["origin"] = int(origin)
-        if limit is not None:
-            params["limit"] = int(limit)
-        if depth is not None:
-            params["depth"] = int(depth)
-        if direction:
-            params["direction"] = direction
-        if include_metadata is not None:
-            params["include_metadata"] = "true" if include_metadata else "false"
-
-        json_payload: Mapping[str, Any] | list[Any] | None = None
-        if payload is not None:
-            if isinstance(payload, Mapping):
-                json_payload = {key: value for key, value in payload.items()}
-            elif isinstance(payload, list):
-                json_payload = list(payload)
-            else:
-                json_payload = payload
+        params: dict[str, Any] = {"start": start, "depth": depth}
 
         resp = requests.post(
             f"{self.base_url}/traverse",
             params=params,
-            json=json_payload,
-            headers=self._headers(ledger_id=ledger_id),
+            headers=self._headers(include_ledger=False),
             timeout=self.timeout,
         )
         resp.raise_for_status()
