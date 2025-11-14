@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Any, Iterable, Mapping, Sequence
+
+import requests
 
 from prime_pipeline import (
     S1_PRIMES,
@@ -13,8 +15,15 @@ from prime_pipeline import (
     normalize_override_factors,
 )
 
+from services.body_prime_allocator import (
+    BodyPrimeAllocator,
+    BODY_PRIME_FLOOR as DEFAULT_BODY_PRIME_FLOOR,
+    sanitize_metadata,
+)
+
 
 Payload = Mapping[str, object]
+BODY_PRIME_FLOOR = DEFAULT_BODY_PRIME_FLOOR
 
 
 def _merge_metadata(base: Mapping[str, Any] | None, extra: Mapping[str, Any]) -> dict[str, Any]:
@@ -113,10 +122,22 @@ def _prepare_ingest_plan(
 
 @dataclass
 class PrimeService:
-    """Centralise prime tagging and anchoring helpers."""
+    """Centralise prime tagging, anchoring, and ingest orchestration."""
 
     api_service: "ApiService"
     fallback_prime: int
+    body_prime_floor: int = BODY_PRIME_FLOOR
+    body_allocator: BodyPrimeAllocator | None = None
+
+    def __post_init__(self) -> None:
+        if self.body_allocator is None:
+            self.body_allocator = BodyPrimeAllocator(
+                api_service=self.api_service,
+                floor=self.body_prime_floor,
+            )
+        else:
+            self.body_allocator.api_service = self.api_service
+            self.body_allocator.floor = self.body_prime_floor
 
     def build_factors(
         self,
@@ -171,61 +192,22 @@ class PrimeService:
         )
         return {"text": text, "factors": factors, "response": response}
 
-    def next_body_prime(self, *, reserved: Iterable[int] | None = None) -> int:
+    def next_body_prime(
+        self,
+        *,
+        reserved: Iterable[int] | None = None,
+        entity: str | None = None,
+        ledger_id: str | None = None,
+    ) -> int:
         """Return the next unused prime for immutable body storage."""
 
-        reserved_set = {int(prime) for prime in (reserved or []) if isinstance(prime, int)}
-        reserved_set |= self._issued_body_primes
-        candidate = max(
-            self.body_prime_floor,
-            max((prime for prime in reserved_set if prime >= self.body_prime_floor), default=self.body_prime_floor - 2)
-            + 2,
+        if not self.body_allocator:
+            raise RuntimeError("Body prime allocator is not configured")
+        return self.body_allocator.next_prime(
+            reserved=reserved,
+            entity=entity,
+            ledger_id=ledger_id,
         )
-        if candidate % 2 == 0:
-            candidate += 1
-        while candidate in reserved_set or not _is_prime(candidate):
-            candidate += 2
-        self._issued_body_primes.add(candidate)
-        return candidate
-
-    def _mint_bodies_for_ingest(
-        self,
-        entity: str,
-        body_plan: Sequence[Mapping[str, Any]],
-        *,
-        ledger_id: str | None = None,
-    ) -> list[dict[str, Any]]:
-        minted: list[dict[str, Any]] = []
-        reserved: set[int] = set()
-        for entry in body_plan:
-            if not isinstance(entry, Mapping):
-                continue
-            key = entry.get("key") if isinstance(entry.get("key"), str) else None
-            body_text = entry.get("body")
-            if not isinstance(body_text, str):
-                continue
-            cleaned = body_text.strip()
-            if not cleaned:
-                continue
-            metadata = _sanitize_metadata(entry.get("metadata"))
-            prime = self.next_body_prime(reserved=reserved)
-            reserved.add(prime)
-            self.api_service.put_ledger_body(
-                entity,
-                prime,
-                cleaned,
-                ledger_id=ledger_id,
-                metadata=metadata or None,
-            )
-            minted.append(
-                {
-                    "prime": prime,
-                    "body": cleaned,
-                    "metadata": metadata,
-                    "key": key,
-                }
-            )
-        return minted
 
     def ingest(
         self,
@@ -260,7 +242,9 @@ class PrimeService:
                 "flow_assessment": flow_assessment.asdict(),
             }
         plan = _prepare_ingest_plan(normalized_text, metadata=metadata)
-        minted_bodies = self._mint_bodies_for_ingest(
+        if not self.body_allocator:
+            raise RuntimeError("Body prime allocator is not configured")
+        minted_bodies = self.body_allocator.mint_bodies(
             entity,
             plan.get("bodies", []),
             ledger_id=ledger_id,
@@ -295,7 +279,7 @@ class PrimeService:
                 cleaned_tags = [str(tag).strip() for tag in tags if str(tag).strip()]
                 if cleaned_tags:
                     payload["tags"] = cleaned_tags
-            slot_meta = _sanitize_metadata(slot.get("metadata"))
+            slot_meta = sanitize_metadata(slot.get("metadata"))
             if slot_meta:
                 payload["metadata"] = slot_meta
             s1_slots.append(payload)
@@ -318,7 +302,7 @@ class PrimeService:
             summary = slot.get("summary")
             if isinstance(summary, str) and summary.strip():
                 payload["summary"] = summary.strip()
-            slot_meta = _sanitize_metadata(slot.get("metadata"))
+            slot_meta = sanitize_metadata(slot.get("metadata"))
             if slot_meta:
                 payload["metadata"] = slot_meta
             s2_slots.append(payload)
@@ -336,7 +320,7 @@ class PrimeService:
                 for item in minted_bodies
             ],
         }
-        sanitized_meta = _sanitize_metadata(metadata)
+        sanitized_meta = sanitize_metadata(metadata)
         if sanitized_meta:
             ingest_payload["metadata"] = sanitized_meta
 
