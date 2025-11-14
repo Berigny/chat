@@ -1855,9 +1855,9 @@ def _render_app():
             traverse_payload = {
                 "query": {
                     "start": 2,
-                    "mode": "s1",
-                    "max_steps": 3,
-                }
+                },
+                "mode": "s1",
+                "max_steps": 3,
             }
             st.json(traverse_payload)
 
