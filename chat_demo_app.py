@@ -1850,6 +1850,28 @@ def _render_app():
             except Exception as exc:  # pragma: no cover - network dependent
                 st.error(f"HTTP error: {exc}")
 
+            st.divider()
+            st.write("### /traverse debug")
+            traverse_payload = {
+                "query": "test from streamlit cloud",
+                "mode": "s1",
+                "max_steps": 3,
+            }
+            st.json(traverse_payload)
+
+            if st.button("Debug /traverse", key="debug_traverse"):
+                try:
+                    resp = requests.post(
+                        f"{host_url}/traverse",
+                        json=traverse_payload,
+                        headers=headers,
+                        timeout=15,
+                    )
+                    st.write(f"Status: {resp.status_code}")
+                    st.code(resp.text[:2000] or "<empty response>", language="json")
+                except Exception as exc:  # pragma: no cover - network dependent
+                    st.error(f"Traversal call error: {exc}")
+
     with tab_about:
         col_left, col_right = st.columns(2)
         with col_left:
