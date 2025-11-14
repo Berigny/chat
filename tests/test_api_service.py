@@ -105,32 +105,17 @@ def test_fetch_inference_state_raises_original_typeerror_when_unhandled():
 class _TraverseClient(_BaseClient):
     def traverse(
         self,
-        entity: str,
         *,
-        ledger_id: Optional[str] = None,
-        origin: Optional[int] = None,
-        limit: Optional[int] = None,
-        depth: Optional[int] = None,
-        direction: Optional[str] = None,
-        include_metadata: Optional[bool] = None,
-        payload: Optional[Dict[str, Any]] = None,
+        start: Any,
+        depth: Any = 3,
+        **extra: Any,
     ) -> Dict[str, Any]:
-        self.calls.append(
-            {
-                "entity": entity,
-                "ledger_id": ledger_id,
-                "origin": origin,
-                "limit": limit,
-                "depth": depth,
-                "direction": direction,
-                "include_metadata": include_metadata,
-                "payload": payload,
-            }
-        )
+        payload = {"start": start, "depth": depth, **extra}
+        self.calls.append(payload)
         return {"paths": [{"nodes": [{"prime": 2}]}]}
 
 
-def test_traverse_forwards_parameters_and_marks_capability():
+def test_traverse_maps_parameters_and_marks_capability():
     client = _TraverseClient()
     service = _service_with_client(client)
 
@@ -139,7 +124,6 @@ def test_traverse_forwards_parameters_and_marks_capability():
         ledger_id="alpha",
         origin=7,
         limit=5,
-        depth=3,
         direction="forward",
         include_metadata=True,
     )
@@ -147,17 +131,37 @@ def test_traverse_forwards_parameters_and_marks_capability():
     assert payload == {"paths": [{"nodes": [{"prime": 2}]}]}
     assert client.calls == [
         {
-            "entity": "demo",
+            "start": "demo",
+            "depth": 5,
             "ledger_id": "alpha",
             "origin": 7,
             "limit": 5,
-            "depth": 3,
             "direction": "forward",
             "include_metadata": True,
             "payload": None,
         }
     ]
     assert service._traverse_supported is True
+
+
+def test_traverse_prefers_explicit_depth_over_limit():
+    client = _TraverseClient()
+    service = _service_with_client(client)
+
+    service.traverse("demo", depth=4, limit=9)
+
+    assert client.calls == [
+        {
+            "start": "demo",
+            "depth": 4,
+            "limit": 9,
+            "ledger_id": None,
+            "origin": None,
+            "direction": None,
+            "include_metadata": None,
+            "payload": None,
+        }
+    ]
 
 
 class _ListTraverseClient(_BaseClient):
