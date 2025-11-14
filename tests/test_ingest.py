@@ -1,4 +1,4 @@
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 import requests
 
@@ -9,18 +9,21 @@ from services.prime_service import PrimeService
 
 class RecordingApiService:
     def __init__(self) -> None:
-        self.ingest_calls: list[tuple[str, Mapping[str, Any], str | None]] = []
+        self.anchor_calls: list[tuple[str, list[dict[str, Any]], str | None, str]] = []
         self.body_calls: list[dict[str, Any]] = []
 
-    def ingest(
+    def anchor(
         self,
         entity: str,
-        payload: Mapping[str, Any],
+        factors: Iterable[Mapping[str, Any]],
         *,
         ledger_id: str | None = None,
+        text: str | None = None,
+        modifiers: Iterable[int] | None = None,
     ) -> Mapping[str, Any]:
-        self.ingest_calls.append((entity, dict(payload), ledger_id))
-        return {"ok": True}
+        payload = [dict(item) for item in factors]
+        self.anchor_calls.append((entity, payload, ledger_id, text or ""))
+        return {"edges": [], "energy": 1.0, "text": text or ""}
 
     def put_ledger_body(
         self,
@@ -92,6 +95,7 @@ def test_ingest_mints_body_primes_for_structured_payload(prime_service: tuple[Pr
 
     result = _ingest(service, "Meeting recap with immutable storage")
 
+    assert api.anchor_calls, "Expected anchor call"
     assert api.body_calls, "Expected minted body primes"
     first_call = api.body_calls[0]
     minted_prime = first_call["prime"]
@@ -106,6 +110,10 @@ def test_ingest_mints_body_primes_for_structured_payload(prime_service: tuple[Pr
     structured = result["structured"]
     bodies = structured["bodies"]
     assert bodies and bodies[0]["prime"] == minted_prime
+
+    anchor_payload = result.get("anchor")
+    assert isinstance(anchor_payload, Mapping)
+    assert anchor_payload.get("energy") == 1.0
 
     for slot in structured["s1"]:
         assert slot["body_prime"] == minted_prime

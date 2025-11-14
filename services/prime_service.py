@@ -242,6 +242,18 @@ class PrimeService:
                 "flow_assessment": flow_assessment.asdict(),
             }
         plan = _prepare_ingest_plan(normalized_text, metadata=metadata)
+        anchor_payload = {
+            "entity": entity,
+            "factors": factors,
+            "text": normalized_text,
+        }
+        anchor_response = self.api_service.anchor(
+            entity,
+            factors,
+            ledger_id=ledger_id,
+            text=normalized_text,
+        )
+
         if not self.body_allocator:
             raise RuntimeError("Body prime allocator is not configured")
         minted_bodies = self.body_allocator.mint_bodies(
@@ -307,29 +319,6 @@ class PrimeService:
                 payload["metadata"] = slot_meta
             s2_slots.append(payload)
 
-        ingest_payload: dict[str, Any] = {
-            "text": normalized_text,
-            "factors": factors,
-            "s1": s1_slots,
-            "s2": s2_slots,
-            "bodies": [
-                {
-                    "prime": item["prime"],
-                    "metadata": item.get("metadata") or {},
-                }
-                for item in minted_bodies
-            ],
-        }
-        sanitized_meta = sanitize_metadata(metadata)
-        if sanitized_meta:
-            ingest_payload["metadata"] = sanitized_meta
-
-        response = self.api_service.ingest(
-            entity,
-            ingest_payload,
-            ledger_id=ledger_id,
-        )
-
         slots = []
         for slot in plan.get("slots", []):
             if not isinstance(slot, Mapping):
@@ -353,8 +342,8 @@ class PrimeService:
             "text": normalized_text,
             "factors": factors,
             "structured": structured,
-            "payload": ingest_payload,
-            "response": response,
+            "anchor": anchor_response,
+            "anchor_request": anchor_payload,
         }
 
 

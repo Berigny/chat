@@ -54,15 +54,6 @@ class ApiService:
             modifiers=modifiers,
         )
 
-    def ingest(
-        self,
-        entity: str,
-        payload: Dict[str, Any],
-        *,
-        ledger_id: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        return self._client.ingest(entity, payload, ledger_id=ledger_id)
-
     def rotate(
         self,
         entity: str,
@@ -179,8 +170,14 @@ class ApiService:
         return self._client.fetch_metrics(ledger_id=ledger_id)
 
     # Structured ledger writes -----------------------------------------
-    def put_ledger_s1(self, payload: Mapping[str, Any], *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
-        return self._client.put_ledger_s1(payload, ledger_id=ledger_id)
+    def put_ledger_s1(
+        self,
+        entity: str,
+        payload: Mapping[str, Any],
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self._client.put_ledger_s1(entity, payload, ledger_id=ledger_id)
 
     def put_ledger_body(
         self,
@@ -207,8 +204,14 @@ class ApiService:
     ) -> Dict[str, Any]:
         return self._client.enrich(payload, ledger_id=ledger_id)
 
-    def put_ledger_s2(self, payload: Mapping[str, Any], *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
-        return self._client.put_ledger_s2(payload, ledger_id=ledger_id)
+    def put_ledger_s2(
+        self,
+        entity: str,
+        payload: Mapping[str, Any],
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self._client.put_ledger_s2(entity, payload, ledger_id=ledger_id)
 
     def update_lawfulness(self, entity: str, payload: Dict[str, Any], *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
         return self._client.update_lawfulness(entity, payload, ledger_id=ledger_id)

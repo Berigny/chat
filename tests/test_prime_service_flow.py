@@ -1,16 +1,25 @@
-from typing import Any, Mapping
+from typing import Any, Iterable, Mapping
 
 from services.prime_service import PrimeService
 
 
 class DummyApiService:
     def __init__(self) -> None:
-        self.ingest_calls: list[tuple[str, Mapping[str, Any], str | None]] = []
+        self.anchor_calls: list[tuple[str, list[dict[str, Any]], str | None, str]] = []
         self.body_calls: list[dict[str, Any]] = []
 
-    def ingest(self, entity: str, payload: Mapping[str, Any], *, ledger_id: str | None = None):
-        self.ingest_calls.append((entity, dict(payload), ledger_id))
-        return {"ok": True}
+    def anchor(
+        self,
+        entity: str,
+        factors: Iterable[Mapping[str, Any]],
+        *,
+        ledger_id: str | None = None,
+        text: str | None = None,
+        modifiers: Iterable[int] | None = None,
+    ) -> Mapping[str, Any]:
+        factors_list = [dict(item) for item in factors]
+        self.anchor_calls.append((entity, factors_list, ledger_id, text or ""))
+        return {"edges": [], "energy": 1.0, "text": text or ""}
 
     def put_ledger_body(self, entity: str, prime: int, body_payload, *, ledger_id=None, metadata=None):
         if isinstance(body_payload, Mapping):
@@ -50,7 +59,7 @@ def test_ingest_blocks_flow_violation() -> None:
         factors_override=[{"prime": 2, "delta": 1}, {"prime": 11, "delta": 1}],
     )
 
-    assert api.ingest_calls == []
+    assert api.anchor_calls == []
     assert api.body_calls == []
     assert result["flow_errors"]
 
@@ -71,7 +80,7 @@ def test_ingest_allows_mediated_flow() -> None:
     )
 
     assert not result.get("flow_errors")
-    assert api.ingest_calls
+    assert api.anchor_calls
     assert api.body_calls
     call = api.body_calls[0]
     assert call["metadata_arg"] is None
