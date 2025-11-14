@@ -1,163 +1,172 @@
-"""Flow validation utilities for prime write paths."""
+"""Flow-control heuristics for ledger operations."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Iterable, Mapping, Sequence
-
 
 TierSchema = Mapping[int, Mapping[str, object]]
 
-SHELL_ORDER: tuple[str, ...] = ("S", "A", "B", "C", "D", "E", "F")
-SHELL_INDEX = {label: idx for idx, label in enumerate(SHELL_ORDER)}
+SOURCE_TIERS = frozenset({"S"})
+TARGET_TIERS = frozenset({"A", "B"})
+MEDIATOR_TIERS = frozenset({"C"})
 
 
-def _base_tier_letter(tier: object) -> str | None:
-    if not isinstance(tier, str):
-        return None
-    for char in tier.upper():
-        if char.isalpha():
-            return char
-    return None
+def _tier_for(prime: int, schema: TierSchema | None) -> str:
+    if not schema:
+        return ""
+    meta = schema.get(prime)
+    if not isinstance(meta, Mapping):
+        return ""
+    tier = meta.get("tier")
+    if isinstance(tier, str):
+        return tier.strip().upper()
+    return ""
 
 
-def _shell_index(prime: int, schema: TierSchema) -> tuple[int | None, bool]:
-    meta = schema.get(prime, {}) if isinstance(schema, Mapping) else {}
-    base = _base_tier_letter(meta.get("tier"))
-    if not base:
-        return None, False
-    index = SHELL_INDEX.get(base)
-    if index is None:
-        return None, base == "C"
-    return index, base == "C"
+def _prime_label(prime: int, schema: TierSchema | None) -> str:
+    if schema:
+        meta = schema.get(prime)
+        if isinstance(meta, Mapping):
+            name = meta.get("name")
+            tier = _tier_for(prime, schema)
+            if isinstance(name, str) and name.strip():
+                if tier:
+                    return f"{prime} ({name.strip()} / {tier})"
+                return f"{prime} ({name.strip()})"
+            if tier:
+                return f"{prime} ({tier})"
+    return str(prime)
+
+
+def _normalize_primes(entries: Sequence[int | Mapping[str, object]] | None) -> list[int]:
+    normalized: list[int] = []
+    if not entries:
+        return normalized
+    for entry in entries:
+        prime: object
+        if isinstance(entry, Mapping):
+            prime = entry.get("prime")
+        else:
+            prime = entry
+        try:
+            normalized.append(int(prime))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+    return normalized
 
 
 @dataclass(frozen=True)
 class FlowViolation:
-    """Represents a sequencing violation detected in a write path."""
+    """Represents a discrete flow constraint failure."""
 
-    index: int
-    prime: int | None
-    previous_prime: int | None
-    reason: str
+    code: str
+    message: str
+    primes: tuple[int, ...] = field(default_factory=tuple)
 
     def asdict(self) -> dict[str, object]:
-        return {
-            "index": self.index,
-            "prime": self.prime,
-            "previous_prime": self.previous_prime,
-            "reason": self.reason,
-        }
+        payload: dict[str, object] = {"code": self.code, "message": self.message}
+        if self.primes:
+            payload["primes"] = list(self.primes)
+        return payload
 
 
-@dataclass(frozen=True)
+@dataclass
 class FlowAssessment:
-    """Aggregates flow evaluation results for a given write path."""
+    """Container describing whether a flow sequence is permissible."""
 
-    sequence: tuple[int, ...]
-    violations: tuple[FlowViolation, ...]
+    ok: bool
+    violations: list[FlowViolation]
 
-    @property
-    def ok(self) -> bool:
-        return not self.violations
+    @classmethod
+    def success(cls) -> "FlowAssessment":
+        return cls(ok=True, violations=[])
+
+    @classmethod
+    def failure(cls, violations: Iterable[FlowViolation]) -> "FlowAssessment":
+        return cls(ok=False, violations=list(violations))
 
     def messages(self) -> list[str]:
-        return [violation.reason for violation in self.violations]
+        return [violation.message for violation in self.violations]
 
     def asdict(self) -> dict[str, object]:
         return {
-            "sequence": list(self.sequence),
+            "ok": self.ok,
             "violations": [violation.asdict() for violation in self.violations],
         }
 
 
-def _evaluate_even_c_odd(sequence: Sequence[int], schema: TierSchema) -> list[FlowViolation]:
-    if not sequence or not isinstance(schema, Mapping):
-        return []
+def _evaluate_sequence(
+    primes: Sequence[int],
+    schema: TierSchema | None,
+    *,
+    rule_code: str,
+) -> FlowAssessment:
+    if not primes:
+        return FlowAssessment.success()
 
+    tiers = [_tier_for(prime, schema) for prime in primes]
     violations: list[FlowViolation] = []
-    last_non_conductor_index = -1
-    last_conductor_index = -1
-    previous_prime: int | None = None
-    previous_parity: int | None = None
 
-    for idx, prime in enumerate(sequence):
-        shell_info = _shell_index(prime, schema)
-        if not shell_info:
-            previous_prime = prime
-            previous_parity = None
-            last_non_conductor_index = idx
+    for idx, tier in enumerate(tiers):
+        if tier not in SOURCE_TIERS:
             continue
-
-        shell_index, is_conductor = shell_info
-        if is_conductor:
-            last_conductor_index = idx
-            continue
-
-        if shell_index is None:
-            previous_prime = prime
-            previous_parity = None
-            last_non_conductor_index = idx
-            continue
-
-        parity = shell_index % 2
-        if previous_parity is None:
-            previous_parity = parity
-            previous_prime = prime
-            last_non_conductor_index = idx
-            continue
-
-        if parity != previous_parity and last_conductor_index <= last_non_conductor_index:
-            from_label = "even-shell" if previous_parity == 0 else "odd-shell"
-            to_label = "even-shell" if parity == 0 else "odd-shell"
-            violations.append(
-                FlowViolation(
-                    index=idx,
-                    prime=prime,
-                    previous_prime=previous_prime,
-                    reason=(
-                        f"Transition from {from_label} prime {previous_prime} "
-                        f"to {to_label} prime {prime} lacks C-tier mediation."
-                    ),
-                )
-            )
-
-        previous_parity = parity
-        previous_prime = prime
-        last_non_conductor_index = idx
-
-    return violations
+        mediator_present = False
+        for cursor in range(idx + 1, len(primes)):
+            next_tier = tiers[cursor]
+            if next_tier in SOURCE_TIERS:
+                break
+            if next_tier in MEDIATOR_TIERS:
+                mediator_present = True
+                continue
+            if next_tier in TARGET_TIERS:
+                if not mediator_present:
+                    source_prime = primes[idx]
+                    target_prime = primes[cursor]
+                    message = (
+                        f"{_prime_label(source_prime, schema)} requires a "
+                        f"C-tier mediator before {_prime_label(target_prime, schema)}."
+                    )
+                    violations.append(
+                        FlowViolation(
+                            code=rule_code,
+                            message=message,
+                            primes=(source_prime, target_prime),
+                        )
+                    )
+                break
+    if violations:
+        return FlowAssessment.failure(violations)
+    return FlowAssessment.success()
 
 
-def _normalized_sequence(entries: Iterable[object]) -> tuple[int, ...]:
-    sequence: list[int] = []
-    for item in entries:
-        if isinstance(item, Mapping):
-            prime = item.get("prime")
-        else:
-            prime = item
-        if isinstance(prime, int):
-            sequence.append(prime)
-    return tuple(sequence)
+def assess_write_path(
+    factors: Sequence[Mapping[str, object] | int] | None,
+    schema: TierSchema | None,
+) -> FlowAssessment:
+    """Evaluate ingest factors for mediator compliance."""
 
-
-def assess_write_path(entries: Iterable[object], schema: TierSchema) -> FlowAssessment:
-    sequence = _normalized_sequence(entries)
-    violations = tuple(_evaluate_even_c_odd(sequence, schema))
-    return FlowAssessment(sequence=sequence, violations=violations)
+    normalized = _normalize_primes(factors or ())
+    return _evaluate_sequence(normalized, schema, rule_code="flow.write.mediator")
 
 
 def assess_enrichment_path(
-    ref_prime: int,
-    deltas: Iterable[Mapping[str, object]] | None,
-    schema: TierSchema,
+    ref_prime: int | Mapping[str, object],
+    deltas: Sequence[Mapping[str, object] | int] | None,
+    schema: TierSchema | None,
 ) -> FlowAssessment:
-    seed: list[int] = []
-    if isinstance(ref_prime, int):
-        seed.append(int(ref_prime))
-    if deltas:
-        seed.extend(_normalized_sequence(deltas))
-    return assess_write_path(seed, schema)
+    """Verify enrichment payloads respect mediator requirements."""
+
+    ref_value = ref_prime.get("prime") if isinstance(ref_prime, Mapping) else ref_prime
+    try:
+        ref_int = int(ref_value)
+    except (TypeError, ValueError):
+        ref_int = None
+
+    normalized = _normalize_primes(deltas or ())
+    if ref_int is not None:
+        normalized.insert(0, ref_int)
+    return _evaluate_sequence(normalized, schema, rule_code="flow.enrich.mediator")
 
 
 __all__ = [
@@ -166,4 +175,3 @@ __all__ = [
     "assess_enrichment_path",
     "assess_write_path",
 ]
-

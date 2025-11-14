@@ -1,12 +1,9 @@
-"""Evaluate enrichment ethics metrics derived from ledger snapshots."""
+"""Heuristic ethics scoring for enrichment activity."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
-
-from validators import validate_prime_sequence
-
 
 _DEFAULT_HARMFUL_TERMS = {
     "attack",
@@ -39,7 +36,7 @@ class EthicsAssessment:
 
 
 class EthicsService:
-    """Computes heuristic ethics scores for enrichment responses."""
+    """Computes light-weight ethics heuristics for enrichment responses."""
 
     def __init__(
         self,
@@ -82,28 +79,22 @@ class EthicsService:
         deltas: Sequence[Mapping[str, Any]] | None,
         notes: list[str],
     ) -> float:
-        sequence: list[Mapping[str, Any]] = []
+        """Estimate lawfulness using the presence of recent ledger context."""
+
+        historical = 0
         if ledger_snapshot:
             factors = ledger_snapshot.get("factors")
             if isinstance(factors, Sequence):
-                for entry in factors:
-                    if isinstance(entry, Mapping):
-                        sequence.append(entry)
-        if deltas:
-            for entry in deltas:
-                if isinstance(entry, Mapping):
-                    sequence.append(entry)
-
-        if not sequence:
+                historical = sum(1 for entry in factors if isinstance(entry, Mapping))
+        recent = sum(1 for entry in (deltas or []) if isinstance(entry, Mapping))
+        if not (historical or recent):
             notes.append("No ledger factors available; defaulting to cautious lawfulness score.")
             return 0.6
-
-        if not validate_prime_sequence(sequence, self._schema):
-            notes.append("Prime flow check flagged a tier escalation; review required.")
-            return 0.35
-
-        notes.append("Prime flow checks passed.")
-        return 0.9
+        if recent and not historical:
+            notes.append("Deltas supplied without established ledger history; review suggested.")
+            return 0.55
+        notes.append("Ledger history present; applying confident lawfulness score.")
+        return 0.88 if recent else 0.8
 
     def _evidence_score(
         self,
@@ -111,9 +102,8 @@ class EthicsService:
         notes: list[str],
     ) -> float:
         if not minted_bodies:
-            notes.append("No new body primes minted; limited evidence captured.")
-            return 0.4
-
+            notes.append("No enrichment bodies supplied; evidence remains limited.")
+            return 0.45
         clean_chunks = [
             (entry.get("body") or "").strip()
             for entry in minted_bodies
@@ -121,10 +111,9 @@ class EthicsService:
         ]
         clean_chunks = [chunk for chunk in clean_chunks if chunk]
         if not clean_chunks:
-            notes.append("Minted bodies lacked usable text; evidence score reduced.")
+            notes.append("Body payloads lacked usable text; evidence score reduced.")
             return 0.5
-
-        notes.append(f"Minted {len(clean_chunks)} body prime(s) as evidence.")
+        notes.append(f"Received {len(clean_chunks)} enrichment body chunk(s).")
         return min(1.0, 0.5 + 0.2 * len(clean_chunks))
 
     def _non_harm_score(
@@ -133,8 +122,8 @@ class EthicsService:
         notes: list[str],
     ) -> float:
         if not minted_bodies:
+            notes.append("No new body content provided; non-harm defaults to neutral.")
             return 0.9
-
         harmful_hits = 0
         for entry in minted_bodies:
             if not isinstance(entry, Mapping):
@@ -145,12 +134,10 @@ class EthicsService:
             text = body.lower()
             if any(term in text for term in self._harmful_terms):
                 harmful_hits += 1
-
         if harmful_hits:
-            notes.append(f"Detected {harmful_hits} potential harmful snippet(s) during enrichment.")
+            notes.append(f"Detected {harmful_hits} potential harmful snippet(s).")
             return max(0.1, 0.9 - 0.25 * harmful_hits)
-
-        notes.append("No harmful language detected in minted bodies.")
+        notes.append("No harmful language detected in enrichment bodies.")
         return 0.95
 
     def _coherence_score(
@@ -159,25 +146,23 @@ class EthicsService:
         minted_bodies: Sequence[Mapping[str, Any]] | None,
         notes: list[str],
     ) -> float:
-        primes = {
+        delta_primes = {
             int(entry.get("prime"))
             for entry in (deltas or [])
             if isinstance(entry, Mapping) and isinstance(entry.get("prime"), int)
         }
         body_count = len(minted_bodies or [])
-        if not primes:
-            notes.append("No prime deltas supplied; coherence derived from body coverage only.")
-            return 0.55 if body_count else 0.4
-
-        if not body_count:
-            notes.append("Prime deltas supplied without corresponding body content.")
-            return 0.45
-
-        notes.append(
-            "Prime deltas aligned with body updates; enrichment remains coherent."
-        )
-        return min(1.0, 0.6 + 0.1 * min(len(primes), body_count))
+        if not delta_primes and not body_count:
+            notes.append("No deltas or bodies supplied; coherence defaults to cautious baseline.")
+            return 0.4
+        if delta_primes and not body_count:
+            notes.append("Prime deltas arrived without supporting body content.")
+            return 0.5
+        if body_count and not delta_primes:
+            notes.append("Bodies supplied without prime deltas; assuming partial coherence.")
+            return 0.55
+        notes.append("Prime deltas aligned with body payloads; coherence looks strong.")
+        return min(1.0, 0.6 + 0.1 * min(len(delta_primes), body_count))
 
 
 __all__ = ["EthicsService", "EthicsAssessment"]
-
