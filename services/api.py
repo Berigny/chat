@@ -20,10 +20,36 @@ class ApiService:
 
     def __init__(self, base_url: str, api_key: Optional[str]) -> None:
         self._client = DualSubstrateClient(base_url, api_key)
+        self._enrich_supported: bool | None = None
 
     @property
     def client(self) -> DualSubstrateClient:
         return self._client
+
+    # Capability ----------------------------------------------------------
+    def supports_enrich(self, *, refresh: bool = False) -> bool:
+        """Return ``True`` when the remote ``/enrich`` endpoint is available."""
+
+        if refresh:
+            self._enrich_supported = None
+        if self._enrich_supported is None:
+            self._enrich_supported = self._probe_enrich_support()
+        return bool(self._enrich_supported)
+
+    def _probe_enrich_support(self) -> bool:
+        """Probe the API once to determine whether ``/enrich`` exists."""
+
+        try:
+            response = requests.options(
+                f"{self._client.base_url}/enrich",
+                headers=self._client._headers(include_ledger=False),
+                timeout=3,
+            )
+        except requests.RequestException:
+            return False
+        if response.status_code == 404:
+            return False
+        return True
 
     # Ledger management -------------------------------------------------
     def list_ledgers(self) -> List[Dict[str, Any]]:
@@ -198,11 +224,21 @@ class ApiService:
 
     def enrich(
         self,
+        entity: str,
         payload: Mapping[str, Any],
         *,
         ledger_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return self._client.enrich(payload, ledger_id=ledger_id)
+        _ = entity  # Included for interface parity with helper usage.
+        try:
+            response = self._client.enrich(payload, ledger_id=ledger_id)
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                self._enrich_supported = False
+            raise
+        else:
+            self._enrich_supported = True
+            return response
 
     def put_ledger_s2(
         self,
