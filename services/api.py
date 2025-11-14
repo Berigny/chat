@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 import requests
@@ -192,8 +193,116 @@ class ApiService:
     def retrieve(self, entity: str, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
         return self._client.retrieve(entity, ledger_id=ledger_id)
 
-    def fetch_metrics(self, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
+    def fetch_metrics(self, *, ledger_id: Optional[str] = None) -> Dict[str, Any] | str:
         return self._client.fetch_metrics(ledger_id=ledger_id)
+
+    def _call_inference_endpoint(
+        self,
+        method_name: str,
+        entity: Optional[str] = None,
+        *,
+        ledger_id: Optional[str] = None,
+        **extra_kwargs: Any,
+    ):
+        """Invoke an inference telemetry helper while tolerating older clients."""
+
+        method = getattr(self._client, method_name)
+        signature = inspect.signature(method)
+        accepts_variadic_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
+
+        allowed_kwargs: Dict[str, Any] = {}
+        for key, value in extra_kwargs.items():
+            if value is None:
+                continue
+            if accepts_variadic_kwargs or key in signature.parameters:
+                allowed_kwargs[key] = value
+
+        if ledger_id is not None and (
+            accepts_variadic_kwargs or "ledger_id" in signature.parameters
+        ):
+            allowed_kwargs["ledger_id"] = ledger_id
+
+        entity_supported = accepts_variadic_kwargs or "entity" in signature.parameters
+
+        def _invoke(*args, **kwargs):
+            return method(*args, **kwargs)
+
+        last_error: TypeError | None = None
+        try:
+            return _invoke(**allowed_kwargs)
+        except TypeError as exc:
+            last_error = exc
+
+        if entity is not None and entity_supported:
+            try:
+                return _invoke(entity, **allowed_kwargs)
+            except TypeError as exc:
+                last_error = exc
+                if "ledger_id" in allowed_kwargs:
+                    trimmed_kwargs = {k: v for k, v in allowed_kwargs.items() if k != "ledger_id"}
+                    try:
+                        return _invoke(entity, **trimmed_kwargs)
+                    except TypeError as fallback_exc:
+                        last_error = fallback_exc
+
+        if last_error is None:
+            raise TypeError(f"Failed to call inference endpoint '{method_name}'")
+        raise last_error
+
+    def fetch_inference_state(
+        self,
+        entity: Optional[str] = None,
+        *,
+        ledger_id: Optional[str] = None,
+        include_history: Optional[bool] = None,
+        limit: Optional[int] = None,
+    ) -> Dict[str, Any]:
+        return self._call_inference_endpoint(
+            "fetch_inference_state",
+            entity,
+            ledger_id=ledger_id,
+            include_history=include_history,
+            limit=limit,
+        )
+
+    def fetch_inference_traverse(
+        self,
+        entity: Optional[str] = None,
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        return self._call_inference_endpoint(
+            "fetch_inference_traverse",
+            entity,
+            ledger_id=ledger_id,
+        )
+
+    def fetch_inference_memories(
+        self,
+        entity: Optional[str] = None,
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        return self._call_inference_endpoint(
+            "fetch_inference_memories",
+            entity,
+            ledger_id=ledger_id,
+        )
+
+    def fetch_inference_retrieve(
+        self,
+        entity: Optional[str] = None,
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self._call_inference_endpoint(
+            "fetch_inference_retrieve",
+            entity,
+            ledger_id=ledger_id,
+        )
 
     # Structured ledger writes -----------------------------------------
     def put_ledger_s1(

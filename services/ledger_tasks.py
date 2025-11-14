@@ -2,10 +2,53 @@
 
 from __future__ import annotations
 
+import time
 from typing import Any, Dict, Optional
 
 import requests
-import time
+
+
+def _coerce_float(value: Any) -> float | None:
+    """Best-effort conversion of Prometheus/JSON values into floats."""
+
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _parse_prometheus_metrics(payload: str) -> Dict[str, float]:
+    """Parse a subset of Prometheus exposition format into a numeric dict."""
+
+    metrics: Dict[str, float] = {}
+    for raw_line in payload.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        try:
+            metric_part, value_part = line.rsplit(" ", 1)
+        except ValueError:
+            continue
+        name = metric_part.split("{", 1)[0]
+        numeric = _coerce_float(value_part)
+        if numeric is None:
+            continue
+        metrics[name] = numeric
+    return metrics
+
+
+def _resolve_metric(values: Dict[str, float], *candidates: str) -> float | None:
+    """Return the first present metric from ``values`` matching ``candidates``."""
+
+    for candidate in candidates:
+        if candidate in values:
+            return values[candidate]
+    return None
+
 
 def fetch_metrics_snapshot(
     api_service,
@@ -14,43 +57,121 @@ def fetch_metrics_snapshot(
     ledger_id: str | None,
     metric_floors: Dict[str, float],
 ) -> Dict[str, Any]:
-    """Return sanitized metrics plus durability estimates."""
+    """Return sanitized metrics plus durability estimates and inference telemetry."""
 
-    metrics: Dict[str, Any] = {}
+    metrics_payload: Any = {}
+    numeric_metrics: Dict[str, float] = {}
     metrics_error: Optional[str] = None
     memories: list[dict] = []
+    inference_state: Dict[str, Any] | None = None
+    inference_traverse: list[dict] | None = None
+    inference_memories: list[dict] | None = None
+    inference_retrieve: Dict[str, Any] | None = None
+    inference_errors: list[str] = []
+    inference_supported: Optional[bool] = None
+
     if entity:
+        inference_supported = True
         try:
-            metrics = api_service.fetch_metrics(ledger_id=ledger_id)
+            metrics_payload = api_service.fetch_metrics(ledger_id=ledger_id)
         except requests.RequestException as exc:
             metrics_error = str(exc)
+            metrics_payload = {}
+        else:
+            if isinstance(metrics_payload, str):
+                numeric_metrics = _parse_prometheus_metrics(metrics_payload)
+            elif isinstance(metrics_payload, dict):
+                numeric_metrics = {
+                    key: coerced
+                    for key in metrics_payload
+                    if (coerced := _coerce_float(metrics_payload[key])) is not None
+                }
+            else:
+                numeric_metrics = {}
+
         try:
             memories = api_service.fetch_memories(entity, ledger_id=ledger_id, limit=1)
         except requests.RequestException:
             memories = []
-    tokens_saved = metrics.get("tokens_deduped")
+
+        def _safe_fetch(name: str, call):
+            nonlocal inference_supported
+            try:
+                return call()
+            except requests.HTTPError as exc:
+                response = exc.response
+                if response is not None and response.status_code == 404:
+                    inference_supported = False
+                    return None
+                inference_errors.append(f"{name}: {exc}")
+            except requests.RequestException as exc:
+                inference_errors.append(f"{name}: {exc}")
+            return None
+
+        inference_state = _safe_fetch(
+            "state",
+            lambda: api_service.fetch_inference_state(entity, ledger_id=ledger_id),
+        )
+        inference_traverse = _safe_fetch(
+            "traverse",
+            lambda: api_service.fetch_inference_traverse(entity, ledger_id=ledger_id),
+        )
+        inference_memories = _safe_fetch(
+            "memories",
+            lambda: api_service.fetch_inference_memories(entity, ledger_id=ledger_id),
+        )
+        inference_retrieve = _safe_fetch(
+            "retrieve",
+            lambda: api_service.fetch_inference_retrieve(entity, ledger_id=ledger_id),
+        )
+
+    tokens_saved = _resolve_metric(
+        numeric_metrics,
+        "dualsubstrate_tokens_deduped_total",
+        "dualsubstrate_tokens_deduped",
+        "tokens_deduped",
+        "tokens_saved",
+    )
     if tokens_saved is None:
         tokens_saved = metric_floors.get("tokens_deduped", 0)
-    integrity = metrics.get("ledger_integrity")
+
+    integrity = _resolve_metric(
+        numeric_metrics,
+        "dualsubstrate_ledger_integrity_ratio",
+        "ledger_integrity",
+    )
     if integrity is None:
         integrity = metric_floors.get("ledger_integrity", 1.0)
-    durability = metrics.get("durability_hours")
-    if durability is None:
-        if memories:
-            timestamp = memories[-1].get("timestamp")
-            if timestamp:
-                durability = max(
-                    metric_floors.get("durability_h", 0.0),
-                    (time.time() - timestamp / 1000) / 3600,
-                )
+
+    durability = _resolve_metric(
+        numeric_metrics,
+        "dualsubstrate_durability_hours",
+        "durability_hours",
+    )
+    if durability is None and memories:
+        timestamp = memories[-1].get("timestamp")
+        if timestamp:
+            durability = max(
+                metric_floors.get("durability_h", 0.0),
+                (time.time() - timestamp / 1000) / 3600,
+            )
     if durability is None:
         durability = metric_floors.get("durability_h", 0.0)
+
     return {
         "tokens_saved": tokens_saved,
         "ledger_integrity": integrity,
         "durability_hours": durability,
-        "raw_metrics": metrics,
+        "raw_metrics": metrics_payload,
+        "metrics_source": "prometheus" if isinstance(metrics_payload, str) else "json",
+        "prometheus_metrics": numeric_metrics if isinstance(metrics_payload, str) else None,
         "error": metrics_error,
+        "inference_state": inference_state,
+        "inference_traverse": inference_traverse,
+        "inference_memories": inference_memories,
+        "inference_retrieve": inference_retrieve,
+        "inference_supported": inference_supported,
+        "inference_errors": inference_errors,
     }
 
 
