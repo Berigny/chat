@@ -34,6 +34,8 @@ try:
 except ModuleNotFoundError:
     PdfReader = None
 
+import socket
+
 from app_settings import DEFAULT_METRIC_FLOORS, load_settings
 from agent_selector import (
     init_llm_provider,
@@ -1762,8 +1764,11 @@ def _render_app():
     tab_labels = ["Chat"]
     if traversal_supported:
         tab_labels.append("Traversal Paths")
+    debug_enabled = True
     if inference_supported:
         tab_labels.append("Inference Status")
+    if debug_enabled:
+        tab_labels.append("Connectivity Debug")
     tab_labels.append("About DualSubstrate")
     tabs = st.tabs(tab_labels)
 
@@ -1775,6 +1780,9 @@ def _render_app():
         tab_index += 1
     tab_inference = tabs[tab_index] if inference_supported else None
     if inference_supported:
+        tab_index += 1
+    tab_debug = tabs[tab_index] if debug_enabled else None
+    if debug_enabled:
         tab_index += 1
     tab_about = tabs[tab_index]
 
@@ -1814,6 +1822,33 @@ def _render_app():
                 if inference_supported:
                     with sub_tabs[sub_index]:
                         _render_inference_tab(entity)
+
+    if debug_enabled and tab_debug:
+        with tab_debug:
+            st.subheader("Connectivity debug")
+            host_url = API.rstrip("/")
+            host_name = host_url.replace("https://", "").replace("http://", "").split("/")[0]
+            st.write(f"Target base URL: `{host_url}`")
+            try:
+                resolved_ip = socket.gethostbyname(host_name)
+                st.success(f"DNS resolved `{host_name}` → `{resolved_ip}`")
+            except Exception as exc:  # pragma: no cover - platform specific
+                st.error(f"DNS resolution failed for `{host_name}`: {exc}")
+
+            debug_url = f"{host_url}/docs"
+            st.write(f"Trying GET `{debug_url}`")
+            headers: dict[str, str] = {}
+            if SETTINGS.api_key:
+                headers["x-api-key"] = SETTINGS.api_key
+            try:
+                response = requests.get(debug_url, headers=headers, timeout=10)
+                st.write(f"Status: {response.status_code}")
+                preview = response.text[:500]
+                if len(response.text) > 500:
+                    preview += "…"
+                st.code(preview or "<empty response>", language="text")
+            except Exception as exc:  # pragma: no cover - network dependent
+                st.error(f"HTTP error: {exc}")
 
     with tab_about:
         col_left, col_right = st.columns(2)
