@@ -10,7 +10,7 @@ from services.prime_service import PrimeService
 class RecordingApiService:
     def __init__(self) -> None:
         self.ingest_calls: list[tuple[str, Mapping[str, Any], str | None]] = []
-        self.body_calls: list[tuple[str, int, str, str | None, Mapping[str, Any] | None]] = []
+        self.body_calls: list[dict[str, Any]] = []
 
     def ingest(
         self,
@@ -26,12 +26,24 @@ class RecordingApiService:
         self,
         entity: str,
         prime: int,
-        body: str,
+        body_payload,
         *,
         ledger_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> None:
-        self.body_calls.append((entity, prime, body, ledger_id, dict(metadata or {})))
+        if isinstance(body_payload, Mapping):
+            payload = dict(body_payload)
+        else:
+            payload = {"body": body_payload}
+        self.body_calls.append(
+            {
+                "entity": entity,
+                "prime": prime,
+                "payload": payload,
+                "ledger_id": ledger_id,
+                "metadata_arg": metadata,
+            }
+        )
 
     def fetch_ledger(
         self,
@@ -81,8 +93,15 @@ def test_ingest_mints_body_primes_for_structured_payload(prime_service: tuple[Pr
     result = _ingest(service, "Meeting recap with immutable storage")
 
     assert api.body_calls, "Expected minted body primes"
-    minted_prime = api.body_calls[0][1]
+    first_call = api.body_calls[0]
+    minted_prime = first_call["prime"]
     assert minted_prime >= service.body_prime_floor
+    assert first_call["metadata_arg"] is None
+    payload = first_call["payload"]
+    assert payload["body"].startswith("Meeting recap")
+    metadata = payload.get("metadata")
+    assert isinstance(metadata, dict)
+    assert metadata.get("kind") == "memory"
 
     structured = result["structured"]
     bodies = structured["bodies"]
@@ -101,7 +120,7 @@ def test_ingest_preserves_s1_s2_reference_integrity(prime_service: tuple[PrimeSe
     structured = _ingest(service, "Second body copy")["structured"]
 
     minted_prime = structured["bodies"][0]["prime"]
-    assert minted_prime == api.body_calls[-1][1]
+    assert minted_prime == api.body_calls[-1]["prime"]
 
     s1_body_primes = {slot["body_prime"] for slot in structured["s1"]}
     s2_body_primes = {slot["body_prime"] for slot in structured["s2"]}
@@ -116,7 +135,7 @@ def test_ingest_does_not_overwrite_existing_body_primes(prime_service: tuple[Pri
     _ingest(service, "Legacy transcript two")
     _ingest(service, "Legacy transcript three")
 
-    minted_primes = [call[1] for call in api.body_calls]
+    minted_primes = [call["prime"] for call in api.body_calls]
     assert len(minted_primes) == len(set(minted_primes)), "Body primes should not be reused"
     assert minted_primes == sorted(minted_primes), "Body primes should grow monotonically"
 
@@ -149,7 +168,7 @@ def test_ingest_skips_primes_already_in_ledger() -> None:
     minted = [body["prime"] for body in result["structured"]["bodies"]]
     assert minted == [37]
     assert api.fetch_calls == 1
-    assert api.body_calls[0][1] == 37
+    assert api.body_calls[0]["prime"] == 37
 
 
 class ConflictingApiService(SeededApiService):
@@ -161,12 +180,24 @@ class ConflictingApiService(SeededApiService):
         self,
         entity: str,
         prime: int,
-        body: str,
+        body_payload,
         *,
         ledger_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> None:
-        self.body_calls.append((entity, prime, body, ledger_id, dict(metadata or {})))
+        if isinstance(body_payload, Mapping):
+            payload = dict(body_payload)
+        else:
+            payload = {"body": body_payload}
+        self.body_calls.append(
+            {
+                "entity": entity,
+                "prime": prime,
+                "payload": payload,
+                "ledger_id": ledger_id,
+                "metadata_arg": metadata,
+            }
+        )
         if not self.conflict_triggered:
             self.conflict_triggered = True
             self.fetch_payload.setdefault("bodies", []).append({"prime": prime})

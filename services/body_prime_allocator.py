@@ -165,13 +165,15 @@ class BodyPrimeAllocator:
                     ledger_id=ledger_id,
                 )
                 reserved.add(prime)
+                body_payload: dict[str, Any] = {"body": cleaned}
+                if metadata:
+                    body_payload["metadata"] = metadata
                 try:
                     self.api_service.put_ledger_body(
                         entity,
                         prime,
-                        cleaned,
+                        body_payload,
                         ledger_id=ledger_id,
-                        metadata=metadata or None,
                     )
                 except requests.HTTPError as exc:
                     status = getattr(exc.response, "status_code", None)

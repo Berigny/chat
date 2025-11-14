@@ -287,17 +287,33 @@ class DualSubstrateClient:
 
     def put_ledger_body(
         self,
-        payload: Mapping[str, Any],
+        entity: str,
+        prime: int,
+        body_text: str | Mapping[str, Any],
         *,
         ledger_id: str | None = None,
-        params: Mapping[str, Any] | None = None,
+        metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Store long-form body text while forwarding the payload as-is."""
+        """Store long-form body text using the refreshed `/ledger/body` contract."""
+
+        if isinstance(body_text, Mapping):
+            payload: dict[str, Any] = {key: value for key, value in body_text.items()}
+        else:
+            payload = {"body": body_text}
+
+        if metadata:
+            existing = payload.get("metadata")
+            if isinstance(existing, Mapping):
+                merged = {key: value for key, value in existing.items()}
+                merged.update(metadata)
+                payload["metadata"] = merged
+            else:
+                payload["metadata"] = dict(metadata)
 
         resp = requests.put(
             f"{self.base_url}/ledger/body",
             json=payload,
-            params=params,
+            params={"entity": entity, "prime": prime},
             headers=self._headers(ledger_id=ledger_id),
             timeout=5,
         )

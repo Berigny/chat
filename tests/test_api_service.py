@@ -1,15 +1,29 @@
 from __future__ import annotations
 
+from typing import Mapping
+
 from services.api_service import EnrichmentHelper
 
 
 class DummyApiService:
     def __init__(self) -> None:
-        self.body_calls: list[tuple[str, int, str, str | None, dict | None]] = []
+        self.body_calls: list[dict[str, object]] = []
         self.enrich_calls: list[tuple[str, dict, str | None]] = []
 
-    def put_ledger_body(self, entity: str, prime: int, body: str, *, ledger_id=None, metadata=None):
-        self.body_calls.append((entity, prime, body, ledger_id, metadata))
+    def put_ledger_body(self, entity: str, prime: int, body_payload, *, ledger_id=None, metadata=None):
+        if isinstance(body_payload, Mapping):
+            payload = dict(body_payload)
+        else:
+            payload = {"body": body_payload}
+        self.body_calls.append(
+            {
+                "entity": entity,
+                "prime": prime,
+                "payload": payload,
+                "ledger_id": ledger_id,
+                "metadata_arg": metadata,
+            }
+        )
 
     def enrich(self, entity: str, payload: dict, *, ledger_id=None):
         self.enrich_calls.append((entity, payload, ledger_id))
@@ -45,13 +59,17 @@ def test_enrichment_helper_mints_bodies_and_calls_enrich():
     )
 
     assert len(api.body_calls) == 2
-    for _, prime, body, ledger_id, metadata in api.body_calls:
-        assert ledger_id == "alpha"
-        assert body in {"first body", "second"}
+    seen_bodies = {call["payload"].get("body") for call in api.body_calls}
+    assert seen_bodies == {"first body", "second"}
+    for call in api.body_calls:
+        assert call["ledger_id"] == "alpha"
+        assert call["metadata_arg"] is None
+        metadata = call["payload"].get("metadata")
+        assert isinstance(metadata, dict)
         assert metadata["workflow"] == "unit"
         assert metadata["superseded_by"] == 29
         assert metadata["source"] == "enrichment"
-        assert prime in {23, 25}
+        assert call["prime"] in {23, 25}
 
     assert api.enrich_calls
     enrich_entity, payload, ledger_id = api.enrich_calls[0]

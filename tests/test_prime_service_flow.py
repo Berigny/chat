@@ -6,14 +6,26 @@ from services.prime_service import PrimeService
 class DummyApiService:
     def __init__(self) -> None:
         self.ingest_calls: list[tuple[str, Mapping[str, Any], str | None]] = []
-        self.body_calls: list[tuple[str, int, str, str | None]] = []
+        self.body_calls: list[dict[str, Any]] = []
 
     def ingest(self, entity: str, payload: Mapping[str, Any], *, ledger_id: str | None = None):
         self.ingest_calls.append((entity, dict(payload), ledger_id))
         return {"ok": True}
 
-    def put_ledger_body(self, entity: str, prime: int, body: str, *, ledger_id=None, metadata=None):
-        self.body_calls.append((entity, prime, body, ledger_id))
+    def put_ledger_body(self, entity: str, prime: int, body_payload, *, ledger_id=None, metadata=None):
+        if isinstance(body_payload, Mapping):
+            payload = dict(body_payload)
+        else:
+            payload = {"body": body_payload}
+        self.body_calls.append(
+            {
+                "entity": entity,
+                "prime": prime,
+                "payload": payload,
+                "ledger_id": ledger_id,
+                "metadata_arg": metadata,
+            }
+        )
 
     def fetch_ledger(self, entity: str, *, ledger_id: str | None = None) -> Mapping[str, Any]:
         return {}
@@ -61,3 +73,8 @@ def test_ingest_allows_mediated_flow() -> None:
     assert not result.get("flow_errors")
     assert api.ingest_calls
     assert api.body_calls
+    call = api.body_calls[0]
+    assert call["metadata_arg"] is None
+    metadata = call["payload"].get("metadata")
+    assert isinstance(metadata, dict)
+    assert metadata.get("kind") == "memory"
