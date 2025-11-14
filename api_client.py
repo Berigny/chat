@@ -380,7 +380,7 @@ class DualSubstrateClient:
         """Update ℝ metrics; server enforces bounds."""
 
         body = {"entity": entity, **(payload or {})}
-        resp = requests.put(
+        resp = requests.patch(
             f"{self.base_url}/ledger/metrics",
             json=body,
             headers=self._headers(ledger_id=ledger_id),
@@ -403,7 +403,7 @@ class DualSubstrateClient:
         data = resp.json()
         return data if isinstance(data, dict) else {}
 
-    def fetch_metrics(self, *, ledger_id: str | None = None) -> dict[str, Any]:
+    def fetch_metrics(self, *, ledger_id: str | None = None) -> dict[str, Any] | str:
         """Fetch system-wide metrics for the current ledger."""
 
         resp = requests.get(
@@ -412,8 +412,59 @@ class DualSubstrateClient:
             timeout=5,
         )
         resp.raise_for_status()
-        data = resp.json()
-        return data if isinstance(data, dict) else {}
+        content_type = resp.headers.get("Content-Type", "")
+        if "json" in content_type:
+            data = resp.json()
+            return data if isinstance(data, dict) else {}
+        return resp.text
+
+    def fetch_inference_state(self, *, ledger_id: str | None = None) -> dict[str, Any]:
+        """Return high-level inference telemetry for the active ledger."""
+
+        resp = requests.get(
+            f"{self.base_url}/inference/state",
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload if isinstance(payload, dict) else {}
+
+    def fetch_inference_traverse(self, *, ledger_id: str | None = None) -> list[dict[str, Any]]:
+        """Return recent traversal operations captured during inference."""
+
+        resp = requests.get(
+            f"{self.base_url}/inference/traverse",
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload if isinstance(payload, list) else []
+
+    def fetch_inference_memories(self, *, ledger_id: str | None = None) -> list[dict[str, Any]]:
+        """Return the inference-layer memory transcript if exposed."""
+
+        resp = requests.get(
+            f"{self.base_url}/inference/memories",
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload if isinstance(payload, list) else []
+
+    def fetch_inference_retrieve(self, *, ledger_id: str | None = None) -> dict[str, Any]:
+        """Return the most recent inference-layer retrieval payload."""
+
+        resp = requests.get(
+            f"{self.base_url}/inference/retrieve",
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        return payload if isinstance(payload, dict) else {}
 
     def rotate(
         self,
