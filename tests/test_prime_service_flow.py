@@ -15,6 +15,9 @@ class DummyApiService:
     def put_ledger_body(self, entity: str, prime: int, body: str, *, ledger_id=None, metadata=None):
         self.body_calls.append((entity, prime, body, ledger_id))
 
+    def fetch_ledger(self, entity: str, *, ledger_id: str | None = None) -> Mapping[str, Any]:
+        return {}
+
 
 SCHEMA = {
     2: {"tier": "S"},

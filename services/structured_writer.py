@@ -1,4 +1,4 @@
-"""Helpers for persisting structured ledger payloads."""
+"""Helpers for persisting structured ledger payloads via the API."""
 
 from __future__ import annotations
 
@@ -84,7 +84,7 @@ def _coerce_s2_slot(slot: Mapping[str, Any] | None) -> dict[str, Any] | None:
     return payload
 
 
-def persist_s1_slots(
+def write_s1_slots(
     api_service: ApiService,
     entity: str,
     slots: Sequence[Mapping[str, Any]] | None,
@@ -97,7 +97,7 @@ def persist_s1_slots(
     return sanitized
 
 
-def persist_s2_slots(
+def write_s2_slots(
     api_service: ApiService,
     entity: str,
     slots: Sequence[Mapping[str, Any]] | None,
@@ -110,7 +110,7 @@ def persist_s2_slots(
     return sanitized
 
 
-def persist_structured_views(
+def write_structured_views(
     api_service: ApiService,
     entity: str,
     structured: Mapping[str, Any] | None,
@@ -118,8 +118,8 @@ def persist_structured_views(
     ledger_id: str | None = None,
 ) -> dict[str, Any]:
     structured = structured or {}
-    s1_payload = persist_s1_slots(api_service, entity, structured.get("s1"), ledger_id=ledger_id)
-    s2_payload = persist_s2_slots(api_service, entity, structured.get("s2"), ledger_id=ledger_id)
+    s1_payload = write_s1_slots(api_service, entity, structured.get("s1"), ledger_id=ledger_id)
+    s2_payload = write_s2_slots(api_service, entity, structured.get("s2"), ledger_id=ledger_id)
     result = {
         "slots": list(structured.get("slots", []) or []),
         "s1": s1_payload,
@@ -129,4 +129,4 @@ def persist_structured_views(
     return result
 
 
-__all__ = ["persist_structured_views", "persist_s1_slots", "persist_s2_slots"]
+__all__ = ["write_structured_views", "write_s1_slots", "write_s2_slots"]

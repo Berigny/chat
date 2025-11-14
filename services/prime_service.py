@@ -5,11 +5,14 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Sequence
 
+import requests
+
 from prime_pipeline import (
+    S1_PRIMES,
+    S2_PRIMES,
     assess_factor_flow,
     build_anchor_factors,
     normalize_override_factors,
-    prepare_ingest_artifacts,
 )
 
 
@@ -29,6 +32,30 @@ def _is_prime(candidate: int) -> bool:
         if candidate % factor == 0:
             return False
     return True
+
+
+def _collect_body_primes(node: Any, *, floor: int) -> set[int]:
+    primes: set[int] = set()
+
+    def _walk(value: Any) -> None:
+        if isinstance(value, Mapping):
+            candidate = value.get("body_prime")
+            if isinstance(candidate, int) and candidate >= floor:
+                primes.add(int(candidate))
+            candidate = value.get("prime")
+            if isinstance(candidate, int) and candidate >= floor:
+                primes.add(int(candidate))
+            for child in value.values():
+                if isinstance(child, (Mapping, Sequence)) and not isinstance(
+                    child, (str, bytes, bytearray)
+                ):
+                    _walk(child)
+        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+            for item in value:
+                _walk(item)
+
+    _walk(node)
+    return primes
 
 
 def _sanitize_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
@@ -54,6 +81,100 @@ def _sanitize_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
     return sanitized
 
 
+def _merge_metadata(base: Mapping[str, Any] | None, extra: Mapping[str, Any]) -> dict[str, Any]:
+    merged: dict[str, Any] = {}
+    if isinstance(base, Mapping):
+        for key, value in base.items():
+            if isinstance(key, str):
+                merged[key] = value
+    for key, value in extra.items():
+        if isinstance(key, str):
+            merged.setdefault(key, value)
+    return merged
+
+
+def _derive_title(text: str, *, max_length: int = 96) -> str | None:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    first_line = cleaned.splitlines()[0]
+    if len(first_line) <= max_length:
+        return first_line
+    trunc = first_line[:max_length].rstrip()
+    return trunc
+
+
+def _derive_summary(text: str, *, max_length: int = 160) -> str | None:
+    cleaned = (text or "").strip()
+    if not cleaned:
+        return None
+    summary = cleaned.replace("\n", " ")
+    if len(summary) <= max_length:
+        return summary
+    return summary[: max_length - 1].rstrip() + "…"
+
+
+def _prepare_ingest_plan(
+    text: str,
+    *,
+    metadata: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    cleaned = (text or "").strip()
+    base_meta = _merge_metadata(metadata, {"length": len(cleaned), "kind": "memory"})
+    body_key = "body-0"
+    bodies: list[dict[str, Any]] = []
+    slots: list[dict[str, Any]] = []
+    s1_slots: list[dict[str, Any]] = []
+    s2_slots: list[dict[str, Any]] = []
+
+    if cleaned:
+        bodies.append(
+            {
+                "key": body_key,
+                "body": cleaned,
+                "metadata": _merge_metadata(
+                    base_meta,
+                    {
+                        "source_primes": list(S1_PRIMES + S2_PRIMES),
+                        "superseded_primes": list(S1_PRIMES + S2_PRIMES),
+                    },
+                ),
+            }
+        )
+        title = _derive_title(cleaned)
+        summary = _derive_summary(cleaned)
+
+        for prime in S1_PRIMES:
+            slot = {
+                "prime": prime,
+                "value": 1,
+                "title": title,
+                "tags": [],
+                "body": [cleaned],
+                "body_key": body_key,
+                "metadata": _merge_metadata(base_meta, {"tier": "S1"}),
+            }
+            slots.append(slot)
+            s1_slots.append(slot)
+        for prime in S2_PRIMES:
+            slot = {
+                "prime": prime,
+                "summary": summary,
+                "body": [cleaned],
+                "body_key": body_key,
+                "metadata": _merge_metadata(base_meta, {"tier": "S2"}),
+            }
+            slots.append(slot)
+            s2_slots.append(slot)
+
+    return {
+        "slots": slots,
+        "s1": s1_slots,
+        "s2": s2_slots,
+        "bodies": bodies,
+    }
+
+
 @dataclass
 class PrimeService:
     """Centralise prime tagging, anchoring, and ingest orchestration."""
@@ -62,6 +183,7 @@ class PrimeService:
     fallback_prime: int
     body_prime_floor: int = BODY_PRIME_FLOOR
     _issued_body_primes: set[int] = field(default_factory=set)
+    _synced_body_prime_scopes: set[tuple[str, str | None]] = field(default_factory=set)
 
     def build_factors(
         self,
@@ -133,17 +255,35 @@ class PrimeService:
         self._issued_body_primes.add(candidate)
         return candidate
 
-    def persist_bodies(
+    def _seed_existing_body_primes(
+        self,
+        entity: str,
+        *,
+        ledger_id: str | None = None,
+        force: bool = False,
+    ) -> None:
+        scope = (entity, ledger_id)
+        if not force and scope in self._synced_body_prime_scopes:
+            return
+        try:
+            payload = self.api_service.fetch_ledger(entity, ledger_id=ledger_id)
+        except requests.RequestException:
+            return
+        primes = _collect_body_primes(payload, floor=self.body_prime_floor)
+        if primes:
+            self._issued_body_primes.update(primes)
+        self._synced_body_prime_scopes.add(scope)
+
+    def _mint_bodies_for_ingest(
         self,
         entity: str,
         body_plan: Sequence[Mapping[str, Any]],
         *,
         ledger_id: str | None = None,
     ) -> list[dict[str, Any]]:
-        """Persist immutable body chunks and return enriched metadata."""
-
         minted: list[dict[str, Any]] = []
         reserved: set[int] = set()
+        self._seed_existing_body_primes(entity, ledger_id=ledger_id)
         for entry in body_plan:
             if not isinstance(entry, Mapping):
                 continue
@@ -155,21 +295,44 @@ class PrimeService:
             if not cleaned:
                 continue
             metadata = _sanitize_metadata(entry.get("metadata"))
-            prime = self.next_body_prime(reserved=reserved)
-            reserved.add(prime)
-            self.api_service.put_ledger_body(
-                entity,
-                prime,
-                cleaned,
-                ledger_id=ledger_id,
-                metadata=metadata or None,
-            )
-            minted.append({
-                "prime": prime,
-                "body": cleaned,
-                "metadata": metadata,
-                "key": key,
-            })
+            attempts = 0
+            last_error: requests.HTTPError | None = None
+            while attempts < 5:
+                attempts += 1
+                prime = self.next_body_prime(reserved=reserved)
+                reserved.add(prime)
+                try:
+                    self.api_service.put_ledger_body(
+                        entity,
+                        prime,
+                        cleaned,
+                        ledger_id=ledger_id,
+                        metadata=metadata or None,
+                    )
+                except requests.HTTPError as exc:
+                    status = getattr(exc.response, "status_code", None)
+                    if status in {409, 422}:
+                        last_error = exc
+                        self._seed_existing_body_primes(
+                            entity,
+                            ledger_id=ledger_id,
+                            force=True,
+                        )
+                        continue
+                    raise
+                minted.append(
+                    {
+                        "prime": prime,
+                        "body": cleaned,
+                        "metadata": metadata,
+                        "key": key,
+                    }
+                )
+                break
+            else:
+                if last_error is not None:
+                    raise last_error
+                raise RuntimeError("Failed to mint ledger body prime after retries")
         return minted
 
     def ingest(
@@ -204,8 +367,8 @@ class PrimeService:
                 ],
                 "flow_assessment": flow_assessment.asdict(),
             }
-        plan = prepare_ingest_artifacts(normalized_text, metadata=metadata)
-        minted_bodies = self.persist_bodies(
+        plan = _prepare_ingest_plan(normalized_text, metadata=metadata)
+        minted_bodies = self._mint_bodies_for_ingest(
             entity,
             plan.get("bodies", []),
             ledger_id=ledger_id,
