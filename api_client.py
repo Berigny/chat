@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, Mapping
 
 import requests
 
@@ -269,17 +269,15 @@ class DualSubstrateClient:
 
     def put_ledger_s1(
         self,
-        entity: str,
-        payload: dict[str, Any],
+        payload: Mapping[str, Any],
         *,
         ledger_id: str | None = None,
     ) -> dict[str, Any]:
-        """Write S1 facets (primes 2/3/5/7) to the ledger."""
+        """Write S1 facets to the ledger without mutating the payload."""
 
-        body = {"entity": entity, **(payload or {})}
         resp = requests.put(
             f"{self.base_url}/ledger/s1",
-            json=body,
+            json=payload,
             headers=self._headers(ledger_id=ledger_id),
             timeout=5,
         )
@@ -289,26 +287,17 @@ class DualSubstrateClient:
 
     def put_ledger_body(
         self,
-        entity: str,
-        prime: int,
-        body_text: str,
+        payload: Mapping[str, Any],
         *,
         ledger_id: str | None = None,
-        metadata: dict[str, Any] | None = None,
+        params: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Store long-form body text against a higher prime."""
+        """Store long-form body text while forwarding the payload as-is."""
 
-        payload = {
-            "entity": entity,
-            "body": body_text,
-            "prime": prime,
-        }
-        if metadata:
-            payload["meta"] = metadata
         resp = requests.put(
             f"{self.base_url}/ledger/body",
-            params={"prime": prime},
             json=payload,
+            params=params,
             headers=self._headers(ledger_id=ledger_id),
             timeout=5,
         )
@@ -318,17 +307,15 @@ class DualSubstrateClient:
 
     def enrich(
         self,
-        entity: str,
-        payload: dict[str, Any],
+        payload: Mapping[str, Any],
         *,
         ledger_id: str | None = None,
     ) -> dict[str, Any]:
-        """Call the enrichment endpoint with deltas and minted body refs."""
+        """Call the enrichment endpoint while forwarding the supplied payload."""
 
-        request_payload = {"entity": entity, **(payload or {})}
         resp = requests.post(
             f"{self.base_url}/enrich",
-            json=request_payload,
+            json=payload,
             headers=self._headers(ledger_id=ledger_id),
             timeout=self.timeout,
         )
@@ -338,17 +325,15 @@ class DualSubstrateClient:
 
     def put_ledger_s2(
         self,
-        entity: str,
-        payload: dict[str, Any],
+        payload: Mapping[str, Any],
         *,
         ledger_id: str | None = None,
     ) -> dict[str, Any]:
-        """Store enrichment output (summaries, ontology references, etc.)."""
+        """Store enrichment output while leaving the payload untouched."""
 
-        body = {"entity": entity, **(payload or {})}
         resp = requests.put(
             f"{self.base_url}/ledger/s2",
-            json=body,
+            json=payload,
             headers=self._headers(ledger_id=ledger_id),
             timeout=5,
         )

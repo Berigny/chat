@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import requests
 import streamlit as st
@@ -212,15 +212,22 @@ def _anchor(
     )
 
     prime_service = _prime_service()
+    factors = prime_service.build_factors(
+        text,
+        schema,
+        factors_override=override,
+        llm_extractor=None,
+    )
+    payload: Dict[str, Any] = {
+        "text": text,
+        "factors": factors,
+        "metadata": {"source": "admin_app"},
+    }
     try:
-        ingest_result = prime_service.ingest(
+        ingest_result = _api_service().ingest(
             entity,
-            text,
-            schema,
+            payload,
             ledger_id=_ledger_id(),
-            factors_override=override,
-            llm_extractor=None,
-            metadata={"source": "admin_app"},
         )
     except requests.RequestException as exc:
         st.error(f"Anchor failed: {exc}")
@@ -355,7 +362,7 @@ def _run_enrichment(limit: int = 50, reset_first: bool = True) -> dict | None:
 
     schema = st.session_state.get("prime_schema") or DEFAULT_PRIME_SCHEMA
     prime_service = _prime_service()
-    helper = EnrichmentHelper(_api_service(), prime_service)
+    helper = EnrichmentHelper(_api_service())
     ethics_service = EthicsService(schema=schema)
 
     summary: dict[str, Any] = {
@@ -396,28 +403,21 @@ def _run_enrichment(limit: int = 50, reset_first: bool = True) -> dict | None:
                 factors_override=None,
                 llm_extractor=None,
             )
+            enrichment_payload: Dict[str, Any] = {
+                "ref_prime": ref_prime,
+                "deltas": factor_deltas,
+                "body": text,
+                "metadata": {"source": "enrichment"},
+            }
             result = helper.submit(
                 entity,
-                ref_prime=ref_prime,
-                deltas=factor_deltas,
-                body_chunks=[text],
-                metadata={"source": "enrichment"},
+                enrichment_payload,
                 ledger_id=ledger_id,
-                schema=schema,
             )
         except requests.RequestException as exc:
             stamp = entry.get("timestamp")
             label = str(stamp) if stamp else "unknown"
             summary["failures"].append(f"{label}: {exc}")
-            continue
-
-        flow_errors = (
-            result.get("flow_errors") if isinstance(result, dict) else None
-        )
-        if flow_errors:
-            summary["failures"].append(
-                f"ref {ref_prime}: {'; '.join(flow_errors)}"
-            )
             continue
 
         summary["enriched"] += 1
@@ -437,15 +437,16 @@ def _run_enrichment(limit: int = 50, reset_first: bool = True) -> dict | None:
         try:
             ledger_snapshot = _api_service().fetch_ledger(entity, ledger_id=ledger_id)
         except requests.RequestException:
-            pass
+            ledger_snapshot = {}
 
         ethics = ethics_service.evaluate(
-            ledger_snapshot if isinstance(ledger_snapshot, dict) else {},
-            deltas=result.get("deltas"),
-            minted_bodies=result.get("bodies"),
+            ledger_snapshot if isinstance(ledger_snapshot, Mapping) else {},
+            deltas=enrichment_payload.get("deltas") if isinstance(enrichment_payload.get("deltas"), list) else [],
+            minted_bodies=response_payload.get("bodies") if isinstance(response_payload, dict) else None,
         )
         result["ethics"] = ethics.asdict()
         result["text"] = text
+        result["request"] = enrichment_payload
         summary["reports"].append(result)
 
     if summary["failures"]:

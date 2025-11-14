@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Any, Iterable, Mapping, Sequence
+from dataclasses import dataclass
+from typing import Mapping, Sequence
 
 from prime_pipeline import (
     S1_PRIMES,
@@ -15,44 +15,6 @@ from prime_pipeline import (
 
 
 Payload = Mapping[str, object]
-BODY_PRIME_FLOOR = 23
-
-
-def _is_prime(candidate: int) -> bool:
-    if candidate <= 1:
-        return False
-    if candidate == 2:
-        return True
-    if candidate % 2 == 0:
-        return False
-    limit = int(candidate**0.5) + 1
-    for factor in range(3, limit, 2):
-        if candidate % factor == 0:
-            return False
-    return True
-
-
-def _sanitize_metadata(metadata: Mapping[str, Any] | None) -> dict[str, Any]:
-    if not isinstance(metadata, Mapping):
-        return {}
-    sanitized: dict[str, Any] = {}
-    for key, value in metadata.items():
-        if not isinstance(key, str):
-            continue
-        if isinstance(value, (str, int, float, bool)) or value is None:
-            sanitized[key] = value
-        elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
-            items = []
-            for element in value:
-                if isinstance(element, (str, int, float, bool)) or element is None:
-                    items.append(element)
-            if items:
-                sanitized[key] = items
-        elif isinstance(value, Mapping):
-            nested = _sanitize_metadata(value)
-            if nested:
-                sanitized[key] = nested
-    return sanitized
 
 
 def _merge_metadata(base: Mapping[str, Any] | None, extra: Mapping[str, Any]) -> dict[str, Any]:
@@ -151,12 +113,10 @@ def _prepare_ingest_plan(
 
 @dataclass
 class PrimeService:
-    """Centralise prime tagging, anchoring, and ingest orchestration."""
+    """Centralise prime tagging and anchoring helpers."""
 
     api_service: "ApiService"
     fallback_prime: int
-    body_prime_floor: int = BODY_PRIME_FLOOR
-    _issued_body_primes: set[int] = field(default_factory=set)
 
     def build_factors(
         self,
