@@ -5,6 +5,19 @@ from __future__ import annotations
 import inspect
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
+
+# Derived from the DualSubstrate Swagger documentation – demo entities map to
+# fixed traversal node IDs. Extend this map as new workspaces are provisioned.
+_TRAVERSAL_NODE_OVERRIDES: dict[str, int] = {
+    "demo": 1,
+    "demo_dev": 2,
+    "demo_new": 3,
+    "Demo_dev": 2,
+    "Demo_new": 3,
+    "Demo": 1,
+}
+_DEFAULT_TRAVERSAL_NODE = 0
+
 import requests
 
 from api_client import DualSubstrateClient
@@ -139,6 +152,23 @@ class ApiService:
             since=since,
         )
 
+    def _resolve_traversal_start(self, entity: Any) -> int:
+        """Resolve the traversal start node from a UI-facing entity label."""
+
+        if isinstance(entity, int):
+            return entity
+        if isinstance(entity, str):
+            candidate = entity.strip()
+            if candidate.isdigit():
+                return int(candidate)
+            override = _TRAVERSAL_NODE_OVERRIDES.get(candidate)
+            if override is not None:
+                return override
+            override = _TRAVERSAL_NODE_OVERRIDES.get(candidate.lower())
+            if override is not None:
+                return override
+        return _DEFAULT_TRAVERSAL_NODE
+
     def traverse(
         self,
         entity: str,
@@ -153,7 +183,7 @@ class ApiService:
     ) -> Dict[str, Any]:
         """Return traversal paths while tracking capability support."""
 
-        traverse_kwargs: Dict[str, Any] = {"start": entity}
+        traverse_kwargs: Dict[str, Any] = {"start": self._resolve_traversal_start(entity)}
 
         depth_value: Any | None = depth if depth is not None else limit
         if depth_value is not None:

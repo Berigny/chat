@@ -58,7 +58,9 @@ def _coerce_s1_slot(slot: Mapping[str, Any] | None) -> dict[str, Any] | None:
     return payload
 
 
-def _coerce_s2_slot(slot: Mapping[str, Any] | None) -> dict[str, Any] | None:
+def _coerce_s2_slot(
+    slot: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
     if not isinstance(slot, Mapping):
         return None
     prime = slot.get("prime")
@@ -69,19 +71,37 @@ def _coerce_s2_slot(slot: Mapping[str, Any] | None) -> dict[str, Any] | None:
         "prime": prime,
         "body_prime": body_prime,
     }
+    view_payload: dict[str, Any] = {
+        "view_id": str(slot.get("view_id") or prime),
+        "entity_prime": prime,
+        "body_prime": body_prime,
+    }
     summary = slot.get("summary")
     if isinstance(summary, str) and summary.strip():
-        payload["summary"] = summary.strip()
+        sanitized_summary = summary.strip()
+        payload["summary"] = sanitized_summary
+        view_payload["summary"] = sanitized_summary
     metadata = _sanitize_metadata(slot.get("metadata"))
     if metadata:
         payload["metadata"] = metadata
+        view_payload["metadata"] = metadata
     score = slot.get("score")
     if isinstance(score, (int, float)):
-        payload["score"] = float(score)
+        normalized_score = float(score)
+        payload["score"] = normalized_score
+        view_payload["score"] = normalized_score
     timestamp = slot.get("timestamp")
     if isinstance(timestamp, (int, float)):
-        payload["timestamp"] = int(timestamp)
-    return payload
+        normalized_timestamp = int(timestamp)
+        payload["timestamp"] = normalized_timestamp
+        view_payload["timestamp"] = normalized_timestamp
+    tags = slot.get("tags")
+    if isinstance(tags, Sequence) and not isinstance(tags, (str, bytes, bytearray)):
+        cleaned_tags = [str(tag).strip() for tag in tags if str(tag).strip()]
+        if cleaned_tags:
+            payload["tags"] = cleaned_tags
+            view_payload["tags"] = cleaned_tags
+    return payload, view_payload
 
 
 def write_s1_slots(
@@ -104,10 +124,24 @@ def write_s2_slots(
     *,
     ledger_id: str | None = None,
 ) -> list[dict[str, Any]]:
-    sanitized = [slot for slot in (_coerce_s2_slot(item) for item in slots or []) if slot]
-    if sanitized:
-        api_service.put_ledger_s2(entity, {"slots": sanitized}, ledger_id=ledger_id)
-    return sanitized
+    sanitized_slots: list[dict[str, Any]] = []
+    view_payloads: list[dict[str, Any]] = []
+    for item in slots or []:
+        coerced = _coerce_s2_slot(item)
+        if not coerced:
+            continue
+        slot_payload, view_payload = coerced
+        sanitized_slots.append(slot_payload)
+        view_payloads.append(view_payload)
+    if sanitized_slots:
+        payload: dict[str, Any] = {"slots": sanitized_slots}
+        if view_payloads:
+            # Swagger for `/ledger/s2` now expects structured `views` alongside the
+            # legacy slot list; we forward both to stay aligned with the backend
+            # contract.
+            payload["views"] = view_payloads
+        api_service.put_ledger_s2(entity, payload, ledger_id=ledger_id)
+    return sanitized_slots
 
 
 def write_structured_views(
