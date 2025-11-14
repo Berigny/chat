@@ -1853,9 +1853,11 @@ def _render_app():
             st.divider()
             st.write("### /traverse debug")
             traverse_payload = {
-                "query": "test from streamlit cloud",
-                "mode": "s1",
-                "max_steps": 3,
+                "query": {
+                    "start": 2,
+                    "mode": "s1",
+                    "max_steps": 3,
+                }
             }
             st.json(traverse_payload)
 
