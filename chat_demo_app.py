@@ -1852,45 +1852,43 @@ def _render_app():
 
             st.divider()
             st.write("### /traverse debug")
-            default_traverse = st.session_state.get(
-                "debug_traverse_payload",
-                json.dumps(
-                    {
-                        "query": {
-                            "start": 2,
-                        },
-                        "mode": "s1",
-                        "max_steps": 3,
-                    },
-                    indent=2,
-                ),
+            # Remove any legacy JSON payload state now that the debug UI uses query params.
+            if "debug_traverse_payload" in st.session_state:
+                st.session_state.pop("debug_traverse_payload")
+
+            start_node = st.number_input(
+                "Start node",
+                min_value=0,
+                max_value=7,
+                value=2,
+                step=1,
+                format="%d",
             )
-            traverse_input = st.text_area(
-                "Payload JSON",
-                value=default_traverse,
-                height=220,
+            traverse_depth = st.number_input(
+                "Traversal depth",
+                min_value=1,
+                max_value=10,
+                value=3,
+                step=1,
+                format="%d",
             )
-            st.caption("Edit the JSON to match the backend schema (see /docs for TraverseInput).")
 
             if st.button("Debug /traverse", key="debug_traverse"):
+                params = {
+                    "start": int(start_node),
+                    "depth": int(traverse_depth),
+                }
                 try:
-                    traverse_payload = json.loads(traverse_input or "{}")
-                except json.JSONDecodeError as exc:
-                    st.error(f"Invalid JSON: {exc}")
-                    traverse_payload = None
-                if traverse_payload is not None:
-                    st.session_state["debug_traverse_payload"] = traverse_input
-                    try:
-                        resp = requests.post(
-                            f"{host_url}/traverse",
-                            json=traverse_payload,
-                            headers=headers,
-                            timeout=15,
-                        )
-                        st.write(f"Status: {resp.status_code}")
-                        st.code(resp.text[:2000] or "<empty response>", language="json")
-                    except Exception as exc:  # pragma: no cover - network dependent
-                        st.error(f"Traversal call error: {exc}")
+                    resp = requests.post(
+                        f"{host_url}/traverse",
+                        params=params,
+                        headers=headers,
+                        timeout=15,
+                    )
+                    st.write(f"Status: {resp.status_code}")
+                    st.code(resp.text[:2000] or "<empty response>", language="json")
+                except Exception as exc:  # pragma: no cover - network dependent
+                    st.error(f"Traversal call error: {exc}")
 
     with tab_about:
         col_left, col_right = st.columns(2)
