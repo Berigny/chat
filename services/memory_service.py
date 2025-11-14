@@ -1,16 +1,22 @@
 from __future__ import annotations
 
 import copy
+import logging
 import re
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any, Callable, Mapping, Sequence, TYPE_CHECKING
 
+import requests
+
 from prime_tagger import tag_primes
 
 if TYPE_CHECKING:
     from services.api import ApiService
+
+
+logger = logging.getLogger(__name__)
 
 
 __all__ = [
@@ -692,13 +698,19 @@ class MemoryService:
         if not entity or not query:
             return []
 
-        slots = self.api_service.search_slots(
-            entity,
-            query,
-            ledger_id=ledger_id,
-            mode="slots",
-            limit=limit,
-        )
+        try:
+            slots = self.api_service.search_slots(
+                entity,
+                query,
+                ledger_id=ledger_id,
+                mode="slots",
+                limit=limit,
+            )
+        except requests.RequestException as exc:
+            logger.warning(
+                "Failed to search ledger slots for entity %s: %s", entity, exc
+            )
+            return []
         normalized: list[dict] = []
         for slot in slots:
             if isinstance(slot, Mapping):
