@@ -184,12 +184,20 @@ class ApiService:
 
     def put_ledger_body(
         self,
-        payload: Mapping[str, Any],
+        entity: str,
+        prime: int,
+        body_text: str | Mapping[str, Any],
         *,
         ledger_id: Optional[str] = None,
-        params: Optional[Mapping[str, Any]] = None,
+        metadata: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
-        return self._client.put_ledger_body(payload, ledger_id=ledger_id, params=params)
+        return self._client.put_ledger_body(
+            entity,
+            prime,
+            body_text,
+            ledger_id=ledger_id,
+            metadata=metadata,
+        )
 
     def enrich(
         self,
