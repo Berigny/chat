@@ -153,17 +153,25 @@ class ApiService:
     ) -> Dict[str, Any]:
         """Return traversal paths while tracking capability support."""
 
+        traverse_kwargs: Dict[str, Any] = {"start": entity}
+
+        depth_value: Any | None = depth if depth is not None else limit
+        if depth_value is not None:
+            traverse_kwargs["depth"] = depth_value
+
+        traverse_kwargs.update(
+            {
+                "ledger_id": ledger_id,
+                "origin": origin,
+                "limit": limit,
+                "direction": direction,
+                "include_metadata": include_metadata,
+                "payload": payload,
+            }
+        )
+
         try:
-            response = self._client.traverse(
-                entity,
-                ledger_id=ledger_id,
-                origin=origin,
-                limit=limit,
-                depth=depth,
-                direction=direction,
-                include_metadata=include_metadata,
-                payload=payload,
-            )
+            response = self._client.traverse(**traverse_kwargs)
         except requests.HTTPError as exc:
             response = exc.response
             if response is not None:
