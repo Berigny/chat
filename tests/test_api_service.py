@@ -6,9 +6,10 @@ from services.api_service import EnrichmentHelper
 
 
 class DummyApiService:
-    def __init__(self) -> None:
+    def __init__(self, supported: bool = True) -> None:
         self.body_calls: list[dict[str, object]] = []
         self.enrich_calls: list[tuple[str, dict, str | None]] = []
+        self._supported = supported
 
     def put_ledger_body(self, entity: str, prime: int, body_payload, *, ledger_id=None, metadata=None):
         if isinstance(body_payload, Mapping):
@@ -28,6 +29,9 @@ class DummyApiService:
     def enrich(self, entity: str, payload: dict, *, ledger_id=None):
         self.enrich_calls.append((entity, payload, ledger_id))
         return {"structured": {"echo": True}}
+
+    def supports_enrich(self) -> bool:
+        return self._supported
 
 
 class DummyPrimeService:
@@ -84,6 +88,9 @@ def test_enrichment_helper_mints_bodies_and_calls_enrich():
 
     assert result["deltas"] == [{"prime": 2, "delta": 1}]
     assert result["bodies"][0]["metadata"]["superseded_by"] == 29
+    assert result["enrichment_supported"] is True
+    assert result["request"]
+    assert result["response"]
 
 
 def test_enrichment_helper_blocks_flow_violation():
@@ -105,3 +112,23 @@ def test_enrichment_helper_blocks_flow_violation():
     assert result["flow_errors"]
     assert api.enrich_calls == []
     assert api.body_calls == []
+
+
+def test_enrichment_helper_handles_missing_enrich_endpoint():
+    api = DummyApiService(supported=False)
+    primes = DummyPrimeService()
+    helper = EnrichmentHelper(api, primes)
+
+    result = helper.submit(
+        "demo",
+        ref_prime=29,
+        deltas=[{"prime": 2, "delta": 1}],
+        body_chunks=["body"],
+    )
+
+    assert not api.enrich_calls
+    assert len(api.body_calls) == 1
+    assert result["enrichment_supported"] is False
+    assert result["request"] is None
+    assert result["response"] == {}
+    assert result["bodies"]

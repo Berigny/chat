@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence, TYPE_CHECKING
 
+import requests
+
 
 if TYPE_CHECKING:
     from services.api import ApiService
@@ -115,6 +117,7 @@ class EnrichmentHelper:
                 "bodies": [],
                 "request": None,
                 "response": {},
+                "enrichment_supported": True,
                 "flow_errors": flow_assessment.messages(),
                 "flow_violations": [
                     violation.asdict() for violation in flow_assessment.violations
@@ -143,18 +146,43 @@ class EnrichmentHelper:
             merged_meta["superseded_by"] = ref_prime
             payload["metadata"] = merged_meta
 
-        response = self.api_service.enrich(
-            entity,
-            payload,
-            ledger_id=ledger_id,
-        )
+        enrichment_supported = True
+        request_payload: dict[str, Any] | None = None
+        response: dict[str, Any] = {}
+
+        try:
+            enrichment_supported = self.api_service.supports_enrich()
+        except AttributeError:
+            enrichment_supported = True
+        except Exception:
+            enrichment_supported = True
+
+        if enrichment_supported:
+            request_payload = payload
+            try:
+                response = self.api_service.enrich(
+                    entity,
+                    payload,
+                    ledger_id=ledger_id,
+                )
+            except requests.HTTPError as exc:
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                if status == 404:
+                    enrichment_supported = False
+                    request_payload = None
+                    response = {}
+                else:
+                    raise
+        else:
+            response = {}
 
         return {
             "ref_prime": int(ref_prime),
             "deltas": normalized_deltas,
             "bodies": minted_bodies,
-            "request": payload,
+            "request": request_payload,
             "response": response or {},
+            "enrichment_supported": enrichment_supported,
         }
 
 

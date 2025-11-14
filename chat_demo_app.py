@@ -427,11 +427,18 @@ def _execute_enrichment(entity: str, *, limit: int = 50) -> dict[str, Any]:
     except requests.RequestException:
         ledger_snapshot = {}
 
+    enrichment_supported = API_SERVICE.supports_enrich()
+    if not enrichment_supported:
+        st.warning(
+            "Remote enrichment endpoint is unavailable; storing bodies without structured updates."
+        )
+
     summary: dict[str, Any] = {
         "enriched": 0,
         "total": len(memories),
         "reports": [],
         "failures": [],
+        "enrichment_supported": enrichment_supported,
     }
 
     for entry in memories:
@@ -486,6 +493,18 @@ def _execute_enrichment(entity: str, *, limit: int = 50) -> dict[str, Any]:
             )
             continue
 
+        if not result.get("enrichment_supported", True):
+            summary["enrichment_supported"] = False
+            message = (
+                "Enrichment endpoint unavailable; bodies stored without remote enrichment."
+            )
+            failures = summary.setdefault("failures", [])
+            if message not in failures:
+                failures.append(message)
+            result["text"] = text
+            summary["reports"].append(result)
+            continue
+
         summary["enriched"] += 1
         response_payload = result.get("response") if isinstance(result, dict) else {}
         structured = response_payload.get("structured") if isinstance(response_payload, dict) else None
@@ -507,6 +526,10 @@ def _execute_enrichment(entity: str, *, limit: int = 50) -> dict[str, Any]:
         summary["reports"].append(result)
 
     MEMORY_SERVICE.realign_with_ledger(entity, ledger_id=ledger_id)
+    if not summary.get("enrichment_supported", True) and not summary.get("failures"):
+        summary.setdefault("failures", []).append(
+            "Enrichment endpoint unavailable; ledger bodies persisted without enrichment."
+        )
     return summary
 
 

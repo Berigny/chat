@@ -343,8 +343,10 @@ def _run_enrichment(limit: int = 50, reset_first: bool = True) -> dict | None:
         st.error("Reset failed; enrichment skipped.")
         return None
 
+    api_service = _api_service()
+
     try:
-        memories = _api_service().fetch_memories(
+        memories = api_service.fetch_memories(
             entity,
             ledger_id=ledger_id,
             limit=window,
@@ -361,14 +363,21 @@ def _run_enrichment(limit: int = 50, reset_first: bool = True) -> dict | None:
 
     schema = st.session_state.get("prime_schema") or DEFAULT_PRIME_SCHEMA
     prime_service = _prime_service()
-    helper = EnrichmentHelper(_api_service(), prime_service)
+    helper = EnrichmentHelper(api_service, prime_service)
     ethics_service = EthicsService(schema=schema)
+
+    enrichment_supported = api_service.supports_enrich()
+    if not enrichment_supported:
+        st.warning(
+            "Remote enrichment endpoint is unavailable; ledger bodies will be stored without structured updates."
+        )
 
     summary: dict[str, Any] = {
         "enriched": 0,
         "total": len(memories),
         "failures": [],
         "reports": [],
+        "enrichment_supported": enrichment_supported,
     }
 
     ledger_snapshot: Dict[str, Any] | None = _load_ledger()
@@ -426,13 +435,24 @@ def _run_enrichment(limit: int = 50, reset_first: bool = True) -> dict | None:
             )
             continue
 
+        if not result.get("enrichment_supported", True):
+            summary["enrichment_supported"] = False
+            message = (
+                "Enrichment endpoint unavailable; stored bodies without remote enrichment."
+            )
+            if message not in summary["failures"]:
+                summary["failures"].append(message)
+            result["text"] = text
+            summary["reports"].append(result)
+            continue
+
         summary["enriched"] += 1
         response_payload = result.get("response") if isinstance(result, dict) else {}
         structured = response_payload.get("structured") if isinstance(response_payload, dict) else None
         if structured:
             try:
                 write_structured_views(
-                    _api_service(),
+                    api_service,
                     entity,
                     structured,
                     ledger_id=ledger_id,
@@ -441,7 +461,7 @@ def _run_enrichment(limit: int = 50, reset_first: bool = True) -> dict | None:
                 summary["failures"].append(f"Structured persist failed: {exc}")
 
         try:
-            ledger_snapshot = _api_service().fetch_ledger(entity, ledger_id=ledger_id)
+            ledger_snapshot = api_service.fetch_ledger(entity, ledger_id=ledger_id)
         except requests.RequestException:
             pass
 
