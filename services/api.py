@@ -174,6 +174,33 @@ class ApiService:
             self._inference_supported = True
             return payload
 
+    def fetch_inference_traverse(
+        self,
+        entity: str,
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        _ = entity
+        return self._client.fetch_inference_traverse(ledger_id=ledger_id)
+
+    def fetch_inference_memories(
+        self,
+        entity: str,
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        _ = entity
+        return self._client.fetch_inference_memories(ledger_id=ledger_id)
+
+    def fetch_inference_retrieve(
+        self,
+        entity: str,
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        _ = entity
+        return self._client.fetch_inference_retrieve(ledger_id=ledger_id)
+
     def query_ledger(
         self,
         entity: str,
