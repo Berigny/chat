@@ -149,17 +149,75 @@ class DualSubstrateClient:
         payload = resp.json()
         return payload if isinstance(payload, dict) else {}
 
-    def fetch_inference_state(
+    def traverse(
         self,
         entity: str,
+        *,
+        ledger_id: str | None = None,
+        origin: int | None = None,
+        start: int | None = None,
+        limit: int | None = None,
+        depth: int | None = None,
+        direction: str | None = None,
+        include_metadata: bool | None = None,
+        payload: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any] | list[Any]:
+        """Call the `/traverse` endpoint to inspect traversal paths."""
+
+        params: dict[str, Any] = {"entity": entity}
+        if start is not None:
+            params["start"] = int(start)
+        if origin is not None:
+            params["origin"] = int(origin)
+        if limit is not None:
+            params["limit"] = int(limit)
+        if depth is not None:
+            params["depth"] = int(depth)
+        if direction:
+            params["direction"] = direction
+        if include_metadata is not None:
+            params["include_metadata"] = "true" if include_metadata else "false"
+
+        json_payload: Mapping[str, Any] | list[Any] | None = None
+        if payload is not None:
+            if isinstance(payload, Mapping):
+                json_payload = {key: value for key, value in payload.items()}
+            elif isinstance(payload, list):
+                json_payload = list(payload)
+            else:
+                json_payload = payload
+
+        resp = requests.post(
+            f"{self.base_url}/traverse",
+            params=params,
+            json=json_payload,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=self.timeout,
+        )
+        resp.raise_for_status()
+        try:
+            data = resp.json()
+        except ValueError:
+            return {}
+        if isinstance(data, Mapping):
+            return dict(data)
+        if isinstance(data, list):
+            return list(data)
+        return {}
+
+    def fetch_inference_state(
+        self,
+        entity: str | None = None,
         *,
         ledger_id: str | None = None,
         include_history: bool | None = None,
         limit: int | None = None,
     ) -> dict[str, Any]:
-        """Return the active inference state for the entity."""
+        """Return the active inference state for the entity or ledger."""
 
-        params: dict[str, Any] = {"entity": entity}
+        params: dict[str, Any] = {}
+        if entity is not None:
+            params["entity"] = entity
         if include_history is not None:
             params["include_history"] = "true" if include_history else "false"
         if limit is not None:
@@ -443,18 +501,6 @@ class DualSubstrateClient:
             data = resp.json()
             return data if isinstance(data, dict) else {}
         return resp.text
-
-    def fetch_inference_state(self, *, ledger_id: str | None = None) -> dict[str, Any]:
-        """Return high-level inference telemetry for the active ledger."""
-
-        resp = requests.get(
-            f"{self.base_url}/inference/state",
-            headers=self._headers(ledger_id=ledger_id),
-            timeout=self.timeout,
-        )
-        resp.raise_for_status()
-        payload = resp.json()
-        return payload if isinstance(payload, dict) else {}
 
     def fetch_inference_traverse(self, *, ledger_id: str | None = None) -> list[dict[str, Any]]:
         """Return recent traversal operations captured during inference."""
