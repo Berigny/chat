@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 import requests
@@ -272,25 +273,55 @@ class ApiService:
         entity: Optional[str] = None,
         *,
         ledger_id: Optional[str] = None,
+        **extra_kwargs: Any,
     ):
         """Invoke an inference telemetry helper while tolerating older clients."""
 
         method = getattr(self._client, method_name)
-        kwargs: Dict[str, Any] = {}
-        if ledger_id is not None:
-            kwargs["ledger_id"] = ledger_id
+        signature = inspect.signature(method)
+        accepts_variadic_kwargs = any(
+            parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in signature.parameters.values()
+        )
 
+        allowed_kwargs: Dict[str, Any] = {}
+        for key, value in extra_kwargs.items():
+            if value is None:
+                continue
+            if accepts_variadic_kwargs or key in signature.parameters:
+                allowed_kwargs[key] = value
+
+        if ledger_id is not None and (
+            accepts_variadic_kwargs or "ledger_id" in signature.parameters
+        ):
+            allowed_kwargs["ledger_id"] = ledger_id
+
+        entity_supported = accepts_variadic_kwargs or "entity" in signature.parameters
+
+        def _invoke(*args, **kwargs):
+            return method(*args, **kwargs)
+
+        last_error: TypeError | None = None
         try:
-            # Newer clients accept keyword-only ``ledger_id``.
-            return method(**kwargs)
+            return _invoke(**allowed_kwargs)
         except TypeError as exc:
-            if entity is None:
-                raise
+            last_error = exc
+
+        if entity is not None and entity_supported:
             try:
-                # Fallback for deployments still expecting a positional entity argument.
-                return method(entity, **kwargs)
-            except TypeError:
-                raise exc
+                return _invoke(entity, **allowed_kwargs)
+            except TypeError as exc:
+                last_error = exc
+                if "ledger_id" in allowed_kwargs:
+                    trimmed_kwargs = {k: v for k, v in allowed_kwargs.items() if k != "ledger_id"}
+                    try:
+                        return _invoke(entity, **trimmed_kwargs)
+                    except TypeError as fallback_exc:
+                        last_error = fallback_exc
+
+        if last_error is None:
+            raise TypeError(f"Failed to call inference endpoint '{method_name}'")
+        raise last_error
 
     def fetch_inference_state(
         self,
@@ -300,13 +331,12 @@ class ApiService:
         include_history: Optional[bool] = None,
         limit: Optional[int] = None,
     ) -> Dict[str, Any]:
-        # ``include_history`` and ``limit`` are currently unused but preserved for
-        # backwards compatibility with callers that may provide them.
-        _ = include_history, limit
         return self._call_inference_endpoint(
             "fetch_inference_state",
             entity,
             ledger_id=ledger_id,
+            include_history=include_history,
+            limit=limit,
         )
 
     def fetch_inference_traverse(
