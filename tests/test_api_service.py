@@ -131,7 +131,7 @@ def test_traverse_maps_parameters_and_marks_capability():
     assert payload == {"paths": [{"nodes": [{"prime": 2}]}]}
     assert client.calls == [
         {
-            "start": "demo",
+            "start": 1,
             "depth": 5,
             "ledger_id": "alpha",
             "origin": 7,
@@ -152,7 +152,7 @@ def test_traverse_prefers_explicit_depth_over_limit():
 
     assert client.calls == [
         {
-            "start": "demo",
+            "start": 1,
             "depth": 4,
             "limit": 9,
             "ledger_id": None,
@@ -177,6 +177,24 @@ def test_traverse_converts_list_payloads_to_mapping():
 
     assert payload == {"paths": [{"nodes": [{"prime": 13}]}]}
     assert service._traverse_supported is True
+
+
+def test_traverse_coerces_known_entity_labels_to_node_ids():
+    client = _TraverseClient()
+    service = _service_with_client(client)
+
+    service.traverse("Demo_dev")
+
+    assert client.calls[0]["start"] == 2
+
+
+def test_traverse_defaults_to_zero_for_unknown_entities():
+    client = _TraverseClient()
+    service = _service_with_client(client)
+
+    service.traverse("unmapped-entity")
+
+    assert client.calls[0]["start"] == 0
 
 
 class _MissingTraverseClient(_BaseClient):
