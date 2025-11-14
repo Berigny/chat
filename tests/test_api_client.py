@@ -78,7 +78,7 @@ def test_fetch_inference_state_includes_flags(monkeypatch):
     assert captured["timeout"] == 9
 
 
-def test_traverse_forwards_optional_parameters(monkeypatch):
+def test_traverse_uses_query_parameters_only(monkeypatch):
     captured: dict[str, object] = {}
 
     class DummyResponse:
@@ -100,27 +100,13 @@ def test_traverse_forwards_optional_parameters(monkeypatch):
 
     monkeypatch.setattr(requests, "post", fake_post)
 
-    client = DualSubstrateClient("https://api.example", "secret")
-    client.traverse(
-        "demo",
-        ledger_id="alpha",
-        origin=23,
-        limit=4,
-        depth=2,
-        direction="forward",
-        include_metadata=True,
-    )
+    client = DualSubstrateClient("https://api.example", "secret", timeout=11)
+    client.traverse(start=17, depth=5, ignored="value")
 
     assert captured["url"].endswith("/traverse")
-    assert captured["params"] == {
-        "entity": "demo",
-        "origin": 23,
-        "limit": 4,
-        "depth": 2,
-        "direction": "forward",
-        "include_metadata": "true",
-    }
-    assert captured["headers"]["X-Ledger-ID"] == "alpha"
+    assert captured["params"] == {"start": 17, "depth": 5}
+    assert captured["headers"] == {"x-api-key": "secret"}
+    assert captured["timeout"] == 11
     assert captured["json"] is None
 
 
