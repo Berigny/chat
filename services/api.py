@@ -165,8 +165,21 @@ class ApiService:
                 payload=payload,
             )
         except requests.HTTPError as exc:
-            if exc.response is not None and exc.response.status_code == 404:
-                self._traverse_supported = False
+            response = exc.response
+            if response is not None:
+                status = getattr(response, "status_code", None)
+                if status == 404:
+                    self._traverse_supported = False
+                elif status is not None:
+                    self._traverse_supported = True
+
+                message = self._summarize_traverse_error(response)
+                if message and message != str(exc):
+                    raise requests.HTTPError(
+                        message,
+                        response=response,
+                        request=getattr(exc, "request", None),
+                    ) from exc
             raise
         except requests.RequestException:
             raise
@@ -178,6 +191,45 @@ class ApiService:
         if isinstance(response, list):
             return {"paths": list(response)}
         return {}
+
+    @staticmethod
+    def _summarize_traverse_error(response: Any) -> str | None:
+        """Extract a useful error message from a traverse failure response."""
+
+        def _stringify(value: Any) -> str | None:
+            if isinstance(value, str):
+                text = value.strip()
+                return text or None
+            if isinstance(value, (int, float)):
+                return str(value)
+            if isinstance(value, Mapping):
+                for item in value.values():
+                    text = _stringify(item)
+                    if text:
+                        return text
+                return None
+            if isinstance(value, (list, tuple, set)):
+                parts = [text for item in value if (text := _stringify(item))]
+                if parts:
+                    return "; ".join(parts)
+            return None
+
+        for extractor in (getattr(response, "json", None),):
+            if callable(extractor):
+                try:
+                    data = extractor()
+                except ValueError:
+                    continue
+                if isinstance(data, Mapping):
+                    for key in ("detail", "message", "error", "errors"):
+                        if key in data:
+                            text = _stringify(data[key])
+                            if text:
+                                return text
+        text_content = getattr(response, "text", None)
+        if isinstance(text_content, str) and text_content.strip():
+            return text_content.strip()
+        return None
 
     def latest_memory_text(
         self,

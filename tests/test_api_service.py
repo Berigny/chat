@@ -191,3 +191,32 @@ def test_traverse_marks_capability_false_on_404():
 
     assert service._traverse_supported is False
 
+
+class _UnprocessableTraverseClient(_BaseClient):
+    def traverse(self, *_: Any, **__: Any) -> Dict[str, Any]:
+        class _Response:
+            status_code = 422
+
+            @staticmethod
+            def json():
+                return {"detail": "Origin prime is required"}
+
+            text = "Origin prime is required"
+
+        error = requests.HTTPError("unprocessable")
+        error.response = _Response()
+        error.request = object()
+        raise error
+
+
+def test_traverse_rewrites_error_message_from_response_detail():
+    client = _UnprocessableTraverseClient()
+    service = _service_with_client(client)
+
+    with pytest.raises(requests.HTTPError) as exc_info:
+        service.traverse("demo")
+
+    assert str(exc_info.value) == "Origin prime is required"
+    assert exc_info.value.response.status_code == 422
+    assert service._traverse_supported is True
+
