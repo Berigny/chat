@@ -226,7 +226,7 @@ class DualSubstrateClient:
         ledger_id: str | None = None,
         text: str | None = None,
         modifiers: Iterable[int] | None = None,
-    ) -> None:
+    ) -> dict[str, Any]:
         """Anchor factors (and optional text) into the ledger."""
 
         payload: dict[str, Any] = {"entity": entity, "factors": list(factors)}
@@ -241,43 +241,28 @@ class DualSubstrateClient:
             timeout=5,
         )
         resp.raise_for_status()
-
-    def ingest(
-        self,
-        entity: str,
-        payload: dict[str, Any],
-        *,
-        ledger_id: str | None = None,
-    ) -> dict[str, Any]:
-        """Invoke the ingest endpoint with normalized metadata."""
-
-        body: dict[str, Any] = {"entity": entity}
-        if isinstance(payload, dict):
-            for key, value in payload.items():
-                if key == "entity":
-                    continue
-                body[key] = value
-        resp = requests.post(
-            f"{self.base_url}/ingest",
-            json=body,
-            headers=self._headers(ledger_id=ledger_id),
-            timeout=10,
-        )
-        resp.raise_for_status()
         data = resp.json()
         return data if isinstance(data, dict) else {}
 
     def put_ledger_s1(
         self,
+        entity: str,
         payload: Mapping[str, Any],
         *,
         ledger_id: str | None = None,
     ) -> dict[str, Any]:
         """Write S1 facets to the ledger without mutating the payload."""
 
+        body: dict[str, Any] = {"entity": entity}
+        if isinstance(payload, Mapping):
+            for key, value in payload.items():
+                if key == "entity":
+                    continue
+                body[key] = value
+
         resp = requests.put(
             f"{self.base_url}/ledger/s1",
-            json=payload,
+            json=body,
             headers=self._headers(ledger_id=ledger_id),
             timeout=5,
         )
@@ -341,15 +326,23 @@ class DualSubstrateClient:
 
     def put_ledger_s2(
         self,
+        entity: str,
         payload: Mapping[str, Any],
         *,
         ledger_id: str | None = None,
     ) -> dict[str, Any]:
         """Store enrichment output while leaving the payload untouched."""
 
+        body: dict[str, Any] = {"entity": entity}
+        if isinstance(payload, Mapping):
+            for key, value in payload.items():
+                if key == "entity":
+                    continue
+                body[key] = value
+
         resp = requests.put(
             f"{self.base_url}/ledger/s2",
-            json=payload,
+            json=body,
             headers=self._headers(ledger_id=ledger_id),
             timeout=5,
         )

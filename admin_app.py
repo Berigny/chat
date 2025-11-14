@@ -147,6 +147,8 @@ def _init_session() -> None:
         st.session_state.quote_safe = True
     if "last_anchor_status" not in st.session_state:
         st.session_state.last_anchor_status = None
+    if "last_anchor_payload" not in st.session_state:
+        st.session_state.last_anchor_payload = None
     if "ledger_id" not in st.session_state:
         st.session_state.ledger_id = DEFAULT_LEDGER_ID
     if "ledgers" not in st.session_state:
@@ -225,6 +227,7 @@ def _anchor(
     except requests.RequestException as exc:
         st.error(f"Anchor failed: {exc}")
         st.session_state.last_anchor_status = "error"
+        st.session_state.last_anchor_payload = None
         if notify:
             st.toast("Anchor failed", icon="❌")
         return False
@@ -236,6 +239,9 @@ def _anchor(
         ingest_result.get("flow_errors")
         if isinstance(ingest_result, dict)
         else None
+    )
+    st.session_state.last_anchor_payload = (
+        ingest_result.get("anchor") if isinstance(ingest_result, dict) else None
     )
     if flow_errors:
         message = "; ".join(flow_errors)

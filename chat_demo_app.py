@@ -1029,6 +1029,7 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
         )
     except requests.RequestException as exc:
         st.session_state.last_anchor_error = str(exc)
+        st.session_state.last_anchor_payload = None
         _refresh_capabilities_block()
         st.error(f"Anchor failed: {exc}")
         return False
@@ -1040,6 +1041,10 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
         if isinstance(ingest_result, dict)
         else None
     )
+    anchor_payload = (
+        ingest_result.get("anchor") if isinstance(ingest_result, dict) else None
+    )
+    st.session_state.last_anchor_payload = anchor_payload
     if flow_errors:
         message = "; ".join(flow_errors)
         st.session_state.last_anchor_error = message
@@ -1313,6 +1318,8 @@ def _render_app():
         }
     if "last_anchor_error" not in st.session_state:
         st.session_state.last_anchor_error = None
+    if "last_anchor_payload" not in st.session_state:
+        st.session_state.last_anchor_payload = None
     if "capabilities_block" not in st.session_state:
         _refresh_capabilities_block()
 

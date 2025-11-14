@@ -6,12 +6,7 @@ import admin_app
 from prime_schema import DEFAULT_PRIME_SCHEMA
 
 
-class DummyPrimeService:
-    def build_factors(self, *_args, **_kwargs):
-        return []
-
-
-class FailingApiService:
+class FailingPrimeService:
     def ingest(self, *_args, **_kwargs):
         raise requests.HTTPError("boom")
 
@@ -31,8 +26,7 @@ def test_anchor_failure(monkeypatch):
     errors: list[str] = []
     toasts: list[tuple[str, str | None]] = []
 
-    st.session_state["__prime_service__"] = DummyPrimeService()
-    monkeypatch.setattr(admin_app, "_api_service", lambda: FailingApiService())
+    monkeypatch.setattr(admin_app, "_prime_service", lambda: FailingPrimeService())
     monkeypatch.setattr(st, "error", lambda msg: errors.append(msg))
     monkeypatch.setattr(st, "toast", lambda msg, icon=None: toasts.append((msg, icon)))
 
