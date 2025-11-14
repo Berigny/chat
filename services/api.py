@@ -139,6 +139,98 @@ class ApiService:
             since=since,
         )
 
+    def traverse(
+        self,
+        entity: str,
+        *,
+        ledger_id: Optional[str] = None,
+        origin: Optional[int] = None,
+        limit: Optional[int] = None,
+        depth: Optional[int] = None,
+        direction: Optional[str] = None,
+        include_metadata: Optional[bool] = None,
+        payload: Mapping[str, Any] | list[Any] | None = None,
+    ) -> Dict[str, Any]:
+        """Return traversal paths while tracking capability support."""
+
+        try:
+            response = self._client.traverse(
+                entity,
+                ledger_id=ledger_id,
+                origin=origin,
+                limit=limit,
+                depth=depth,
+                direction=direction,
+                include_metadata=include_metadata,
+                payload=payload,
+            )
+        except requests.HTTPError as exc:
+            response = exc.response
+            if response is not None:
+                status = getattr(response, "status_code", None)
+                if status == 404:
+                    self._traverse_supported = False
+                elif status is not None:
+                    self._traverse_supported = True
+
+                message = self._summarize_traverse_error(response)
+                if message and message != str(exc):
+                    raise requests.HTTPError(
+                        message,
+                        response=response,
+                        request=getattr(exc, "request", None),
+                    ) from exc
+            raise
+        except requests.RequestException:
+            raise
+        else:
+            self._traverse_supported = True
+
+        if isinstance(response, Mapping):
+            return dict(response)
+        if isinstance(response, list):
+            return {"paths": list(response)}
+        return {}
+
+    @staticmethod
+    def _summarize_traverse_error(response: Any) -> str | None:
+        """Extract a useful error message from a traverse failure response."""
+
+        def _stringify(value: Any) -> str | None:
+            if isinstance(value, str):
+                text = value.strip()
+                return text or None
+            if isinstance(value, (int, float)):
+                return str(value)
+            if isinstance(value, Mapping):
+                for item in value.values():
+                    text = _stringify(item)
+                    if text:
+                        return text
+                return None
+            if isinstance(value, (list, tuple, set)):
+                parts = [text for item in value if (text := _stringify(item))]
+                if parts:
+                    return "; ".join(parts)
+            return None
+
+        for extractor in (getattr(response, "json", None),):
+            if callable(extractor):
+                try:
+                    data = extractor()
+                except ValueError:
+                    continue
+                if isinstance(data, Mapping):
+                    for key in ("detail", "message", "error", "errors"):
+                        if key in data:
+                            text = _stringify(data[key])
+                            if text:
+                                return text
+        text_content = getattr(response, "text", None)
+        if isinstance(text_content, str) and text_content.strip():
+            return text_content.strip()
+        return None
+
     def latest_memory_text(
         self,
         entity: str,
