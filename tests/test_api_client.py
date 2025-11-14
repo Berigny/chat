@@ -122,3 +122,46 @@ def test_traverse_forwards_optional_parameters(monkeypatch):
     }
     assert captured["headers"]["X-Ledger-ID"] == "alpha"
     assert captured["json"] is None
+
+
+def test_put_ledger_body_includes_entity_prime_and_body(monkeypatch):
+    captured: dict[str, object] = {}
+
+    class DummyResponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict:
+            return {"status": "ok"}
+
+    def fake_put(url, *, json=None, params=None, headers=None, timeout=None):
+        captured.update(
+            {
+                "url": url,
+                "json": json,
+                "params": params,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
+        return DummyResponse()
+
+    monkeypatch.setattr(requests, "put", fake_put)
+
+    client = DualSubstrateClient("https://api.example", "secret")
+    client.put_ledger_body(
+        "demo",
+        41,
+        "Anchored body text",
+        ledger_id="alpha",
+        metadata={"kind": "memory"},
+    )
+
+    assert captured["url"].endswith("/ledger/body")
+    assert captured["params"] == {"entity": "demo", "prime": 41}
+    payload = captured["json"]
+    assert payload["entity"] == "demo"
+    assert payload["prime"] == 41
+    assert payload["body"] == "Anchored body text"
+    assert payload["metadata"] == {"kind": "memory"}
+    assert captured["headers"]["X-Ledger-ID"] == "alpha"
