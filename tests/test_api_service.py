@@ -21,7 +21,7 @@ class DummyPrimeService:
         self._next = 23
         self.fallback_prime = 23
 
-    def next_body_prime(self, *, reserved=None):
+    def next_body_prime(self, *, reserved=None, entity=None, ledger_id=None):
         reserved = set(reserved or [])
         candidate = self._next
         while candidate in reserved:

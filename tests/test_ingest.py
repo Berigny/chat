@@ -1,5 +1,7 @@
 from typing import Any, Mapping
 
+import requests
+
 import pytest
 
 from services.prime_service import PrimeService
@@ -30,6 +32,14 @@ class RecordingApiService:
         metadata: Mapping[str, Any] | None = None,
     ) -> None:
         self.body_calls.append((entity, prime, body, ledger_id, dict(metadata or {})))
+
+    def fetch_ledger(
+        self,
+        entity: str,
+        *,
+        ledger_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        return {}
 
 
 SCHEMA = {
@@ -109,3 +119,72 @@ def test_ingest_does_not_overwrite_existing_body_primes(prime_service: tuple[Pri
     minted_primes = [call[1] for call in api.body_calls]
     assert len(minted_primes) == len(set(minted_primes)), "Body primes should not be reused"
     assert minted_primes == sorted(minted_primes), "Body primes should grow monotonically"
+
+
+class SeededApiService(RecordingApiService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.fetch_payload: dict[str, Any] = {
+            "bodies": [{"prime": 23}, {"prime": 29}],
+            "slots": [{"body_prime": 31}],
+        }
+        self.fetch_calls = 0
+
+    def fetch_ledger(
+        self,
+        entity: str,
+        *,
+        ledger_id: str | None = None,
+    ) -> Mapping[str, Any]:
+        self.fetch_calls += 1
+        return self.fetch_payload
+
+
+def test_ingest_skips_primes_already_in_ledger() -> None:
+    api = SeededApiService()
+    service = PrimeService(api_service=api, fallback_prime=23)
+
+    result = _ingest(service, "Prime collision guard")
+
+    minted = [body["prime"] for body in result["structured"]["bodies"]]
+    assert minted == [37]
+    assert api.fetch_calls == 1
+    assert api.body_calls[0][1] == 37
+
+
+class ConflictingApiService(SeededApiService):
+    def __init__(self) -> None:
+        super().__init__()
+        self.conflict_triggered = False
+
+    def put_ledger_body(
+        self,
+        entity: str,
+        prime: int,
+        body: str,
+        *,
+        ledger_id: str | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> None:
+        self.body_calls.append((entity, prime, body, ledger_id, dict(metadata or {})))
+        if not self.conflict_triggered:
+            self.conflict_triggered = True
+            self.fetch_payload.setdefault("bodies", []).append({"prime": prime})
+            response = type(
+                "DummyResponse",
+                (),
+                {"status_code": 422, "text": "duplicate body prime"},
+            )()
+            raise requests.HTTPError("duplicate body prime", response=response)
+
+
+def test_ingest_retries_when_body_prime_conflicts() -> None:
+    api = ConflictingApiService()
+    service = PrimeService(api_service=api, fallback_prime=23)
+
+    result = _ingest(service, "Handle remote conflict")
+
+    minted = [body["prime"] for body in result["structured"]["bodies"]]
+    assert minted == [41]
+    assert len(api.body_calls) == 2
+    assert api.fetch_calls >= 2

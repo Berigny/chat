@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Callable, Dict, List, Mapping, Sequence
+from typing import Callable, Dict, List, Mapping, Sequence
 
 from flow_rules import FlowAssessment, assess_write_path
 from prime_tagger import tag_primes
@@ -164,100 +164,17 @@ def assess_factor_flow(
     return assess_write_path(factors, schema)
 
 
-def _derive_title(text: str, *, max_length: int = 96) -> str | None:
-    cleaned = (text or "").strip()
-    if not cleaned:
-        return None
-    first_line = cleaned.splitlines()[0]
-    if len(first_line) <= max_length:
-        return first_line
-    trunc = first_line[:max_length].rstrip()
-    return trunc
-
-
-def _derive_summary(text: str, *, max_length: int = 160) -> str | None:
-    cleaned = (text or "").strip()
-    if not cleaned:
-        return None
-    summary = cleaned.replace("\n", " ")
-    if len(summary) <= max_length:
-        return summary
-    return summary[: max_length - 1].rstrip() + "…"
-
-
-def _merge_metadata(base: Mapping[str, Any] | None, extra: Mapping[str, Any]) -> dict[str, Any]:
-    merged: dict[str, Any] = {}
-    if isinstance(base, Mapping):
-        for key, value in base.items():
-            if isinstance(key, str):
-                merged[key] = value
-    for key, value in extra.items():
-        if isinstance(key, str):
-            merged.setdefault(key, value)
-    return merged
-
-
 def prepare_ingest_artifacts(
-    text: str,
+    entity: str,
     *,
-    metadata: Mapping[str, Any] | None = None,
-) -> dict[str, Any]:
-    """Return structured slots and body plan for ingest."""
+    ledger_id: str | None = None,
+    extra_args: Sequence[str] | None = None,
+) -> "MigrationResult":
+    """Proxy to the shared migration CLI for ingest preparation."""
 
-    cleaned = (text or "").strip()
-    base_meta = _merge_metadata(metadata, {"length": len(cleaned), "kind": "memory"})
-    body_key = "body-0"
-    bodies: list[dict[str, Any]] = []
-    slots: list[dict[str, Any]] = []
-    s1_slots: list[dict[str, Any]] = []
-    s2_slots: list[dict[str, Any]] = []
+    from services.migration_cli import run_ledger_migration
 
-    if cleaned:
-        bodies.append(
-            {
-                "key": body_key,
-                "body": cleaned,
-                "metadata": _merge_metadata(
-                    base_meta,
-                    {
-                        "source_primes": list(S1_PRIMES + S2_PRIMES),
-                        "superseded_primes": list(S1_PRIMES + S2_PRIMES),
-                    },
-                ),
-            }
-        )
-        title = _derive_title(cleaned)
-        summary = _derive_summary(cleaned)
-
-        for prime in S1_PRIMES:
-            slot = {
-                "prime": prime,
-                "value": 1,
-                "title": title,
-                "tags": [],
-                "body": [cleaned],
-                "body_key": body_key,
-                "metadata": _merge_metadata(base_meta, {"tier": "S1"}),
-            }
-            slots.append(slot)
-            s1_slots.append(slot)
-        for prime in S2_PRIMES:
-            slot = {
-                "prime": prime,
-                "summary": summary,
-                "body": [cleaned],
-                "body_key": body_key,
-                "metadata": _merge_metadata(base_meta, {"tier": "S2"}),
-            }
-            slots.append(slot)
-            s2_slots.append(slot)
-
-    return {
-        "slots": slots,
-        "s1": s1_slots,
-        "s2": s2_slots,
-        "bodies": bodies,
-    }
+    return run_ledger_migration(entity, ledger_id=ledger_id, extra_args=extra_args)
 
 
 __all__ = [

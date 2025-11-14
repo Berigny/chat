@@ -65,7 +65,11 @@ class EnrichmentHelper:
             text = chunk.strip()
             if not text:
                 continue
-            prime = self.prime_service.next_body_prime(reserved=reserved)
+            prime = self.prime_service.next_body_prime(
+                reserved=reserved,
+                entity=entity,
+                ledger_id=ledger_id,
+            )
             reserved.add(prime)
             self.api_service.put_ledger_body(
                 entity,

@@ -13,16 +13,13 @@ from services.api import ApiService
 from services.api_service import EnrichmentHelper
 from services.ethics_service import EthicsService
 from services.prime_service import create_prime_service
-from services.ledger_service import persist_structured_views
+from services.migration_cli import run_ledger_migration
+from services.structured_writer import write_structured_views
 
 
 API_URL = os.getenv("DUALSUBSTRATE_API", "https://dualsubstrate-commercial.fly.dev")
 DEFAULT_ENTITY = os.getenv("DEFAULT_ENTITY", "demo_user")
 DEFAULT_LEDGER_ID = os.getenv("DEFAULT_LEDGER_ID", "default")
-
-S1_PRIMES = {2, 3, 5, 7}
-S2_PRIMES = {11, 13, 17, 19}
-
 
 def _api_key() -> str | None:
     secrets = getattr(st, "secrets", {}) or {}
@@ -249,7 +246,7 @@ def _anchor(
         return False
     structured = ingest_result.get("structured") if isinstance(ingest_result, dict) else {}
     if structured:
-        persisted = persist_structured_views(
+        persisted = write_structured_views(
             _api_service(),
             entity,
             structured,
@@ -266,123 +263,33 @@ def _backfill_body_primes() -> None:
     if not entity:
         st.warning("Select an entity first.")
         return
-    try:
-        payload = _api_service().fetch_ledger(entity, ledger_id=_ledger_id())
-    except requests.RequestException as exc:
-        st.error(f"Could not fetch ledger for backfill: {exc}")
-        return
 
-    slots = payload.get("slots") if isinstance(payload, dict) else None
-    if not isinstance(slots, list):
-        st.info("No structured slots found to backfill.")
-        return
-
-    body_plan: list[dict[str, Any]] = []
-    slot_refs: list[tuple[int, dict, list[str]]] = []
-    for slot in slots:
-        if not isinstance(slot, dict):
-            continue
-        prime = slot.get("prime")
-        if not isinstance(prime, int):
-            continue
-        if slot.get("body_prime"):
-            continue
-        bodies = slot.get("body") if isinstance(slot.get("body"), list) else []
-        chunks = [chunk.strip() for chunk in bodies if isinstance(chunk, str) and chunk.strip()]
-        if not chunks:
-            continue
-        slot_refs.append((prime, slot, chunks))
-        for idx, chunk in enumerate(chunks):
-            body_plan.append(
-                {
-                    "key": f"{prime}:{idx}",
-                    "body": chunk,
-                    "metadata": {
-                        "source_prime": prime,
-                        "index": idx,
-                        "backfill": True,
-                    },
-                }
-            )
-
-    if not body_plan:
-        st.info("All structured slots already reference body primes.")
-        return
-
-    prime_service = _prime_service()
-    try:
-        minted = prime_service.persist_bodies(
+    ledger_id = _ledger_id()
+    sidebar = st.sidebar
+    with sidebar.spinner("Running ledger migration…"):
+        result = run_ledger_migration(
             entity,
-            body_plan,
-            ledger_id=_ledger_id(),
+            ledger_id=ledger_id,
+            extra_args=["--backfill-bodies"],
         )
-    except requests.RequestException as exc:
-        st.error(f"Failed to persist legacy bodies: {exc}")
-        return
 
-    key_to_prime = {
-        entry.get("key"): entry.get("prime")
-        for entry in minted
-        if isinstance(entry.get("key"), str) and isinstance(entry.get("prime"), int)
-    }
-    if not key_to_prime:
-        st.warning("Backfill did not mint any body primes.")
-        return
-
-    s1_updates: list[dict[str, Any]] = []
-    s2_updates: list[dict[str, Any]] = []
-    for prime, slot, chunks in slot_refs:
-        body_prime = key_to_prime.get(f"{prime}:0")
-        if not body_prime:
-            continue
-        base_metadata = slot.get("metadata") if isinstance(slot.get("metadata"), dict) else {}
-        enriched_meta = {**base_metadata, "backfill": True, "source_prime": prime}
-        if prime in S1_PRIMES:
-            s1_updates.append(
-                {
-                    "prime": prime,
-                    "value": slot.get("value", 1) or 1,
-                    "title": slot.get("title"),
-                    "tags": slot.get("tags"),
-                    "body_prime": body_prime,
-                    "metadata": enriched_meta,
-                    "score": slot.get("score"),
-                    "timestamp": slot.get("timestamp"),
-                }
-            )
-        elif prime in S2_PRIMES:
-            s2_updates.append(
-                {
-                    "prime": prime,
-                    "summary": slot.get("summary"),
-                    "body_prime": body_prime,
-                    "metadata": enriched_meta,
-                    "score": slot.get("score"),
-                    "timestamp": slot.get("timestamp"),
-                }
-            )
-
-    structured_updates = {
-        "slots": [],
-        "s1": s1_updates,
-        "s2": s2_updates,
-        "bodies": minted,
-    }
-    try:
-        persisted = persist_structured_views(
-            _api_service(),
-            entity,
-            structured_updates,
-            ledger_id=_ledger_id(),
+    st.session_state.last_migration_result = result.asdict()
+    if result.ok:
+        sidebar.success(f"Backfill completed for {entity}.")
+    else:
+        sidebar.error(
+            f"Backfill failed for {entity} (exit code {result.returncode})."
         )
-    except requests.RequestException as exc:
-        st.error(f"Failed to persist backfilled slots: {exc}")
-        return
 
-    st.session_state.latest_structured_ledger = persisted
-    st.success(
-        f"Backfilled {len(key_to_prime)} body prime{'s' if len(key_to_prime) != 1 else ''}."
-    )
+    if result.stdout.strip():
+        sidebar.text_area(
+            "Migration stdout",
+            result.stdout,
+            height=200,
+            key="__migration_stdout__",
+        )
+    if result.stderr.strip():
+        sidebar.code(result.stderr, language="text")
 
 
 def _reset_entity_factors() -> bool:
@@ -518,7 +425,7 @@ def _run_enrichment(limit: int = 50, reset_first: bool = True) -> dict | None:
         structured = response_payload.get("structured") if isinstance(response_payload, dict) else None
         if structured:
             try:
-                persist_structured_views(
+                write_structured_views(
                     _api_service(),
                     entity,
                     structured,
