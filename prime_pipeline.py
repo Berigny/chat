@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Callable, Dict, List, Mapping, Sequence
 
+from flow_rules import FlowAssessment, assess_write_path
 from prime_tagger import tag_primes
 
 PrimeSchema = Dict[int, Dict[str, object]]
@@ -182,4 +183,5 @@ __all__ = [
     "map_to_primes",
     "normalize_override_factors",
     "prepare_ingest_artifacts",
+    "assess_factor_flow",
 ]
