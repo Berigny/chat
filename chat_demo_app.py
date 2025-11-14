@@ -1860,6 +1860,38 @@ def _render_app():
                 st.metric("Integrity %", f"{ledger_integrity*100:.1f} %")
             with metric_cols[2]:
                 st.metric("Durability h", f"{durability_h:.1f}")
+
+            if entity:
+                telemetry_state = snapshot.get("inference_state")
+                telemetry_traverse = snapshot.get("inference_traverse")
+                telemetry_memories = snapshot.get("inference_memories")
+                telemetry_retrieve = snapshot.get("inference_retrieve")
+                telemetry_supported = snapshot.get("inference_supported")
+                telemetry_errors = snapshot.get("inference_errors") or []
+
+                telemetry_payloads = [
+                    ("State", telemetry_state),
+                    ("Traverse", telemetry_traverse),
+                    ("Memories", telemetry_memories),
+                    ("Retrieve", telemetry_retrieve),
+                ]
+                telemetry_any = any(payload is not None for _, payload in telemetry_payloads)
+
+                if telemetry_any:
+                    st.markdown("#### Inference telemetry")
+                    for label, payload in telemetry_payloads:
+                        if payload is None:
+                            continue
+                        expanded = label == "State"
+                        with st.expander(label, expanded=expanded):
+                            if isinstance(payload, (list, dict)):
+                                st.json(payload)
+                            else:
+                                st.write(payload)
+                elif telemetry_supported is False:
+                    st.caption("Inference telemetry endpoints are not available on this deployment.")
+                elif telemetry_errors:
+                    st.warning("Inference telemetry unavailable: " + "; ".join(telemetry_errors))
             st.markdown('</div>', unsafe_allow_html=True)
             st.markdown("### Möbius lattice rotation")
             if st.button("♾️ Möbius Transform", help="Reproject the exponent lattice"):

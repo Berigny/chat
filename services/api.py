@@ -236,7 +236,7 @@ class ApiService:
     def retrieve(self, entity: str, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
         return self._client.retrieve(entity, ledger_id=ledger_id)
 
-    def fetch_metrics(self, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
+    def fetch_metrics(self, *, ledger_id: Optional[str] = None) -> Dict[str, Any] | str:
         return self._client.fetch_metrics(ledger_id=ledger_id)
 
     def traverse(
