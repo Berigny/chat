@@ -88,16 +88,17 @@ def test_traverse_forwards_optional_parameters(monkeypatch):
         def json(self) -> dict:
             return {"paths": []}
 
-    def fake_get(url, *, params=None, headers=None, timeout=None):
+    def fake_post(url, *, params=None, headers=None, timeout=None, json=None):
         captured.update({
             "url": url,
             "params": params,
             "headers": headers,
             "timeout": timeout,
+            "json": json,
         })
         return DummyResponse()
 
-    monkeypatch.setattr(requests, "get", fake_get)
+    monkeypatch.setattr(requests, "post", fake_post)
 
     client = DualSubstrateClient("https://api.example", "secret")
     client.traverse(
@@ -120,3 +121,4 @@ def test_traverse_forwards_optional_parameters(monkeypatch):
         "include_metadata": "true",
     }
     assert captured["headers"]["X-Ledger-ID"] == "alpha"
+    assert captured["json"] is None
