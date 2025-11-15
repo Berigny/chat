@@ -1368,12 +1368,14 @@ def _maybe_handle_recall_query(text: str) -> bool:
             )
         except requests.RequestException as exc:
             LOGGER.warning("Failed to persist placeholder recall metrics: %s", exc)
+    recall_mode = st.session_state.get("recall_mode") or "s1"
     try:
         response = MEMORY_SERVICE.build_recall_response(
             entity,
             text,
             schema,
             ledger_id=ledger_id,
+            mode=recall_mode,
         )
     except requests.RequestException as exc:
         st.error(f"Recall failed: {exc}")
@@ -1621,6 +1623,44 @@ def _get_digest(key: str, fallback: str | None = None) -> str | None:
     return _secret(key) or os.getenv(key) or fallback
 
 
+def _payload_contains_body_shards(value: object, *, depth: int = 0, max_depth: int = 4) -> bool:
+    if depth > max_depth:
+        return False
+    if isinstance(value, Mapping):
+        bodies = value.get("bodies")
+        if isinstance(bodies, Sequence) and bodies:
+            return True
+        s1_section = value.get("s1")
+        if isinstance(s1_section, Mapping):
+            s1_bodies = s1_section.get("bodies")
+            if isinstance(s1_bodies, Sequence) and s1_bodies:
+                return True
+        payload = value.get("payload")
+        if _payload_contains_body_shards(payload, depth=depth + 1, max_depth=max_depth):
+            return True
+        for item in value.values():
+            if _payload_contains_body_shards(item, depth=depth + 1, max_depth=max_depth):
+                return True
+    elif isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
+        for item in value:
+            if _payload_contains_body_shards(item, depth=depth + 1, max_depth=max_depth):
+                return True
+    return False
+
+
+def _default_recall_mode() -> str:
+    candidates = [
+        st.session_state.get("latest_assembly"),
+        st.session_state.get("latest_structured_ledger"),
+        st.session_state.get("recall_payload"),
+        st.session_state.get("ledger_state"),
+    ]
+    for candidate in candidates:
+        if _payload_contains_body_shards(candidate):
+            return "body"
+    return "s1"
+
+
 DEMO_USERS = {
     "Developer": {
         "entity": "Demo_dev",
@@ -1700,6 +1740,8 @@ def _render_app():
         st.session_state.last_anchor_payload = None
     if "capabilities_block" not in st.session_state:
         _refresh_capabilities_block()
+    if "recall_mode" not in st.session_state:
+        st.session_state.recall_mode = _default_recall_mode()
 
     if not st.session_state.get("authenticated"):
         _render_login_form()
