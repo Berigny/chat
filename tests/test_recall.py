@@ -30,7 +30,7 @@ def test_recall_skips_when_engine_returns_no_response(monkeypatch):
 
     assert not handled
     assert st.session_state.chat_history == []
-    assert api.calls and api.calls[0]["mode"] == "recall"
+    assert api.calls and api.calls[0]["mode"] == "s1"
 
 
 def test_recall_records_engine_response(monkeypatch):
@@ -38,6 +38,8 @@ def test_recall_records_engine_response(monkeypatch):
     st.session_state.entity = "tester"
     st.session_state.prime_schema = DEFAULT_PRIME_SCHEMA
     st.session_state.chat_history = []
+
+    st.session_state.recall_mode = "body"
 
     payload = {
         "response": "Here’s what the ledger currently recalls:\n• Meeting summary",
@@ -59,6 +61,7 @@ def test_recall_records_engine_response(monkeypatch):
     assert entry["recall"]["slots"][0]["summary"] == "Meeting summary"
     assert anchored, "Expected recall anchoring"
     assert api.calls[0]["ledger_id"] == admin_app._ledger_id()
+    assert api.calls[0]["mode"] == "body"
 
 
 def test_recall_surfaces_http_error(monkeypatch):

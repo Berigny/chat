@@ -660,12 +660,13 @@ def _maybe_handle_recall_query(question: str) -> bool:
     entity = st.session_state.get("entity")
     if not entity:
         return False
+    mode = st.session_state.get("recall_mode") or "s1"
     try:
         payload = _api_service().search(
             entity,
             question,
             ledger_id=_ledger_id(),
-            mode="recall",
+            mode=mode,
             limit=5,
         )
     except requests.RequestException as exc:

@@ -1255,16 +1255,18 @@ class MemoryService:
         limit: int | None = None,
         since: int | None = None,
         until: int | None = None,
+        mode: str | None = None,
     ) -> str | None:
         if not entity:
             return None
 
         resolved_limit = limit if limit is not None else estimate_quote_count(query)
+        search_mode = mode or "recall"
         payload = self.api_service.search(
             entity,
             query,
             ledger_id=ledger_id,
-            mode="recall",
+            mode=search_mode,
             limit=resolved_limit,
         )
         response = payload.get("response") if isinstance(payload, Mapping) else None
