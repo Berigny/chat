@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import inspect
+import logging
 from typing import Any, Dict, Iterable, List, Mapping, Optional
 
 
@@ -21,6 +22,9 @@ _DEFAULT_TRAVERSAL_NODE = 0
 import requests
 
 from api_client import DualSubstrateClient
+
+
+logger = logging.getLogger(__name__)
 
 
 class ApiService:
@@ -183,7 +187,9 @@ class ApiService:
     ) -> Dict[str, Any]:
         """Return traversal paths while tracking capability support."""
 
-        traverse_kwargs: Dict[str, Any] = {"start": self._resolve_traversal_start(entity)}
+        raw_start = entity
+        resolved_start = self._resolve_traversal_start(entity)
+        traverse_kwargs: Dict[str, Any] = {"start": resolved_start}
 
         depth_value: Any | None = depth if depth is not None else limit
         if depth_value is not None:
@@ -199,6 +205,8 @@ class ApiService:
                 "payload": payload,
             }
         )
+
+        logger.error("API_SVC_TRAVERSE start=%r resolved=%r", raw_start, resolved_start)
 
         try:
             response = self._client.traverse(**traverse_kwargs)
