@@ -286,3 +286,48 @@ def test_put_ledger_s2_returns_sanitized_prime_map() -> None:
         }
     ]
 
+
+class _LawfulnessClient(_BaseClient):
+    def update_lawfulness(
+        self,
+        entity: str,
+        payload: Dict[str, Any],
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        record = {"entity": entity, "payload": dict(payload), "ledger_id": ledger_id}
+        self.calls.append(record)
+        return {"entity": entity, **dict(payload)}
+
+
+def test_patch_lawfulness_wraps_numeric_tier() -> None:
+    client = _LawfulnessClient()
+    service = _service_with_client(client)
+
+    payload = service.patch_lawfulness("demo", 3, ledger_id="beta")
+
+    assert payload == {"entity": "demo", "tier": 3}
+    assert client.calls == [
+        {"entity": "demo", "payload": {"tier": 3}, "ledger_id": "beta"}
+    ]
+
+
+def test_patch_lawfulness_merges_explicit_fields() -> None:
+    client = _LawfulnessClient()
+    service = _service_with_client(client)
+
+    payload = service.patch_lawfulness(
+        "demo",
+        {"tier": 2},
+        reviewer="ops",
+    )
+
+    assert payload == {"entity": "demo", "tier": 2, "reviewer": "ops"}
+    assert client.calls == [
+        {
+            "entity": "demo",
+            "payload": {"tier": 2, "reviewer": "ops"},
+            "ledger_id": None,
+        }
+    ]
+

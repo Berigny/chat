@@ -578,7 +578,35 @@ class ApiService:
             return dict(response)
         return {}
 
-    def update_lawfulness(self, entity: str, payload: Dict[str, Any], *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
+    def update_lawfulness(
+        self,
+        entity: str,
+        payload: Dict[str, Any],
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        return self._client.update_lawfulness(entity, payload, ledger_id=ledger_id)
+
+    def patch_lawfulness(
+        self,
+        entity: str,
+        tier_or_payload: Mapping[str, Any] | int | float,
+        *,
+        ledger_id: Optional[str] = None,
+        **extra_fields: Any,
+    ) -> Dict[str, Any]:
+        """Normalize promotion payloads before calling the guardrail endpoint."""
+
+        payload: Dict[str, Any] = {}
+        if isinstance(tier_or_payload, Mapping):
+            payload.update(dict(tier_or_payload))
+        else:
+            payload["tier"] = tier_or_payload
+
+        for key, value in extra_fields.items():
+            if value is not None:
+                payload[key] = value
+
         return self._client.update_lawfulness(entity, payload, ledger_id=ledger_id)
 
     def update_metrics(self, entity: str, payload: Dict[str, Any], *, ledger_id: Optional[str] = None) -> Dict[str, Any]:

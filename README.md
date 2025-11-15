@@ -158,3 +158,9 @@ surface the data in dedicated tabs:
 Older deployments that do not implement the new endpoints simply hide the tabs and emit a
 “not available” notice. Prompt construction also threads the traversal and inference summaries
 into the augmented prompt so the LLM can acknowledge long-running jobs without manual probing.
+
+## Manual smoke test – S2 promotion button
+
+1. Launch `chat_demo_app.py` (`make demo`) and authenticate as any demo account so the Connectivity Debug tab is visible.
+2. Open **Connectivity Debug** → click **Promote to S2 tier**.
+3. Confirm a success toast appears, the recall mode switcher updates to slots/S2, and no request exceptions are surfaced in the sidebar log.

@@ -116,6 +116,14 @@ PLACEHOLDER_METRICS_GUARD = {
     "K": 0.0,
 }
 
+RECOMMENDED_S2_METRICS = {
+    **METRIC_FLOORS,
+    "ΔRetention": 1.0,
+    "ΔE": 1.0,
+    "ΔDrift": 0.0,
+    "K": 0.5,
+}
+
 
 def _get_entity() -> str | None:
     return st.session_state.get("entity")
@@ -2106,6 +2114,29 @@ def _render_app():
                         "Search index build triggered – only needed once after the first anchor.",
                         icon="🔍",
                     )
+
+            if st.button("Promote to S2 tier", key="promote_s2"):
+                entity = _get_entity() or DEFAULT_ENTITY
+                ledger_id = st.session_state.get("ledger_id")
+                metrics_payload = dict(RECOMMENDED_S2_METRICS)
+                try:
+                    API_SERVICE.patch_metrics(
+                        entity,
+                        metrics_payload,
+                        ledger_id=ledger_id,
+                    )
+                    API_SERVICE.patch_lawfulness(
+                        entity,
+                        3,
+                        ledger_id=ledger_id,
+                    )
+                except requests.RequestException as exc:
+                    st.error(f"S2 promotion failed: {exc}")
+                else:
+                    st.session_state.recall_mode = "slots"
+                    _refresh_capabilities_block()
+                    st.toast("S2 recall unlocked – slots search enabled.", icon="🚀")
+                    st.success("Promotion succeeded – recall mode updated.")
 
             st.divider()
             st.write("### /traverse debug")
