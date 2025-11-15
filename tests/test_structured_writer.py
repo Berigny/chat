@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any, Mapping
 
 import pytest
@@ -27,7 +29,10 @@ class _RecordingApiService:
         return payload
 
 
-def test_write_s2_slots_includes_structured_views_payload() -> None:
+CONTRACT_PATH = Path(__file__).parent / "contracts" / "s2_payload.json"
+
+
+def test_write_s2_slots_collapses_to_prime_map() -> None:
     api = _RecordingApiService()
     slots = [
         {
@@ -43,26 +48,11 @@ def test_write_s2_slots_includes_structured_views_payload() -> None:
 
     sanitized = write_s2_slots(api, "Demo_dev", slots, ledger_id="alpha")
 
-    assert sanitized == [
-        {
-            "prime": 17,
-            "body_prime": 101,
-            "summary": "Launch recap",
-            "metadata": {"tier": "S2"},
-            "score": pytest.approx(0.85),
-            "timestamp": 1700000000,
-            "tags": ["roadmap", "launch"],
-        }
-    ]
+    expected = json.loads(CONTRACT_PATH.read_text())
+    assert sanitized == expected
     assert api.calls and api.calls[0]["entity"] == "Demo_dev"
     payload = api.calls[0]["payload"]
-    assert payload["slots"] == sanitized
-    assert "views" in payload
-    view_entry = payload["views"][0]
-    assert view_entry["entity_prime"] == 17
-    assert view_entry["body_prime"] == 101
-    assert view_entry["summary"] == "Launch recap"
-    assert view_entry["metadata"] == {"tier": "S2"}
-    assert view_entry["tags"] == ["roadmap", "launch"]
-    assert view_entry["view_id"] == "17"
+    assert payload == expected
+    assert set(payload.keys()).issubset({"11", "13", "17", "19"})
+    assert payload["17"]["score"] == pytest.approx(0.85)
 

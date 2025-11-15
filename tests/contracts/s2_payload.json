@@ -1,0 +1,16 @@
+{
+  "17": {
+    "prime": 17,
+    "body_prime": 101,
+    "summary": "Launch recap",
+    "metadata": {
+      "tier": "S2"
+    },
+    "score": 0.85,
+    "timestamp": 1700000000,
+    "tags": [
+      "roadmap",
+      "launch"
+    ]
+  }
+}
