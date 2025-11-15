@@ -401,16 +401,16 @@ class DualSubstrateClient:
     ) -> dict[str, Any]:
         """Store enrichment output while leaving the payload untouched."""
 
-        body: dict[str, Any] = {"entity": entity}
+        body: dict[str, Any] = {}
         if isinstance(payload, Mapping):
+            payload = {k: v for k, v in payload.items() if k in {"11", "13", "17", "19"}}
             for key, value in payload.items():
-                if key == "entity":
-                    continue
                 body[key] = value
 
         resp = requests.put(
             f"{self.base_url}/ledger/s2",
             json=body,
+            params={"entity": entity},
             headers=self._headers(ledger_id=ledger_id),
             timeout=5,
         )

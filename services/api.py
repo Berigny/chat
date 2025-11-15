@@ -19,6 +19,8 @@ _TRAVERSAL_NODE_OVERRIDES: dict[str, int] = {
 }
 _DEFAULT_TRAVERSAL_NODE = 0
 
+_ALLOWED_S2_PRIME_KEYS = {"11", "13", "17", "19"}
+
 import requests
 
 from api_client import DualSubstrateClient
@@ -565,7 +567,16 @@ class ApiService:
         *,
         ledger_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        return self._client.put_ledger_s2(entity, payload, ledger_id=ledger_id)
+        sanitized: Dict[str, Any] = {}
+        if isinstance(payload, Mapping):
+            sanitized = {k: v for k, v in payload.items() if k in _ALLOWED_S2_PRIME_KEYS}
+
+        response = self._client.put_ledger_s2(entity, sanitized, ledger_id=ledger_id)
+        if sanitized:
+            return sanitized
+        if isinstance(response, Mapping):
+            return dict(response)
+        return {}
 
     def update_lawfulness(self, entity: str, payload: Dict[str, Any], *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
         return self._client.update_lawfulness(entity, payload, ledger_id=ledger_id)
