@@ -53,7 +53,7 @@ from services.memory_service import (
     strip_ledger_noise,
 )
 from services.prompt_service import LEDGER_SNIPPET_LIMIT, create_prompt_service
-from services.prime_service import create_prime_service
+from services.prime_service import PrimeService
 from services.structured_writer import write_structured_views
 from services.ledger_tasks import (
     fetch_metrics_snapshot,
@@ -235,7 +235,7 @@ if not PRIME_SCHEMA:
 PRIME_SYMBOLS = {prime: data["name"] for prime, data in PRIME_SCHEMA.items()}
 FALLBACK_PRIME = PRIME_ARRAY[0]
 
-PRIME_SERVICE = create_prime_service(API_SERVICE, FALLBACK_PRIME)
+PRIME_SERVICE = PrimeService(API_SERVICE, FALLBACK_PRIME)
 MEMORY_SERVICE = MemoryService(API_SERVICE, PRIME_WEIGHTS)
 ENRICHMENT_HELPER = EnrichmentHelper(API_SERVICE, PRIME_SERVICE)
 PROMPT_SERVICE = create_prompt_service(MEMORY_SERVICE)
