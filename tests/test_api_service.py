@@ -242,3 +242,47 @@ def test_traverse_rewrites_error_message_from_response_detail():
     assert exc_info.value.response.status_code == 422
     assert service._traverse_supported is True
 
+
+class _LedgerS2Client(_BaseClient):
+    def put_ledger_s2(
+        self,
+        entity: str,
+        payload: Dict[str, Any],
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        record = {"entity": entity, "payload": dict(payload), "ledger_id": ledger_id}
+        self.calls.append(record)
+        return {"echo": dict(payload)}
+
+
+def test_put_ledger_s2_returns_sanitized_prime_map() -> None:
+    client = _LedgerS2Client()
+    service = _service_with_client(client)
+
+    sanitized = service.put_ledger_s2(
+        "Demo_dev",
+        {
+            "11": {"body_prime": 101},
+            "17": {"body_prime": 103},
+            "entity": {"ignored": True},
+            "23": {"body_prime": 107},
+        },
+        ledger_id="alpha",
+    )
+
+    assert sanitized == {
+        "11": {"body_prime": 101},
+        "17": {"body_prime": 103},
+    }
+    assert client.calls == [
+        {
+            "entity": "Demo_dev",
+            "payload": {
+                "11": {"body_prime": 101},
+                "17": {"body_prime": 103},
+            },
+            "ledger_id": "alpha",
+        }
+    ]
+
