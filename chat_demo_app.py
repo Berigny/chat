@@ -2037,6 +2037,34 @@ def _render_app():
             except Exception as exc:  # pragma: no cover - network dependent
                 st.error(f"HTTP error: {exc}")
 
+            st.caption("Build the search index once after the first anchor to enable retrieval debugging.")
+            if st.button("Build search index", key="build_search_index"):
+                entity = _get_entity() or DEFAULT_ENTITY
+                post_headers = dict(headers)
+                try:
+                    resp = requests.post(
+                        f"{API.rstrip('/')}/search/index",
+                        params={"entity": entity},
+                        headers=post_headers,
+                        timeout=30,
+                    )
+                except Exception as exc:  # pragma: no cover - network dependent
+                    st.error(f"Index build error: {exc}")
+                else:
+                    st.write(f"HTTP status: {resp.status_code}")
+                    try:
+                        payload = resp.json()
+                    except Exception:
+                        payload = resp.text
+                    if isinstance(payload, (dict, list)):
+                        st.json(payload)
+                    else:
+                        st.code(str(payload) or "<empty response>", language="json")
+                    st.toast(
+                        "Search index build triggered – only needed once after the first anchor.",
+                        icon="🔍",
+                    )
+
             st.divider()
             st.write("### /traverse debug")
             # Remove any legacy JSON payload state now that the debug UI uses query params.
