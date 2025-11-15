@@ -2115,6 +2115,77 @@ def _render_app():
                         icon="🔍",
                     )
 
+            st.divider()
+            st.write("### 🧪 TEST ONLY – Entity promotion back-door")
+            st.caption(
+                "This bypasses real governance. Use it to unlock S2 search/writes "
+                "while the scoring pipeline is being wired."
+            )
+
+            entity = _get_entity() or DEFAULT_ENTITY
+            ledger_id = st.session_state.get("ledger_id")
+            hdr = {"Content-Type": "application/json"}
+            if SETTINGS.api_key:
+                hdr["x-api-key"] = SETTINGS.api_key
+
+            # 1.  lawfulness tier
+            new_tier = st.slider("Lawfulness tier", 0, 3, 1, help="0=none, 3=S2 unlocked")
+            if st.button("Apply tier", key="apply_lawfulness"):
+                try:
+                    resp = requests.patch(
+                        f"{API.rstrip('/')}/ledger/lawfulness",
+                        params={"entity": entity, "ledger_id": ledger_id} if ledger_id else {"entity": entity},
+                        headers=hdr,
+                        json={"value": new_tier},
+                        timeout=10,
+                    )
+                    st.write(f"Lawfulness → {new_tier} : HTTP {resp.status_code}")
+                    if resp.status_code != 200:
+                        st.json(resp.json() if resp.content else resp.text)
+                except Exception as exc:
+                    st.error(f"Lawfulness patch failed: {exc}")
+
+            # 2.  safe metrics in one click
+            safe_metrics = {"ΔE": -1.0, "ΔDrift": -1.0, "ΔRetention": 0.8, "K": 0.0}
+            if st.button("Patch safe metrics", key="patch_metrics"):
+                try:
+                    resp = requests.patch(
+                        f"{API.rstrip('/')}/ledger/metrics",
+                        params={"entity": entity, "ledger_id": ledger_id} if ledger_id else {"entity": entity},
+                        headers=hdr,
+                        json=safe_metrics,
+                        timeout=10,
+                    )
+                    st.write(f"Metrics patched : HTTP {resp.status_code}")
+                    if resp.status_code != 200:
+                        st.json(resp.json() if resp.content else resp.text)
+                except Exception as exc:
+                    st.error(f"Metrics patch failed: {exc}")
+
+            # 3.  one-click “Promote to S2”
+            if st.button("🔓 Promote entity to S2 tier", key="promote_s2_backdoor"):
+                try:
+                    # lawfulness 3
+                    resp1 = requests.patch(
+                        f"{API.rstrip('/')}/ledger/lawfulness",
+                        params={"entity": entity, "ledger_id": ledger_id} if ledger_id else {"entity": entity},
+                        headers=hdr,
+                        json={"value": 3},
+                        timeout=10,
+                    )
+                    # metrics gate
+                    resp2 = requests.patch(
+                        f"{API.rstrip('/')}/ledger/metrics",
+                        params={"entity": entity, "ledger_id": ledger_id} if ledger_id else {"entity": entity},
+                        headers=hdr,
+                        json=safe_metrics,
+                        timeout=10,
+                    )
+                    st.success("Entity promoted – S2 writes & search unlocked.")
+                    st.json({"lawfulness": resp1.status_code, "metrics": resp2.status_code})
+                except Exception as exc:
+                    st.error(f"Promotion failed: {exc}")
+
             if st.button("Promote to S2 tier", key="promote_s2"):
                 entity = _get_entity() or DEFAULT_ENTITY
                 ledger_id = st.session_state.get("ledger_id")
