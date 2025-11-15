@@ -114,6 +114,54 @@ def _get_entity() -> str | None:
     return st.session_state.get("entity")
 
 
+_S2_PRIME_KEYS = {"11", "13", "17", "19"}
+
+
+def _derive_flat_s2_map(structured: Mapping[str, Any] | None) -> dict[str, dict[str, str]]:
+    """Return a sanitized map of S2 entries keyed by allowed prime IDs."""
+
+    result: dict[str, dict[str, str]] = {}
+    if not isinstance(structured, Mapping):
+        return result
+
+    def record(prime_key: str, entry: Mapping[str, Any]) -> None:
+        summary = entry.get("summary") if isinstance(entry, Mapping) else None
+        if isinstance(summary, str):
+            summary = summary.strip()
+        if summary:
+            result[prime_key] = {"summary": summary}
+
+    def merge(candidate: object) -> None:
+        if isinstance(candidate, Mapping):
+            for key in _S2_PRIME_KEYS:
+                value = candidate.get(key)
+                if isinstance(value, Mapping):
+                    record(key, value)
+        elif isinstance(candidate, Sequence) and not isinstance(candidate, (str, bytes, bytearray)):
+            for item in candidate:
+                if not isinstance(item, Mapping):
+                    continue
+                prime = item.get("prime")
+                if isinstance(prime, int):
+                    prime_key = str(prime)
+                elif isinstance(prime, str) and prime.isdigit():
+                    prime_key = prime
+                else:
+                    continue
+                if prime_key in _S2_PRIME_KEYS:
+                    record(prime_key, item)
+
+    merge(structured)
+    merge(structured.get("s2"))
+
+    raw_candidate = structured.get("raw")
+    merge(raw_candidate)
+    if isinstance(raw_candidate, Mapping):
+        merge(raw_candidate.get("s2"))
+
+    return result
+
+
 def _reset_discrete_state() -> bool:
     entity = _get_entity()
     if not entity:
@@ -540,19 +588,35 @@ def _extract_structured_views(payload: dict | None) -> dict:
 
 
 def _persist_structured_views(entity: str, structured: dict, *, ledger_id: str | None) -> dict:
-    if not structured:
-        return {"slots": [], "s1": [], "s2": [], "bodies": []}
+    if not isinstance(structured, Mapping):
+        structured = {}
+
+    flat_map = _derive_flat_s2_map(structured)
+
+    writer_payload: dict[str, Any] = {}
+    if structured:
+        writer_payload = dict(structured)
+        writer_payload["s2"] = []
     try:
-        persisted = write_structured_views(
-            API_SERVICE,
+        if writer_payload:
+            write_structured_views(
+                API_SERVICE,
+                entity,
+                writer_payload,
+                ledger_id=ledger_id,
+            )
+    except requests.RequestException as exc:
+        LOGGER.warning("Failed to persist structured S1 views: %s", exc)
+
+    try:
+        API_SERVICE.put_ledger_s2(
             entity,
-            structured,
+            flat_map,
             ledger_id=ledger_id,
         )
     except requests.RequestException as exc:
-        LOGGER.warning("Failed to persist structured views: %s", exc)
-        return structured or {"slots": [], "s1": [], "s2": [], "bodies": []}
-    return persisted
+        LOGGER.warning("Failed to persist S2 ledger map: %s", exc)
+    return flat_map
 
 
 def _persist_structured_views_from_ledger(entity: str) -> None:
@@ -563,9 +627,11 @@ def _persist_structured_views_from_ledger(entity: str) -> None:
         LOGGER.warning("Failed to refresh ledger after anchor: %s", exc)
         return
 
-    structured = _extract_structured_views(payload)
+    structured_data = _extract_structured_views(payload)
+    structured = structured_data if isinstance(structured_data, Mapping) else {}
+    flat_map = _derive_flat_s2_map(structured)
     if not structured.get("slots"):
-        st.session_state.latest_structured_ledger = structured
+        st.session_state.latest_structured_ledger = flat_map
         return
 
     persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
@@ -1895,7 +1961,7 @@ def _render_app():
 
             # 1.  Re-use the same helper the app calls after every anchor
             latest = st.session_state.get("latest_structured_ledger", {})
-            s2_only = {k: v for k, v in latest.items() if k in {"11", "13", "17", "19"}}
+            s2_only = _derive_flat_s2_map(latest)
 
             st.caption("What the UI would send *right now* (after coercion):")
             st.json(s2_only)
@@ -1929,18 +1995,23 @@ def _render_app():
                 try:
                     edited_map = json.loads(edited)
                     assert isinstance(edited_map, dict)
-                    assert all(k in {"11", "13", "17", "19"} for k in edited_map)
+                    assert all(k in _S2_PRIME_KEYS for k in edited_map)
                 except Exception as e:
                     st.error(f"Invalid shape: {e}")
                 else:
+                    pruned_map = _derive_flat_s2_map(edited_map)
                     resp = requests.put(
                         f"{API.rstrip('/')}/ledger/s2?entity={_get_entity() or DEFAULT_ENTITY}",
                         headers=hdr,
-                        json=edited_map,
+                        json=pruned_map,
                         timeout=10,
                     )
-                    st.write(f"Status: {resp.status_code}")
-                    st.json(resp.json() if resp.content else {})
+                    st.write(f"HTTP status: {resp.status_code}")
+                    try:
+                        detail = resp.json()
+                    except Exception:
+                        detail = resp.text
+                    st.json(detail)
 
     with tab_about:
         col_left, col_right = st.columns(2)
