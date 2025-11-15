@@ -1890,6 +1890,58 @@ def _render_app():
                 except Exception as exc:  # pragma: no cover - network dependent
                     st.error(f"Traversal call error: {exc}")
 
+            st.divider()
+            st.write("### /ledger/s2 payload debug")
+
+            # 1.  Re-use the same helper the app calls after every anchor
+            latest = st.session_state.get("latest_structured_ledger", {})
+            s2_only = {k: v for k, v in latest.items() if k in {"11", "13", "17", "19"}}
+
+            st.caption("What the UI would send *right now* (after coercion):")
+            st.json(s2_only)
+
+            hdr: dict[str, str] = {"Content-Type": "application/json"}
+            if SETTINGS.api_key:
+                hdr["x-api-key"] = SETTINGS.api_key
+
+            if st.button("Copy as cURL", key="copy_s2_curl"):
+                host = API.rstrip("/")
+                entity = _get_entity() or DEFAULT_ENTITY
+                body = json.dumps(s2_only, sort_keys=True, separators=(",", ":"))
+                hdr_str = " ".join(f'-H "{k}: {v}"' for k, v in hdr.items())
+                curl = (
+                    f"curl -X PUT {hdr_str} -d '{body}' "
+                    f'"{host}/ledger/s2?entity={entity}"'
+                )
+                st.code(curl, language="bash")
+                st.toast(
+                    "cURL copied to clipboard area – paste into Fly console to replay",
+                    icon="📋",
+                )
+
+            edited = st.text_area(
+                "Edit payload (danger zone)",
+                value=json.dumps(s2_only, indent=2),
+                key="s2_live_edit",
+                height=300,
+            )
+            if st.button("Send edited payload", key="send_s2_edit"):
+                try:
+                    edited_map = json.loads(edited)
+                    assert isinstance(edited_map, dict)
+                    assert all(k in {"11", "13", "17", "19"} for k in edited_map)
+                except Exception as e:
+                    st.error(f"Invalid shape: {e}")
+                else:
+                    resp = requests.put(
+                        f"{API.rstrip('/')}/ledger/s2?entity={_get_entity() or DEFAULT_ENTITY}",
+                        headers=hdr,
+                        json=edited_map,
+                        timeout=10,
+                    )
+                    st.write(f"Status: {resp.status_code}")
+                    st.json(resp.json() if resp.content else {})
+
     with tab_about:
         col_left, col_right = st.columns(2)
         with col_left:
