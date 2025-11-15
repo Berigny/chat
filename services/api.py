@@ -584,5 +584,15 @@ class ApiService:
     def update_metrics(self, entity: str, payload: Dict[str, Any], *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
         return self._client.update_metrics(entity, payload, ledger_id=ledger_id)
 
+    def patch_metrics(
+        self,
+        entity: str,
+        metrics: Mapping[str, Any],
+        *,
+        ledger_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        payload = dict(metrics) if isinstance(metrics, Mapping) else dict(metrics or {})
+        return self._client.update_metrics(entity, payload, ledger_id=ledger_id)
+
 
 __all__ = ["ApiService", "requests"]
