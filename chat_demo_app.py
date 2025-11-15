@@ -109,6 +109,13 @@ def _ethics_service() -> EthicsService:
 METRIC_FLOORS = {**DEFAULT_METRIC_FLOORS, **SETTINGS.metric_floors}
 API_SERVICE = ApiService(API, SETTINGS.api_key)
 
+PLACEHOLDER_METRICS_GUARD = {
+    "ΔE": -1.0,
+    "ΔDrift": -1.0,
+    "ΔRetention": 1.0,
+    "K": 0.0,
+}
+
 
 def _get_entity() -> str | None:
     return st.session_state.get("entity")
@@ -1351,6 +1358,16 @@ def _maybe_handle_recall_query(text: str) -> bool:
     entity = _get_entity()
     schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
     ledger_id = st.session_state.get("ledger_id")
+    if entity:
+        placeholder_metrics = dict(PLACEHOLDER_METRICS_GUARD)
+        try:
+            API_SERVICE.patch_metrics(
+                entity,
+                placeholder_metrics,
+                ledger_id=ledger_id,
+            )
+        except requests.RequestException as exc:
+            LOGGER.warning("Failed to persist placeholder recall metrics: %s", exc)
     try:
         response = MEMORY_SERVICE.build_recall_response(
             entity,
