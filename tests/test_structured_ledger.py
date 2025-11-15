@@ -15,10 +15,12 @@ def test_anchor_persists_structured_views(monkeypatch):
     st.session_state.rolling_text = []
     st.session_state.last_anchor_ts = time.time()
     st.session_state.latest_structured_ledger = {}
+    st.session_state.latest_structured_metrics = {}
 
     captured: dict[str, object] = {}
     persisted: dict[str, object] = {}
     s2_calls: list[dict[str, object]] = []
+    score_calls: list[dict[str, object]] = []
 
     class DummyPrimeService:
         def __init__(self) -> None:
@@ -56,10 +58,18 @@ def test_anchor_persists_structured_views(monkeypatch):
             }
 
     class DummyApiService:
+        def __init__(self) -> None:
+            self.patch_calls: list[dict[str, object]] = []
+
         def put_ledger_s2(self, entity, payload, *, ledger_id=None):
             call = {"entity": entity, "payload": payload, "ledger_id": ledger_id}
             s2_calls.append(call)
             return payload
+
+        def patch_metrics(self, entity, payload, *, ledger_id=None):
+            call = {"entity": entity, "payload": payload, "ledger_id": ledger_id}
+            self.patch_calls.append(call)
+            return {"ledger_integrity": 0.9}
 
     dummy_prime = DummyPrimeService()
     dummy_api = DummyApiService()
@@ -68,9 +78,33 @@ def test_anchor_persists_structured_views(monkeypatch):
         persisted.update(entity=entity, structured=structured, ledger_id=ledger_id)
         return structured
 
+    class DummyResponse:
+        def __init__(self, payload):
+            self.payload = payload
+            self.status_code = 200
+
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return self.payload
+
+    def fake_score_post(url, params=None, json=None, headers=None, timeout=None):
+        score_calls.append(
+            {
+                "url": url,
+                "params": params,
+                "json": json,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
+        return DummyResponse({"metrics": {"ledger_integrity": 0.91}})
+
     monkeypatch.setattr(chat_demo_app, "API_SERVICE", dummy_api)
     monkeypatch.setattr(chat_demo_app, "PRIME_SERVICE", dummy_prime)
     monkeypatch.setattr(chat_demo_app, "write_structured_views", fake_write)
+    monkeypatch.setattr(chat_demo_app.requests, "post", fake_score_post)
     monkeypatch.setattr(chat_demo_app, "_refresh_capabilities_block", lambda: "")
 
     result = chat_demo_app._anchor("Test entry", record_chat=False, notify=False)
@@ -91,10 +125,38 @@ def test_anchor_persists_structured_views(monkeypatch):
             "ledger_id": "ledger-alpha",
         }
     ]
+    assert score_calls == [
+        {
+            "url": f"{chat_demo_app.API.rstrip('/')}/score/s2",
+            "params": {"entity": "demo"},
+            "json": {
+                "11": {"summary": "Meeting summary"},
+                "19": {"summary": "Follow-up notes"},
+            },
+            "headers": {
+                "Content-Type": "application/json",
+                "X-Ledger-ID": "ledger-alpha",
+                **(
+                    {"x-api-key": chat_demo_app.SETTINGS.api_key}
+                    if chat_demo_app.SETTINGS.api_key
+                    else {}
+                ),
+            },
+            "timeout": 10,
+        }
+    ]
+    assert dummy_api.patch_calls == [
+        {
+            "entity": "demo",
+            "payload": {"ledger_integrity": 0.91},
+            "ledger_id": "ledger-alpha",
+        }
+    ]
     assert st.session_state.latest_structured_ledger == {
         "11": {"summary": "Meeting summary"},
         "19": {"summary": "Follow-up notes"},
     }
+    assert st.session_state.latest_structured_metrics == {"ledger_integrity": 0.9}
 
 
 def test_flat_s2_map_drops_empty_summaries():
