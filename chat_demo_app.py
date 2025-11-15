@@ -115,6 +115,7 @@ def _get_entity() -> str | None:
 
 
 _S2_PRIME_KEYS = {"11", "13", "17", "19"}
+_S2_MIN_WORDS = 120
 
 
 def _derive_flat_s2_map(structured: Mapping[str, Any] | None) -> dict[str, dict[str, str]]:
@@ -617,6 +618,21 @@ def _persist_structured_views(entity: str, structured: dict, *, ledger_id: str |
             )
     except requests.RequestException as exc:
         LOGGER.warning("Failed to persist structured S1 views: %s", exc)
+
+    total_word_count = 0
+    if flat_map:
+        for entry in flat_map.values():
+            summary_value = entry.get("summary") if isinstance(entry, Mapping) else None
+            if isinstance(summary_value, str):
+                total_word_count += len(summary_value.split())
+
+    if flat_map and total_word_count < _S2_MIN_WORDS:
+        LOGGER.info(
+            "Skip S2 – text too short (words=%s, threshold=%s)",
+            total_word_count,
+            _S2_MIN_WORDS,
+        )
+        return {"s2": flat_map}
 
     if flat_map:
         headers: dict[str, str] = {"Content-Type": "application/json"}
