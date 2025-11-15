@@ -22,6 +22,9 @@ def test_anchor_persists_structured_views(monkeypatch):
     s2_calls: list[dict[str, object]] = []
     score_calls: list[dict[str, object]] = []
 
+    long_summary = " ".join(["Meeting"] * 80)
+    long_follow_up = " ".join(["Follow-up"] * 70)
+
     class DummyPrimeService:
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
@@ -44,13 +47,13 @@ def test_anchor_persists_structured_views(monkeypatch):
                         {
                             "prime": 11,
                             "body_prime": 101,
-                            "summary": "Meeting summary",
+                            "summary": long_summary,
                         },
                         {"prime": 13, "summary": ""},
                     ],
                     "raw": {
                         "17": {"summary": None},
-                        "19": {"summary": "  Follow-up notes  "},
+                        "19": {"summary": f"  {long_follow_up}  "},
                     },
                     "bodies": [],
                 },
@@ -119,8 +122,8 @@ def test_anchor_persists_structured_views(monkeypatch):
         {
             "entity": "demo",
             "payload": {
-                "11": {"summary": "Meeting summary"},
-                "19": {"summary": "Follow-up notes"},
+                "11": {"summary": long_summary},
+                "19": {"summary": long_follow_up},
             },
             "ledger_id": "ledger-alpha",
         }
@@ -130,8 +133,8 @@ def test_anchor_persists_structured_views(monkeypatch):
             "url": f"{chat_demo_app.API.rstrip('/')}/score/s2",
             "params": {"entity": "demo"},
             "json": {
-                "11": {"summary": "Meeting summary"},
-                "19": {"summary": "Follow-up notes"},
+                "11": {"summary": long_summary},
+                "19": {"summary": long_follow_up},
             },
             "headers": {
                 "Content-Type": "application/json",
@@ -153,10 +156,57 @@ def test_anchor_persists_structured_views(monkeypatch):
         }
     ]
     assert st.session_state.latest_structured_ledger == {
-        "11": {"summary": "Meeting summary"},
-        "19": {"summary": "Follow-up notes"},
+        "11": {"summary": long_summary},
+        "19": {"summary": long_follow_up},
     }
     assert st.session_state.latest_structured_metrics == {"ledger_integrity": 0.9}
+
+
+def test_persist_structured_views_skips_short_summaries(monkeypatch):
+    captured: dict[str, object] = {}
+    patch_calls: list[dict[str, object]] = []
+    put_calls: list[dict[str, object]] = []
+    post_calls: list[dict[str, object]] = []
+
+    class DummyApiService:
+        def put_ledger_s2(self, entity, payload, *, ledger_id=None):
+            put_calls.append({"entity": entity, "payload": payload, "ledger_id": ledger_id})
+
+        def patch_metrics(self, entity, payload, *, ledger_id=None):
+            patch_calls.append({"entity": entity, "payload": payload, "ledger_id": ledger_id})
+
+    def fake_write(_api_service, entity, structured, *, ledger_id=None):
+        captured.update(entity=entity, structured=structured, ledger_id=ledger_id)
+        return structured
+
+    def fake_post(*args, **kwargs):
+        post_calls.append({"args": args, "kwargs": kwargs})
+        raise AssertionError("requests.post should not be called for short summaries")
+
+    short_structured = {
+        "slots": [{"prime": 2, "title": "Short"}],
+        "s2": [
+            {"prime": 11, "summary": "Too short for scoring"},
+            {"prime": 19, "summary": "Another short summary"},
+        ],
+    }
+
+    monkeypatch.setattr(chat_demo_app, "API_SERVICE", DummyApiService())
+    monkeypatch.setattr(chat_demo_app, "write_structured_views", fake_write)
+    monkeypatch.setattr(chat_demo_app.requests, "post", fake_post)
+
+    result = chat_demo_app._persist_structured_views("demo", short_structured, ledger_id="ledger-beta")
+
+    assert captured["structured"]["s2"] == []
+    assert result == {
+        "s2": {
+            "11": {"summary": "Too short for scoring"},
+            "19": {"summary": "Another short summary"},
+        }
+    }
+    assert post_calls == []
+    assert patch_calls == []
+    assert put_calls == []
 
 
 def test_flat_s2_map_drops_empty_summaries():
