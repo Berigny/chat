@@ -603,6 +603,10 @@ def _persist_structured_views(entity: str, structured: dict, *, ledger_id: str |
     if structured:
         writer_payload = dict(structured)
         writer_payload["s2"] = []
+
+    score_payload: Mapping[str, Any] | None = None
+    metrics_response: Mapping[str, Any] | None = None
+
     try:
         if writer_payload:
             write_structured_views(
@@ -614,6 +618,42 @@ def _persist_structured_views(entity: str, structured: dict, *, ledger_id: str |
     except requests.RequestException as exc:
         LOGGER.warning("Failed to persist structured S1 views: %s", exc)
 
+    if flat_map:
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if SETTINGS.api_key:
+            headers["x-api-key"] = SETTINGS.api_key
+        if ledger_id:
+            headers["X-Ledger-ID"] = ledger_id
+        try:
+            response = requests.post(
+                f"{API.rstrip('/')}/score/s2",
+                params={"entity": entity},
+                json=flat_map,
+                headers=headers,
+                timeout=10,
+            )
+            response.raise_for_status()
+            try:
+                score_candidate = response.json()
+            except ValueError:
+                score_candidate = None
+            if isinstance(score_candidate, Mapping):
+                score_payload = dict(score_candidate)
+                metrics_candidate = score_candidate.get("metrics")
+                if not isinstance(metrics_candidate, Mapping):
+                    metrics_candidate = score_candidate
+                if isinstance(metrics_candidate, Mapping):
+                    try:
+                        metrics_response = API_SERVICE.patch_metrics(
+                            entity,
+                            metrics_candidate,
+                            ledger_id=ledger_id,
+                        )
+                    except requests.RequestException as exc:
+                        LOGGER.warning("Failed to persist S2 metrics: %s", exc)
+        except requests.RequestException as exc:
+            LOGGER.warning("Failed to score S2 ledger map: %s", exc)
+
     try:
         API_SERVICE.put_ledger_s2(
             entity,
@@ -622,7 +662,42 @@ def _persist_structured_views(entity: str, structured: dict, *, ledger_id: str |
         )
     except requests.RequestException as exc:
         LOGGER.warning("Failed to persist S2 ledger map: %s", exc)
-    return flat_map
+
+    result: dict[str, Any] = {"s2": flat_map}
+    if isinstance(score_payload, Mapping):
+        result["score"] = score_payload
+    if isinstance(metrics_response, Mapping):
+        result["metrics"] = dict(metrics_response)
+    return result
+
+
+def _extract_structured_persist_outputs(
+    payload: Mapping[str, Any] | None,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Return sanitized S2 map and metrics from a persistence result."""
+
+    s2_map: dict[str, Any] = {}
+    metrics_payload: dict[str, Any] = {}
+
+    if isinstance(payload, Mapping):
+        s2_candidate = payload.get("s2") if hasattr(payload, "get") else None
+        if isinstance(s2_candidate, Mapping):
+            s2_map = {k: v for k, v in s2_candidate.items() if isinstance(k, str)}
+        else:
+            filtered: dict[str, Any] = {}
+            for key, value in payload.items():
+                if not isinstance(key, str) or key not in _S2_PRIME_KEYS:
+                    continue
+                if isinstance(value, Mapping):
+                    filtered[key] = value
+            if filtered:
+                s2_map = filtered
+
+        metrics_candidate = payload.get("metrics") if hasattr(payload, "get") else None
+        if isinstance(metrics_candidate, Mapping):
+            metrics_payload = dict(metrics_candidate)
+
+    return s2_map, metrics_payload
 
 
 def _persist_structured_views_from_ledger(entity: str) -> None:
@@ -638,10 +713,13 @@ def _persist_structured_views_from_ledger(entity: str) -> None:
     flat_map = _derive_flat_s2_map(structured)
     if not structured.get("slots"):
         st.session_state.latest_structured_ledger = flat_map
+        st.session_state.latest_structured_metrics = {}
         return
 
     persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
-    st.session_state.latest_structured_ledger = persisted
+    s2_map, metrics_payload = _extract_structured_persist_outputs(persisted)
+    st.session_state.latest_structured_ledger = s2_map
+    st.session_state.latest_structured_metrics = metrics_payload
 
 
 def _execute_enrichment(entity: str, *, limit: int = 50) -> dict[str, Any]:
@@ -750,7 +828,9 @@ def _execute_enrichment(entity: str, *, limit: int = 50) -> dict[str, Any]:
         structured = response_payload.get("structured") if isinstance(response_payload, dict) else None
         if structured:
             persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
-            st.session_state.latest_structured_ledger = persisted
+            s2_map, metrics_payload = _extract_structured_persist_outputs(persisted)
+            st.session_state.latest_structured_ledger = s2_map
+            st.session_state.latest_structured_metrics = metrics_payload
         try:
             ledger_snapshot = API_SERVICE.fetch_ledger(entity, ledger_id=ledger_id)
         except requests.RequestException:
@@ -1316,7 +1396,9 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
     structured = ingest_result.get("structured") if isinstance(ingest_result, dict) else {}
     if structured:
         persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
-        st.session_state.latest_structured_ledger = persisted
+        s2_map, metrics_payload = _extract_structured_persist_outputs(persisted)
+        st.session_state.latest_structured_ledger = s2_map
+        st.session_state.latest_structured_metrics = metrics_payload
     else:
         _persist_structured_views_from_ledger(entity)
     if record_chat:
