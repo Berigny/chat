@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping
 
 import requests
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -160,6 +165,8 @@ class DualSubstrateClient:
 
         params: dict[str, Any] = {"start": start, "depth": depth}
 
+        body = {"params": params}
+        logger.error("TRAVERSE_REQUEST payload=%s", json.dumps(body, indent=2))
         resp = requests.post(
             f"{self.base_url}/traverse",
             params=params,
