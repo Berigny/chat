@@ -43,8 +43,13 @@ def test_anchor_persists_structured_views(monkeypatch):
                             "prime": 11,
                             "body_prime": 101,
                             "summary": "Meeting summary",
-                        }
+                        },
+                        {"prime": 13, "summary": ""},
                     ],
+                    "raw": {
+                        "17": {"summary": None},
+                        "19": {"summary": "  Follow-up notes  "},
+                    },
                     "bodies": [],
                 },
                 "anchor": {"edges": [], "energy": 1.0},
@@ -79,10 +84,41 @@ def test_anchor_persists_structured_views(monkeypatch):
     assert s2_calls == [
         {
             "entity": "demo",
-            "payload": {"11": {"summary": "Meeting summary"}},
+            "payload": {
+                "11": {"summary": "Meeting summary"},
+                "19": {"summary": "Follow-up notes"},
+            },
             "ledger_id": "ledger-alpha",
         }
     ]
     assert st.session_state.latest_structured_ledger == {
-        "11": {"summary": "Meeting summary"}
+        "11": {"summary": "Meeting summary"},
+        "19": {"summary": "Follow-up notes"},
+    }
+
+
+def test_flat_s2_map_drops_empty_summaries():
+    structured = {
+        "11": {"summary": "   "},
+        "13": {"summary": None},
+        "17": {"summary": "Agenda"},
+        "raw": {
+            "19": {"summary": "  Next steps"},
+            "s2": [
+                {"prime": 11, "summary": ""},
+                {"prime": 13, "summary": None},
+                {"prime": 19, "summary": "  "},
+            ],
+        },
+        "s2": [
+            {"prime": 11, "summary": ""},
+            {"prime": 19, "summary": "Final"},
+        ],
+    }
+
+    result = chat_demo_app._derive_flat_s2_map(structured)
+
+    assert result == {
+        "17": {"summary": "Agenda"},
+        "19": {"summary": "Final"},
     }

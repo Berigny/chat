@@ -125,10 +125,16 @@ def _derive_flat_s2_map(structured: Mapping[str, Any] | None) -> dict[str, dict[
         return result
 
     def record(prime_key: str, entry: Mapping[str, Any]) -> None:
-        summary = entry.get("summary") if isinstance(entry, Mapping) else None
-        if isinstance(summary, str):
-            summary = summary.strip()
-        if summary:
+        if not isinstance(entry, Mapping):
+            return
+        raw_summary = entry.get("summary")
+        if isinstance(raw_summary, str):
+            summary = raw_summary.strip()
+        elif raw_summary is None:
+            summary = ""
+        else:
+            summary = str(raw_summary).strip()
+        if summary and prime_key not in result:
             result[prime_key] = {"summary": summary}
 
     def merge(candidate: object) -> None:
