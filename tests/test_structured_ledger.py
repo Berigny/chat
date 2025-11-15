@@ -79,15 +79,10 @@ def test_anchor_persists_structured_views(monkeypatch):
     assert s2_calls == [
         {
             "entity": "demo",
-            "payload": {
-                "11": {
-                    "prime": 11,
-                    "body_prime": 101,
-                    "summary": "Meeting summary",
-                }
-            },
+            "payload": {"11": {"summary": "Meeting summary"}},
             "ledger_id": "ledger-alpha",
         }
     ]
-    assert "11" in st.session_state.latest_structured_ledger
-    assert st.session_state.latest_structured_ledger["11"]["body_prime"] == 101
+    assert st.session_state.latest_structured_ledger == {
+        "11": {"summary": "Meeting summary"}
+    }

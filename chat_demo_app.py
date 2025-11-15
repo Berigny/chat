@@ -117,19 +117,26 @@ def _get_entity() -> str | None:
 _S2_PRIME_KEYS = {"11", "13", "17", "19"}
 
 
-def _derive_flat_s2_map(structured: Mapping[str, Any] | None) -> dict[str, dict[str, Any]]:
+def _derive_flat_s2_map(structured: Mapping[str, Any] | None) -> dict[str, dict[str, str]]:
     """Return a sanitized map of S2 entries keyed by allowed prime IDs."""
 
-    result: dict[str, dict[str, Any]] = {}
+    result: dict[str, dict[str, str]] = {}
     if not isinstance(structured, Mapping):
         return result
+
+    def record(prime_key: str, entry: Mapping[str, Any]) -> None:
+        summary = entry.get("summary") if isinstance(entry, Mapping) else None
+        if isinstance(summary, str):
+            summary = summary.strip()
+        if summary:
+            result[prime_key] = {"summary": summary}
 
     def merge(candidate: object) -> None:
         if isinstance(candidate, Mapping):
             for key in _S2_PRIME_KEYS:
                 value = candidate.get(key)
                 if isinstance(value, Mapping):
-                    result[key] = dict(value)
+                    record(key, value)
         elif isinstance(candidate, Sequence) and not isinstance(candidate, (str, bytes, bytearray)):
             for item in candidate:
                 if not isinstance(item, Mapping):
@@ -142,7 +149,7 @@ def _derive_flat_s2_map(structured: Mapping[str, Any] | None) -> dict[str, dict[
                 else:
                     continue
                 if prime_key in _S2_PRIME_KEYS:
-                    result[prime_key] = dict(item)
+                    record(prime_key, item)
 
     merge(structured)
     merge(structured.get("s2"))
@@ -1954,7 +1961,7 @@ def _render_app():
 
             # 1.  Re-use the same helper the app calls after every anchor
             latest = st.session_state.get("latest_structured_ledger", {})
-            s2_only = {k: v for k, v in latest.items() if k in {"11", "13", "17", "19"}}
+            s2_only = _derive_flat_s2_map(latest)
 
             st.caption("What the UI would send *right now* (after coercion):")
             st.json(s2_only)
@@ -1988,18 +1995,23 @@ def _render_app():
                 try:
                     edited_map = json.loads(edited)
                     assert isinstance(edited_map, dict)
-                    assert all(k in {"11", "13", "17", "19"} for k in edited_map)
+                    assert all(k in _S2_PRIME_KEYS for k in edited_map)
                 except Exception as e:
                     st.error(f"Invalid shape: {e}")
                 else:
+                    pruned_map = _derive_flat_s2_map(edited_map)
                     resp = requests.put(
                         f"{API.rstrip('/')}/ledger/s2?entity={_get_entity() or DEFAULT_ENTITY}",
                         headers=hdr,
-                        json=edited_map,
+                        json=pruned_map,
                         timeout=10,
                     )
-                    st.write(f"Status: {resp.status_code}")
-                    st.json(resp.json() if resp.content else {})
+                    st.write(f"HTTP status: {resp.status_code}")
+                    try:
+                        detail = resp.json()
+                    except Exception:
+                        detail = resp.text
+                    st.json(detail)
 
     with tab_about:
         col_left, col_right = st.columns(2)
