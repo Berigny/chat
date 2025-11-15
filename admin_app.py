@@ -13,7 +13,7 @@ from prime_tagger import tag_modifiers
 from services.api import ApiService
 from services.api_service import EnrichmentHelper
 from services.ethics_service import EthicsService
-from services.prime_service import create_prime_service
+from services.prime_service import PrimeService
 from services.memory_service import MemoryService
 from services.migration_cli import run_ledger_migration
 from services.structured_writer import write_structured_views
@@ -70,7 +70,7 @@ def _prime_service() -> "PrimeService":
     key = "__prime_service__"
     service = st.session_state.get(key) if hasattr(st, "session_state") else None
     if service is None:
-        service = create_prime_service(_api_service(), min(DEFAULT_PRIME_SCHEMA))
+        service = PrimeService(_api_service(), min(DEFAULT_PRIME_SCHEMA))
         if hasattr(st, "session_state"):
             st.session_state[key] = service
     return service
