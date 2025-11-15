@@ -62,6 +62,28 @@ def test_build_recall_response_returns_engine_text() -> None:
     assert api.last_call["ledger_id"] == "ledger-alpha"
 
 
+def test_build_recall_response_uses_custom_mode() -> None:
+    class ApiStub(SimpleNamespace):
+        def search(self, entity, query, **kwargs):
+            self.last_call = {"entity": entity, "query": query, **kwargs}
+            return {"response": "body mode"}
+
+    api = ApiStub()
+    service = MemoryService(api_service=api, prime_weights={})
+
+    response = service.build_recall_response(
+        "demo",
+        "recall meeting",
+        {},
+        ledger_id="ledger-beta",
+        mode="body",
+    )
+
+    assert response == "body mode"
+    assert api.last_call["mode"] == "body"
+    assert api.last_call["ledger_id"] == "ledger-beta"
+
+
 def test_build_recall_response_returns_none_for_empty_payload() -> None:
     class ApiStub(SimpleNamespace):
         def search(self, *_, **__):
