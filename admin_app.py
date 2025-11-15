@@ -608,9 +608,17 @@ def _normalize_slot(slot: Dict) -> Optional[Dict[str, object]]:
     return normalized
 
 
-def _render_slot_snippets(slots: Sequence[Dict[str, object]]) -> List[str]:
+def _normalize_slot_entries(slots: object) -> List[Dict[str, object]]:
+    if isinstance(slots, Mapping):
+        return [value for value in slots.values() if isinstance(value, Mapping)]
+    if isinstance(slots, Sequence):
+        return [value for value in slots if isinstance(value, Mapping)]
+    return []
+
+
+def _render_slot_snippets(slots: object) -> List[str]:
     snippets: List[str] = []
-    for slot in slots:
+    for slot in _normalize_slot_entries(slots):
         summary = slot.get("summary")
         if isinstance(summary, str) and summary.strip():
             snippets.append(summary.strip())
@@ -838,7 +846,7 @@ def _render_history() -> None:
                         else:
                             st.caption(f"• {title}")
 
-                s2_slots = recall.get("s2") or []
+                s2_slots = _normalize_slot_entries(recall.get("s2"))
                 if s2_slots:
                     st.caption("Structured S2 summaries:")
                     for slot in s2_slots:

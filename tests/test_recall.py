@@ -42,7 +42,7 @@ def test_recall_records_engine_response(monkeypatch):
     payload = {
         "response": "Here’s what the ledger currently recalls:\n• Meeting summary",
         "slots": [{"prime": 11, "summary": "Meeting summary"}],
-        "s2": [{"summary": "Meeting summary"}],
+        "s2": {"11": {"summary": "Meeting summary"}},
     }
     api = _DummyApi(payload=payload)
     monkeypatch.setattr(admin_app, "_api_service", lambda: api)
