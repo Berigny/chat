@@ -2313,7 +2313,7 @@ def _render_app():
                 step=1,
                 key="search_probe_limit",
             )
-            def _run_search_probe(query: str) -> None:
+            def _run_search_probe(query: str, mode_override: str | None = None) -> None:
                 trimmed_query = (query or "").strip()
                 if not trimmed_query:
                     st.warning("Enter a probe query first.")
@@ -2323,7 +2323,7 @@ def _render_app():
                         entity,
                         trimmed_query,
                         ledger_id=ledger_id,
-                        mode=mode_value,
+                        mode=mode_override if mode_override is not None else mode_value,
                         limit=int(probe_limit),
                     )
                 except requests.HTTPError as exc:
@@ -2363,6 +2363,11 @@ def _render_app():
                         st.json(visible_headers)
 
                     st.success("Search payload received.")
+                    st.session_state["search_probe_last_payload"] = payload
+                    st.session_state["search_probe_last_query"] = trimmed_query
+                    st.session_state["search_probe_last_mode"] = (
+                        mode_override if mode_override is not None else mode_value
+                    )
                     response_text = payload.get("response") if isinstance(payload, Mapping) else None
                     if response_text:
                         st.caption("Response text")
@@ -2392,6 +2397,34 @@ def _render_app():
                             _run_search_probe(latest_text)
                         else:
                             st.info("No anchored memories found yet.")
+
+            def _should_offer_body_retry(payload: Mapping[str, Any] | None) -> bool:
+                if not isinstance(payload, Mapping):
+                    return False
+                results = payload.get("results")
+                if isinstance(results, Sequence) and not isinstance(results, (str, bytes)):
+                    if len(results) == 0:
+                        return True
+                total = payload.get("total")
+                if isinstance(total, (int, float)) and total == 0:
+                    return True
+                return False
+
+            last_payload = st.session_state.get("search_probe_last_payload")
+            last_query = st.session_state.get("search_probe_last_query")
+            if _should_offer_body_retry(last_payload):
+                st.warning(
+                    "The last probe returned zero results. Body mode inspects the raw memory body "
+                    "so you can confirm whether a full-text hit exists even when snippet/slot "
+                    "indexes look empty."
+                )
+                st.caption(
+                    "Use this fallback when you expect stored text to match but structured search "
+                    "comes back blank. Body mode may surface the entry even if slots or recalls "
+                    "are missing."
+                )
+                if st.button("Retry in body mode", key="retry_search_body_mode"):
+                    _run_search_probe(last_query or probe_query, mode_override="body")
 
             st.divider()
             st.write("### 🧪 TEST ONLY – Entity promotion back-door")
