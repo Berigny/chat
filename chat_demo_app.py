@@ -106,6 +106,14 @@ def _ethics_service() -> EthicsService:
     return EthicsService(schema=schema)
 
 
+def _clean_attachment_header(text: str | None) -> str:
+    """Remove attachment headers from probe/debug queries."""
+
+    if not isinstance(text, str):
+        text = "" if text is None else str(text)
+    return re.sub(r"^\[Attachment:[^\]]+\]\s*", "", text).strip()
+
+
 METRIC_FLOORS = {**DEFAULT_METRIC_FLOORS, **SETTINGS.metric_floors}
 API_SERVICE = ApiService(API, SETTINGS.api_key)
 
@@ -2292,11 +2300,12 @@ def _render_app():
                 "do you have any quotes about God?",
             )
             with col_probe:
-                probe_query = st.text_input(
+                probe_query_raw = st.text_input(
                     "Probe query",
                     value=default_query,
                     key="search_probe_query",
                 )
+                probe_query = _clean_attachment_header(probe_query_raw)
 
             latest_preview = st.session_state.get("search_probe_latest_preview")
             if latest_preview:
@@ -2320,14 +2329,14 @@ def _render_app():
                 key="search_probe_limit",
             )
             def _run_search_probe(query: str, mode_override: str | None = None) -> None:
-                trimmed_query = (query or "").strip()
-                if not trimmed_query:
+                cleaned_query = _clean_attachment_header(query)
+                if not cleaned_query:
                     st.warning("Enter a probe query first.")
                     return
                 try:
                     payload = API_SERVICE.search(
                         entity,
-                        trimmed_query,
+                        cleaned_query,
                         ledger_id=ledger_id,
                         mode=mode_override if mode_override is not None else mode_value,
                         limit=int(probe_limit),
@@ -2337,7 +2346,7 @@ def _render_app():
                 else:
                     st.info("Search request succeeded.")
                     st.session_state["search_probe_last_payload"] = payload
-                    st.session_state["search_probe_last_query"] = trimmed_query
+                    st.session_state["search_probe_last_query"] = cleaned_query
                     st.session_state["search_probe_last_mode"] = (
                         mode_override if mode_override is not None else mode_value
                     )
