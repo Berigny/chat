@@ -2276,15 +2276,26 @@ def _render_app():
                 with st.expander("Auto-promotion response", expanded=not promotion_record.get("ok")):
                     st.json(promotion_record["result"])
 
+            latest_anchor_requested = False
             default_query = st.session_state.get(
                 "search_probe_query",
                 "do you have any quotes about God?",
             )
-            probe_query = st.text_input(
-                "Probe query",
-                value=default_query,
-                key="search_probe_query",
-            )
+            col_probe, col_use_latest = st.columns([3, 1])
+            with col_probe:
+                probe_query = st.text_input(
+                    "Probe query",
+                    value=default_query,
+                    key="search_probe_query",
+                )
+            with col_use_latest:
+                if st.button("Use latest anchor text", key="use_latest_anchor_text"):
+                    latest_anchor_requested = True
+
+            latest_preview = st.session_state.get("search_probe_latest_preview")
+            if latest_preview:
+                st.caption("Latest anchor snippet (verbatim)")
+                st.code(latest_preview, language="text")
             mode_options = ["auto (engine default)", "recall", "slots", "s1", "body"]
             selected_mode = st.selectbox(
                 "Search mode override",
@@ -2302,64 +2313,85 @@ def _render_app():
                 step=1,
                 key="search_probe_limit",
             )
-            if st.button("Probe /search endpoint", key="probe_search_endpoint"):
-                if not probe_query.strip():
+            def _run_search_probe(query: str) -> None:
+                trimmed_query = (query or "").strip()
+                if not trimmed_query:
                     st.warning("Enter a probe query first.")
-                else:
-                    try:
-                        payload, raw_response = API_SERVICE.search_with_response(
-                            entity,
-                            probe_query.strip(),
-                            ledger_id=ledger_id,
-                            mode=mode_value,
-                            limit=int(probe_limit),
-                        )
-                    except requests.HTTPError as exc:
-                        summary = _summarize_http_response(exc.response)
-                        status = summary.get("status", "unknown")
-                        st.error(f"/search returned HTTP {status}")
-                        detail = summary.get("detail")
-                        if detail is not None:
-                            if isinstance(detail, (dict, list)):
-                                st.json(detail)
-                            else:
-                                st.code(str(detail), language="json")
-                    except requests.RequestException as exc:
-                        st.error(f"Search call failed: {exc}")
-                    else:
-                        summary = _summarize_http_response(raw_response)
-                        status_display = summary.get("status")
-                        st.caption("HTTP response details")
-                        st.write(f"HTTP status: {status_display if status_display is not None else 'unknown'}")
-                        detail = summary.get("detail")
+                    return
+                try:
+                    payload, raw_response = API_SERVICE.search_with_response(
+                        entity,
+                        trimmed_query,
+                        ledger_id=ledger_id,
+                        mode=mode_value,
+                        limit=int(probe_limit),
+                    )
+                except requests.HTTPError as exc:
+                    summary = _summarize_http_response(exc.response)
+                    status = summary.get("status", "unknown")
+                    st.error(f"/search returned HTTP {status}")
+                    detail = summary.get("detail")
+                    if detail is not None:
                         if isinstance(detail, (dict, list)):
                             st.json(detail)
-                        elif detail is not None:
-                            st.code(str(detail) or "<empty response>", language="json")
                         else:
-                            fallback_text = getattr(raw_response, "text", "") or ""
-                            if fallback_text:
-                                st.code(fallback_text, language="json")
-                        header_candidates = {
-                            "content-type": raw_response.headers.get("Content-Type"),
-                            "x-request-id": raw_response.headers.get("X-Request-ID"),
-                            "x-ledger-id": raw_response.headers.get("X-Ledger-ID"),
-                        }
-                        visible_headers = {k: v for k, v in header_candidates.items() if v}
-                        if visible_headers:
-                            st.caption("Selected headers")
-                            st.json(visible_headers)
+                            st.code(str(detail), language="json")
+                except requests.RequestException as exc:
+                    st.error(f"Search call failed: {exc}")
+                else:
+                    summary = _summarize_http_response(raw_response)
+                    status_display = summary.get("status")
+                    st.caption("HTTP response details")
+                    st.write(f"HTTP status: {status_display if status_display is not None else 'unknown'}")
+                    detail = summary.get("detail")
+                    if isinstance(detail, (dict, list)):
+                        st.json(detail)
+                    elif detail is not None:
+                        st.code(str(detail) or "<empty response>", language="json")
+                    else:
+                        fallback_text = getattr(raw_response, "text", "") or ""
+                        if fallback_text:
+                            st.code(fallback_text, language="json")
+                    header_candidates = {
+                        "content-type": raw_response.headers.get("Content-Type"),
+                        "x-request-id": raw_response.headers.get("X-Request-ID"),
+                        "x-ledger-id": raw_response.headers.get("X-Ledger-ID"),
+                    }
+                    visible_headers = {k: v for k, v in header_candidates.items() if v}
+                    if visible_headers:
+                        st.caption("Selected headers")
+                        st.json(visible_headers)
 
-                        st.success("Search payload received.")
-                        response_text = payload.get("response") if isinstance(payload, Mapping) else None
-                        if response_text:
-                            st.caption("Response text")
-                            st.code(response_text)
-                        slots = payload.get("slots") if isinstance(payload, Mapping) else None
-                        if isinstance(slots, list) and slots:
-                            st.caption("Slots returned")
-                            st.json(slots)
-                        st.json(payload or {})
+                    st.success("Search payload received.")
+                    response_text = payload.get("response") if isinstance(payload, Mapping) else None
+                    if response_text:
+                        st.caption("Response text")
+                        st.code(response_text)
+                    slots = payload.get("slots") if isinstance(payload, Mapping) else None
+                    if isinstance(slots, list) and slots:
+                        st.caption("Slots returned")
+                        st.json(slots)
+                    st.json(payload or {})
+
+            if st.button("Probe /search endpoint", key="probe_search_endpoint"):
+                _run_search_probe(probe_query)
+
+            if latest_anchor_requested:
+                with st.spinner("Fetching latest anchor text…"):
+                    try:
+                        latest_text = API_SERVICE.latest_memory_text(
+                            entity,
+                            ledger_id=ledger_id,
+                        )
+                    except requests.RequestException as exc:
+                        st.error(f"Latest memory lookup failed: {exc}")
+                    else:
+                        if latest_text:
+                            st.session_state["search_probe_query"] = latest_text
+                            st.session_state["search_probe_latest_preview"] = latest_text
+                            _run_search_probe(latest_text)
+                        else:
+                            st.info("No anchored memories found yet.")
 
             st.divider()
             st.write("### 🧪 TEST ONLY – Entity promotion back-door")
