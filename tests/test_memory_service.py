@@ -1,6 +1,6 @@
 from types import SimpleNamespace
 
-from services.memory_service import MOBIUS_REFRESH_INTERVAL, MemoryService
+from services.memory_service import MOBIUS_REFRESH_INTERVAL, MemoryService, is_recall_query
 
 
 class DummyAssemblyApi:
@@ -115,3 +115,16 @@ def test_mobius_refresh_triggers_after_interval() -> None:
 
     assert triggered
     assert api.calls == 1
+
+
+def test_is_recall_query_matches_ledger_sentence_prompt() -> None:
+    prompt = (
+        "In the ledger this sentence exists: 'Memory is not quoted through a fuzzy "
+        "similarity search but through an exact p-adic valuation check' what's the paragraph after that sentence?"
+    )
+
+    assert is_recall_query(prompt)
+
+
+def test_is_recall_query_matches_plural_quotes() -> None:
+    assert is_recall_query("do you have any quotes about God?")
