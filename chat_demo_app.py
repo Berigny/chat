@@ -34,8 +34,6 @@ try:
 except ModuleNotFoundError:
     PdfReader = None
 
-import socket
-
 from app_settings import DEFAULT_METRIC_FLOORS, load_settings
 from agent_selector import (
     init_llm_provider,
@@ -60,6 +58,7 @@ from services.ledger_tasks import (
     perform_lattice_rotation,
     reset_discrete_ledger,
 )
+from tabs import about, chat as chat_tab, connectivity_search, ledger_metrics, memory_inference
 from prime_pipeline import (
     call_factor_extraction_llm,
     normalize_override_factors,
@@ -224,7 +223,7 @@ def _refresh_ledgers(*, silent: bool = False) -> None:
         st.session_state.ledgers = []
         st.session_state.ledger_refresh_error = str(exc)
         if not silent:
-            st.sidebar.error(f"Failed to load ledger list: {exc}")
+            st.error(f"Failed to load ledger list: {exc}")
         return
     if not st.session_state.ledgers:
         st.session_state.ledger_id = DEFAULT_LEDGER_ID
@@ -237,13 +236,13 @@ def _create_or_switch_ledger(ledger_id: str, *, notify: bool = True) -> bool:
     ledger_id = (ledger_id or "").strip()
     if not ledger_id:
         if notify:
-            st.sidebar.error("Ledger ID cannot be blank.")
+            st.error("Ledger ID cannot be blank.")
         return False
     try:
         API_SERVICE.create_ledger(ledger_id)
     except requests.RequestException as exc:
         if notify:
-            st.sidebar.error(f"Could not create/switch ledger: {exc}")
+            st.error(f"Could not create/switch ledger: {exc}")
         return False
 
     st.session_state.ledger_id = ledger_id
@@ -2023,50 +2022,6 @@ def _render_app():
             st.caption(f"**{m.get('timestamp', 'N/A')}**")
             st.code(m.get('text', '')[:200] + ("…" if len(m.get('text', '')) > 200 else ""))
 
-    st.sidebar.subheader("Ledger routing")
-    if st.sidebar.button("Refresh ledgers", key="refresh_ledgers_btn"):
-        _refresh_ledgers()
-    raw_ledgers = st.session_state.get("ledgers", [])
-    ledger_options: list[str] = []
-    for entry in raw_ledgers:
-        lid = entry.get("ledger_id")
-        if lid and lid not in ledger_options:
-            ledger_options.append(lid)
-    active_ledger = st.session_state.get("ledger_id") or DEFAULT_LEDGER_ID
-    if active_ledger and active_ledger not in ledger_options:
-        ledger_options.insert(0, active_ledger)
-    available_options = list(ledger_options)
-    available_options.append(ADD_LEDGER_OPTION)
-    initial_index = available_options.index(active_ledger) if active_ledger in available_options else 0
-    selection = st.sidebar.selectbox(
-        "Active ledger",
-        available_options,
-        index=initial_index,
-        help="All API calls send X-Ledger-ID so memories stay scoped per tenant.",
-    )
-    if selection == ADD_LEDGER_OPTION:
-        st.sidebar.caption("Rules: 3-32 chars, lowercase letters/digits, hyphens allowed in the middle.")
-        new_ledger = st.sidebar.text_input("New ledger ID", placeholder="team-alpha", key="new_ledger_id")
-        if st.sidebar.button("Create ledger", key="create_ledger_btn"):
-            valid, error = _validate_ledger_name(new_ledger)
-            if not valid:
-                st.sidebar.error(error)
-            elif _create_or_switch_ledger(new_ledger):
-                _refresh_ledgers(silent=True)
-                _trigger_rerun()
-    elif selection != active_ledger:
-        if _create_or_switch_ledger(selection):
-            _refresh_ledgers(silent=True)
-
-    if st.session_state.get("ledgers"):
-        st.sidebar.caption("Ledger directories:")
-        for entry in st.session_state["ledgers"]:
-            ledger_id = entry.get("ledger_id")
-            path = entry.get("path") or "—"
-            st.sidebar.caption(f"• {ledger_id}: {path}")
-    else:
-        st.sidebar.info("No ledgers detected yet — choose “Add new ledger…” to create one.")
-
     render_llm_selector(
         openai_ready=bool(OpenAI and OPENAI_API_KEY),
         gemini_ready=bool(genai and GENAI_KEY),
@@ -2154,566 +2109,74 @@ def _render_app():
 
     traversal_supported = _supports_traverse()
     inference_supported = _supports_inference_state()
-    tab_labels = ["Chat"]
-    if traversal_supported:
-        tab_labels.append("Traversal Paths")
-    debug_enabled = True
-    if inference_supported:
-        tab_labels.append("Inference Status")
-    if debug_enabled:
-        tab_labels.append("Connectivity Debug")
-    tab_labels.append("About DualSubstrate")
-    tabs = st.tabs(tab_labels)
+    tabs = st.tabs(
+        [
+            "Chat",
+            "Memory & Inference",
+            "Connectivity & Search",
+            "Ledger & Metrics",
+            "About DualSubstrate",
+        ]
+    )
 
-    tab_index = 0
-    tab_chat = tabs[tab_index]
-    tab_index += 1
-    tab_traverse = tabs[tab_index] if traversal_supported else None
-    if traversal_supported:
-        tab_index += 1
-    tab_inference = tabs[tab_index] if inference_supported else None
-    if inference_supported:
-        tab_index += 1
-    tab_debug = tabs[tab_index] if debug_enabled else None
-    if debug_enabled:
-        tab_index += 1
-    tab_about = tabs[tab_index]
+    with tabs[0]:
+        chat_tab.render_tab(
+            st.session_state.chat_history,
+            st.session_state.pending_attachments,
+        )
 
-    with tab_chat:
-        recent_history = list(reversed(st.session_state.chat_history[-20:]))
-        if st.session_state.pending_attachments:
-            for attachment in st.session_state.pending_attachments:
-                preview = (attachment.get("text") or "").strip()
-                summary = preview[:200].replace("\n", " ")
-                if len(preview) > 200:
-                    summary += "…"
-                st.info(f"Attachment ready: {attachment['name']} – {summary}")
-        if recent_history:
-            entries = [
-                f"<div class='chat-entry'><strong>{html.escape(role)}:</strong> {html.escape(content)}</div>"
-                for role, content in recent_history
-            ]
-            stream_html = "<hr>".join(entries)
-        else:
-            stream_html = "<div class='chat-entry'>No chat history yet.</div>"
-        st.markdown(f"<div class='chat-stream'>{stream_html}</div>", unsafe_allow_html=True)
-        st.markdown("<hr class='full-divider'>", unsafe_allow_html=True)
+    with tabs[1]:
+        memory_inference.render_tab(
+            entity=_get_entity(),
+            traversal_supported=traversal_supported,
+            inference_supported=inference_supported,
+            render_traversal_callback=_render_traversal_tab,
+            render_inference_callback=_render_inference_tab,
+            inference_snapshot=snapshot,
+        )
 
-        if traversal_supported or inference_supported:
-            info_labels: list[str] = []
-            if traversal_supported:
-                info_labels.append("Traversal Snapshot")
-            if inference_supported:
-                info_labels.append("Inference Snapshot")
-            if info_labels:
-                sub_tabs = st.tabs(info_labels)
-                sub_index = 0
-                if traversal_supported:
-                    with sub_tabs[sub_index]:
-                        _render_traversal_tab(entity)
-                    sub_index += 1
-                if inference_supported:
-                    with sub_tabs[sub_index]:
-                        _render_inference_tab(entity)
+    with tabs[2]:
+        connectivity_search.render_tab(
+            api_base=API,
+            settings=SETTINGS,
+            api_service=API_SERVICE,
+            default_entity=DEFAULT_ENTITY,
+            get_entity=_get_entity,
+            clean_attachment_header=_clean_attachment_header,
+            apply_backdoor_promotion=_apply_backdoor_promotion,
+            promotion_result_ok=_promotion_result_ok,
+            ensure_slots_recall_mode=_ensure_slots_recall_mode,
+            update_auto_promotion_tracker=_update_auto_promotion_tracker,
+            get_auto_promotion_record=_get_auto_promotion_record,
+            recommended_s2_metrics=RECOMMENDED_S2_METRICS,
+            safe_promotion_metrics=SAFE_PROMOTION_METRICS,
+            derive_flat_s2_map=_derive_flat_s2_map,
+            s2_prime_keys=_S2_PRIME_KEYS,
+        )
 
-    if debug_enabled and tab_debug:
-        with tab_debug:
-            st.subheader("Connectivity debug")
-            host_url = API.rstrip("/")
-            host_name = host_url.replace("https://", "").replace("http://", "").split("/")[0]
-            st.write(f"Target base URL: `{host_url}`")
-            try:
-                resolved_ip = socket.gethostbyname(host_name)
-                st.success(f"DNS resolved `{host_name}` → `{resolved_ip}`")
-            except Exception as exc:  # pragma: no cover - platform specific
-                st.error(f"DNS resolution failed for `{host_name}`: {exc}")
+    with tabs[3]:
+        ledger_metrics.render_tab(
+            tokens_saved=tokens_saved,
+            ledger_integrity=ledger_integrity,
+            durability_hours=durability_h,
+            add_ledger_option=ADD_LEDGER_OPTION,
+            refresh_ledgers=_refresh_ledgers,
+            create_or_switch_ledger=_create_or_switch_ledger,
+            validate_ledger_name=_validate_ledger_name,
+            load_ledger=_load_ledger,
+            render_ledger_state=_render_ledger_state,
+            get_entity=_get_entity,
+            memory_service=MEMORY_SERVICE,
+            perform_lattice_rotation_fn=perform_lattice_rotation,
+            trigger_rerun=_trigger_rerun,
+            api_service=API_SERVICE,
+            execute_enrichment=_execute_enrichment,
+            refresh_capabilities_block=_refresh_capabilities_block,
+            render_enrichment_panel=_render_enrichment_panel,
+        )
 
-            debug_url = f"{host_url}/docs"
-            st.write(f"Trying GET `{debug_url}`")
-            headers: dict[str, str] = {}
-            if SETTINGS.api_key:
-                headers["x-api-key"] = SETTINGS.api_key
-            try:
-                response = requests.get(debug_url, headers=headers, timeout=10)
-                st.write(f"Status: {response.status_code}")
-                preview = response.text[:500]
-                if len(response.text) > 500:
-                    preview += "…"
-                st.code(preview or "<empty response>", language="text")
-            except Exception as exc:  # pragma: no cover - network dependent
-                st.error(f"HTTP error: {exc}")
-
-            st.caption("Build the search index once after the first anchor to enable retrieval debugging.")
-            if st.button("Build search index", key="build_search_index"):
-                entity = _get_entity() or DEFAULT_ENTITY
-                post_headers = dict(headers)
-                try:
-                    resp = requests.post(
-                        f"{API.rstrip('/')}/search/index",
-                        params={"entity": entity},
-                        headers=post_headers,
-                        timeout=30,
-                    )
-                except Exception as exc:  # pragma: no cover - network dependent
-                    st.error(f"Index build error: {exc}")
-                else:
-                    st.write(f"HTTP status: {resp.status_code}")
-                    try:
-                        payload = resp.json()
-                    except Exception:
-                        payload = resp.text
-                    if isinstance(payload, (dict, list)):
-                        st.json(payload)
-                    else:
-                        st.code(str(payload) or "<empty response>", language="json")
-                    if resp.status_code == 404:
-                        st.info("/search/index is not enabled on this deployment yet.")
-                    st.toast(
-                        "Search index build triggered – only needed once after the first anchor.",
-                        icon="🔍",
-                    )
-
-            entity = _get_entity() or DEFAULT_ENTITY
-            ledger_id = st.session_state.get("ledger_id")
-
-            st.divider()
-            st.write("### Search diagnostics")
-            st.caption("Probe the recall/search endpoints without leaving the debug tab.")
-            promotion_record = _get_auto_promotion_record(entity, ledger_id)
-            if promotion_record is None:
-                st.caption("Auto-promotion attempts to raise lawfulness to tier 3 on load.")
-            elif promotion_record.get("ok"):
-                st.success("Default auto-promotion applied – S2 gates should be open.")
-            else:
-                error_text = promotion_record.get("error")
-                if error_text:
-                    st.warning(f"Auto-promotion still failing: {error_text}")
-                else:
-                    st.warning("Auto-promotion pending – inspect response details below.")
-            if promotion_record and promotion_record.get("result"):
-                with st.expander("Auto-promotion response", expanded=not promotion_record.get("ok")):
-                    st.json(promotion_record["result"])
-
-            col_probe, col_use_latest = st.columns([3, 1])
-            default_query = st.session_state.get(
-                "search_probe_query",
-                "do you have any quotes about God?",
-            )
-            with col_probe:
-                probe_query_raw = st.text_input(
-                    "Probe query",
-                    value=default_query,
-                    key="search_probe_query",
-                )
-                probe_query = _clean_attachment_header(probe_query_raw)
-
-            latest_preview = st.session_state.get("search_probe_latest_preview")
-            if latest_preview:
-                st.caption("Latest anchor snippet (verbatim)")
-                st.code(latest_preview, language="text")
-            mode_options = ["auto (engine default)", "recall", "slots", "s1", "body"]
-            selected_mode = st.selectbox(
-                "Search mode override",
-                mode_options,
-                index=0,
-                key="search_probe_mode",
-                help="Force a specific /search mode while debugging recall.",
-            )
-            mode_value = None if selected_mode.startswith("auto") else selected_mode
-            probe_limit = st.number_input(
-                "Result limit",
-                min_value=1,
-                max_value=20,
-                value=5,
-                step=1,
-                key="search_probe_limit",
-            )
-            def _run_search_probe(query: str, mode_override: str | None = None) -> None:
-                cleaned_query = _clean_attachment_header(query)
-                if not cleaned_query:
-                    st.warning("Enter a probe query first.")
-                    return
-                try:
-                    payload = API_SERVICE.search(
-                        entity,
-                        cleaned_query,
-                        ledger_id=ledger_id,
-                        mode=mode_override if mode_override is not None else mode_value,
-                        limit=int(probe_limit),
-                    )
-                except requests.RequestException as exc:
-                    st.error(f"Search call failed: {exc}")
-                else:
-                    st.info("Search request succeeded.")
-                    st.session_state["search_probe_last_payload"] = payload
-                    st.session_state["search_probe_last_query"] = cleaned_query
-                    st.session_state["search_probe_last_mode"] = (
-                        mode_override if mode_override is not None else mode_value
-                    )
-                    response_text = payload.get("response") if isinstance(payload, Mapping) else None
-                    if response_text:
-                        st.caption("Response text")
-                        st.code(response_text)
-                    slots = payload.get("slots") if isinstance(payload, Mapping) else None
-                    if isinstance(slots, list) and slots:
-                        st.caption("Slots returned")
-                        st.json(slots)
-                    st.json(payload or {})
-
-            if st.button("Probe /search endpoint", key="probe_search_endpoint"):
-                _run_search_probe(probe_query)
-
-            def _should_offer_body_retry(payload: Mapping[str, Any] | None) -> bool:
-                if not isinstance(payload, Mapping):
-                    return False
-                results = payload.get("results")
-                if isinstance(results, Sequence) and not isinstance(results, (str, bytes)):
-                    if len(results) == 0:
-                        return True
-                total = payload.get("total")
-                if isinstance(total, (int, float)) and total == 0:
-                    return True
-                return False
-
-            last_payload = st.session_state.get("search_probe_last_payload")
-            last_query = st.session_state.get("search_probe_last_query")
-            if _should_offer_body_retry(last_payload):
-                st.warning(
-                    "The last probe returned zero results. Body mode inspects the raw memory body "
-                    "so you can confirm whether a full-text hit exists even when snippet/slot "
-                    "indexes look empty."
-                )
-                st.caption(
-                    "Use this fallback when you expect stored text to match but structured search "
-                    "comes back blank. Body mode may surface the entry even if slots or recalls "
-                    "are missing."
-                )
-                if st.button("Retry in body mode", key="retry_search_body_mode"):
-                    _run_search_probe(last_query or probe_query, mode_override="body")
-
-            st.divider()
-            st.write("### 🧪 TEST ONLY – Entity promotion back-door")
-            st.caption(
-                "This bypasses real governance. Use it to unlock S2 search/writes "
-                "while the scoring pipeline is being wired."
-            )
-
-            hdr = {"Content-Type": "application/json"}
-            if SETTINGS.api_key:
-                hdr["x-api-key"] = SETTINGS.api_key
-
-            # 1.  lawfulness tier
-            new_tier = st.slider("Lawfulness tier", 0, 3, 1, help="0=none, 3=S2 unlocked")
-            if st.button("Apply tier", key="apply_lawfulness"):
-                try:
-                    resp = requests.patch(
-                        f"{API.rstrip('/')}/ledger/lawfulness",
-                        params={"entity": entity, "ledger_id": ledger_id} if ledger_id else {"entity": entity},
-                        headers=hdr,
-                        json={"value": new_tier},
-                        timeout=10,
-                    )
-                    st.write(f"Lawfulness → {new_tier} : HTTP {resp.status_code}")
-                    if resp.status_code != 200:
-                        st.json(resp.json() if resp.content else resp.text)
-                except Exception as exc:
-                    st.error(f"Lawfulness patch failed: {exc}")
-
-            # 2.  safe metrics in one click
-            safe_metrics = dict(SAFE_PROMOTION_METRICS)
-            if st.button("Patch safe metrics", key="patch_metrics"):
-                try:
-                    resp = requests.patch(
-                        f"{API.rstrip('/')}/ledger/metrics",
-                        params={"entity": entity, "ledger_id": ledger_id} if ledger_id else {"entity": entity},
-                        headers=hdr,
-                        json=safe_metrics,
-                        timeout=10,
-                    )
-                    st.write(f"Metrics patched : HTTP {resp.status_code}")
-                    if resp.status_code != 200:
-                        st.json(resp.json() if resp.content else resp.text)
-                except Exception as exc:
-                    st.error(f"Metrics patch failed: {exc}")
-
-            # 3.  one-click “Promote to S2”
-            if st.button("🔓 Promote entity to S2 tier", key="promote_s2_backdoor"):
-                try:
-                    result = _apply_backdoor_promotion(
-                        entity,
-                        ledger_id,
-                        metrics_payload=safe_metrics,
-                    )
-                except Exception as exc:
-                    st.error(f"Promotion failed: {exc}")
-                else:
-                    success = _promotion_result_ok(result)
-                    if success:
-                        st.success("Entity promoted – S2 writes & search unlocked.")
-                        _ensure_slots_recall_mode()
-                    else:
-                        st.warning("Promotion attempted – inspect HTTP details below.")
-                    st.json(result)
-                    _update_auto_promotion_tracker(entity, ledger_id, result=result)
-
-            if st.button("Promote to S2 tier", key="promote_s2"):
-                entity = _get_entity() or DEFAULT_ENTITY
-                ledger_id = st.session_state.get("ledger_id")
-                metrics_payload = dict(RECOMMENDED_S2_METRICS)
-                try:
-                    API_SERVICE.patch_metrics(
-                        entity,
-                        metrics_payload,
-                        ledger_id=ledger_id,
-                    )
-                    API_SERVICE.patch_lawfulness(
-                        entity,
-                        3,
-                        ledger_id=ledger_id,
-                    )
-                except requests.RequestException as exc:
-                    st.error(f"S2 promotion failed: {exc}")
-                else:
-                    st.session_state.recall_mode = "slots"
-                    _refresh_capabilities_block()
-                    st.toast("S2 recall unlocked – slots search enabled.", icon="🚀")
-                    st.success("Promotion succeeded – recall mode updated.")
-
-            st.divider()
-            st.write("### /traverse debug")
-            # Remove any legacy JSON payload state now that the debug UI uses query params.
-            if "debug_traverse_payload" in st.session_state:
-                st.session_state.pop("debug_traverse_payload")
-
-            start_node = st.number_input(
-                "Start node",
-                min_value=0,
-                max_value=7,
-                value=2,
-                step=1,
-                format="%d",
-            )
-            traverse_depth = st.number_input(
-                "Traversal depth",
-                min_value=1,
-                max_value=10,
-                value=3,
-                step=1,
-                format="%d",
-            )
-
-            if st.button("Debug /traverse", key="debug_traverse"):
-                params = {
-                    "start": int(start_node),
-                    "depth": int(traverse_depth),
-                }
-                try:
-                    resp = requests.post(
-                        f"{host_url}/traverse",
-                        params=params,
-                        headers=headers,
-                        timeout=15,
-                    )
-                    st.write(f"Status: {resp.status_code}")
-                    st.code(resp.text[:2000] or "<empty response>", language="json")
-                except Exception as exc:  # pragma: no cover - network dependent
-                    st.error(f"Traversal call error: {exc}")
-
-            st.divider()
-            st.write("### /ledger/s2 payload debug")
-
-            # 1.  Re-use the same helper the app calls after every anchor
-            latest = st.session_state.get("latest_structured_ledger", {})
-            s2_only = _derive_flat_s2_map(latest)
-
-            st.caption("What the UI would send *right now* (after coercion):")
-            st.json(s2_only)
-
-            hdr: dict[str, str] = {"Content-Type": "application/json"}
-            if SETTINGS.api_key:
-                hdr["x-api-key"] = SETTINGS.api_key
-
-            if st.button("Copy as cURL", key="copy_s2_curl"):
-                host = API.rstrip("/")
-                entity = _get_entity() or DEFAULT_ENTITY
-                body = json.dumps(s2_only, sort_keys=True, separators=(",", ":"))
-                hdr_str = " ".join(f'-H "{k}: {v}"' for k, v in hdr.items())
-                curl = (
-                    f"curl -X PUT {hdr_str} -d '{body}' "
-                    f'"{host}/ledger/s2?entity={entity}"'
-                )
-                st.code(curl, language="bash")
-                st.toast(
-                    "cURL copied to clipboard area – paste into Fly console to replay",
-                    icon="📋",
-                )
-
-            edited = st.text_area(
-                "Edit payload (danger zone)",
-                value=json.dumps(s2_only, indent=2),
-                key="s2_live_edit",
-                height=300,
-            )
-            if st.button("Send edited payload", key="send_s2_edit"):
-                try:
-                    edited_map = json.loads(edited)
-                    assert isinstance(edited_map, dict)
-                    assert all(k in _S2_PRIME_KEYS for k in edited_map)
-                except Exception as e:
-                    st.error(f"Invalid shape: {e}")
-                else:
-                    pruned_map = _derive_flat_s2_map(edited_map)
-                    resp = requests.put(
-                        f"{API.rstrip('/')}/ledger/s2?entity={_get_entity() or DEFAULT_ENTITY}",
-                        headers=hdr,
-                        json=pruned_map,
-                        timeout=10,
-                    )
-                    st.write(f"HTTP status: {resp.status_code}")
-                    try:
-                        detail = resp.json()
-                    except Exception:
-                        detail = resp.text
-                    st.json(detail)
-
-    with tab_about:
-        col_left, col_right = st.columns(2)
-        with col_left:
-            st.markdown(
-                """
-
-                <div class="about-col about-col-left">
-                    <h2 class="about-heading" style="font-size: 01.2rem; font-weight: 400">DualSubstrate ledger demo</h2>
-                    <p class="about-text">To test this DualSubstrate ledger demo speak or type. Everything anchors to the prime-based ledger. Tip: type /q or “what did I say at 7 pm” and I’ll quote you word-for-word from the prime-ledger. Anything else = normal chat.</p>
-                    <hr>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                """
-                <div class="prime-ledger-block">
-                    <h2 class="prime-heading" style="font-size: 1.2rem; font-weight: 400">Prime-Ledger Snapshot</h2>
-                    <p class="prime-text">A live, word-perfect copy of everything you’ve anchored - sealed in primes, mathematically identical forever.</p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            if st.button("Load ledger", key="load_ledger_about"):
-                _load_ledger()
-            if st.session_state.ledger_state:
-                _render_ledger_state(st.session_state.ledger_state)
-        with col_right:
-            st.markdown(
-                """
-                <div class="about-col about-col-right">
-                    <h2 class="metrics-heading" style="font-size: 1.25rem; font-weight: 400">Metrics</h2>
-                    <p class="metrics-paragraph">Tokens Saved = words you never had to re-compute; Integrity = % of anchors that were unique (100 % = zero duplicates); Durability = hours your speech has survived restarts.</p>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.markdown('<div class="metrics-row">', unsafe_allow_html=True)
-            metric_cols = st.columns(3)
-            with metric_cols[0]:
-                st.metric("Tokens Saved", tokens_saved)
-            with metric_cols[1]:
-                st.metric("Integrity %", f"{ledger_integrity*100:.1f} %")
-            with metric_cols[2]:
-                st.metric("Durability h", f"{durability_h:.1f}")
-
-            if entity:
-                telemetry_state = snapshot.get("inference_state")
-                telemetry_traverse = snapshot.get("inference_traverse")
-                telemetry_memories = snapshot.get("inference_memories")
-                telemetry_retrieve = snapshot.get("inference_retrieve")
-                telemetry_supported = snapshot.get("inference_supported")
-                telemetry_errors = snapshot.get("inference_errors") or []
-
-                telemetry_payloads = [
-                    ("State", telemetry_state),
-                    ("Traverse", telemetry_traverse),
-                    ("Memories", telemetry_memories),
-                    ("Retrieve", telemetry_retrieve),
-                ]
-                telemetry_any = any(payload is not None for _, payload in telemetry_payloads)
-
-                if telemetry_any:
-                    st.markdown("#### Inference telemetry")
-                    for label, payload in telemetry_payloads:
-                        if payload is None:
-                            continue
-                        expanded = label == "State"
-                        with st.expander(label, expanded=expanded):
-                            if isinstance(payload, (list, dict)):
-                                st.json(payload)
-                            else:
-                                st.write(payload)
-                elif telemetry_supported is False:
-                    st.caption("Inference telemetry endpoints are not available on this deployment.")
-                elif telemetry_errors:
-                    st.warning("Inference telemetry unavailable: " + "; ".join(telemetry_errors))
-            st.markdown('</div>', unsafe_allow_html=True)
-            st.markdown("### Möbius lattice rotation")
-            if st.button("♾️ Möbius Transform", help="Reproject the exponent lattice"):
-                entity = _get_entity()
-                if not entity:
-                    st.warning("No active entity.")
-                    return
-                ledger_id = st.session_state.get("ledger_id")
-                try:
-                    data = perform_lattice_rotation(
-                        API_SERVICE,
-                        entity,
-                        ledger_id=ledger_id,
-                        axis=(0.0, 0.0, 1.0),
-                        angle=1.0472,
-                    )
-                    st.success(
-                        f"Rotated lattice. Δenergy = {data.get('energy_cycles')}, "
-                        f"checksum {data.get('original_checksum')} → {data.get('rotated_checksum')}."
-                    )
-                    _load_ledger()
-                    MEMORY_SERVICE.note_mobius_rotation(entity, ledger_id=ledger_id)
-                    MEMORY_SERVICE.realign_with_ledger(
-                        entity,
-                        ledger_id=ledger_id,
-                    )
-                    if st.session_state.ledger_state:
-                        st.caption("Updated ledger snapshot after Möbius transform:")
-                        _render_ledger_state(st.session_state.ledger_state)
-                    _trigger_rerun()
-                except requests.RequestException as exc:
-                    st.error(f"Möbius rotation failed: {exc}")
-            if st.button("Initiate Enrichment", help="Replay stored transcripts with richer prime coverage"):
-                with st.spinner("Enriching memories…"):
-                    entity = _get_entity()
-                    if not entity:
-                        st.warning("No active entity.")
-                    else:
-                        summary = _execute_enrichment(entity, limit=50)
-                        st.session_state.latest_enrichment_report = summary
-                        if summary.get("error"):
-                            st.error(summary["error"])
-                        elif summary.get("message") and not summary.get("enriched"):
-                            st.info(summary["message"])
-                        else:
-                            st.success(
-                                f"Enriched {summary.get('enriched', 0)}/{summary.get('total', 0)} memories."
-                            )
-                            failures = summary.get("failures")
-                            if failures:
-                                st.warning("Some entries failed: " + "; ".join(failures))
-                        _refresh_capabilities_block()
-            if st.session_state.get("latest_enrichment_report"):
-                _render_enrichment_panel(st.session_state.latest_enrichment_report)
-
-    if traversal_supported and tab_traverse is not None:
-        with tab_traverse:
-            _render_traversal_tab(entity)
-    if inference_supported and tab_inference is not None:
-        with tab_inference:
-            _render_inference_tab(entity)
+    with tabs[4]:
+        about.render_tab()
 
 
 def main() -> None:
