@@ -127,6 +127,28 @@ class DualSubstrateClient:
         payload = resp.json()
         return payload if isinstance(payload, dict) else {}
 
+    def _request_search(
+        self,
+        entity: str,
+        query: str,
+        *,
+        ledger_id: str | None = None,
+        mode: str | None = None,
+        limit: int | None = None,
+    ) -> requests.Response:
+        params: dict[str, Any] = {"entity": entity, "q": query}
+        if mode:
+            params["mode"] = mode
+        if limit is not None:
+            params["limit"] = int(limit)
+
+        return requests.get(
+            f"{self.base_url}/search",
+            params=params,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=self.timeout,
+        )
+
     def search(
         self,
         entity: str,
@@ -138,21 +160,39 @@ class DualSubstrateClient:
     ) -> dict[str, Any]:
         """Call the `/search` endpoint for recall and slot lookups."""
 
-        params: dict[str, Any] = {"entity": entity, "q": query}
-        if mode:
-            params["mode"] = mode
-        if limit is not None:
-            params["limit"] = int(limit)
-
-        resp = requests.get(
-            f"{self.base_url}/search",
-            params=params,
-            headers=self._headers(ledger_id=ledger_id),
-            timeout=self.timeout,
+        resp = self._request_search(
+            entity,
+            query,
+            ledger_id=ledger_id,
+            mode=mode,
+            limit=limit,
         )
         resp.raise_for_status()
         payload = resp.json()
         return payload if isinstance(payload, dict) else {}
+
+    def search_with_response(
+        self,
+        entity: str,
+        query: str,
+        *,
+        ledger_id: str | None = None,
+        mode: str | None = None,
+        limit: int | None = None,
+    ) -> tuple[dict[str, Any], requests.Response]:
+        """Return the parsed search payload along with the raw HTTP response."""
+
+        resp = self._request_search(
+            entity,
+            query,
+            ledger_id=ledger_id,
+            mode=mode,
+            limit=limit,
+        )
+        resp.raise_for_status()
+        payload = resp.json()
+        parsed = payload if isinstance(payload, dict) else {}
+        return parsed, resp
 
     def traverse(
         self,
