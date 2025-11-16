@@ -1098,6 +1098,7 @@ def _load_base64_image(name: str) -> str | None:
 
 def _process_memory_text(text: str, use_openai: bool, *, attachments: list[dict] | None = None):
     cleaned = (text or "").strip()
+    clean_query = re.sub(r"^\[Attachment:[^\]]+\]\s*", "", cleaned).strip()
     if not cleaned:
         st.warning("Enter some text first.")
         return
@@ -1113,10 +1114,10 @@ def _process_memory_text(text: str, use_openai: bool, *, attachments: list[dict]
     if "chat_history" not in st.session_state:
         st.session_state.chat_history = []
     st.session_state.chat_history.append(("You", cleaned))
-    if _maybe_handle_recall_query(cleaned):
+    if _maybe_handle_recall_query(clean_query):
         return
-    quote_mode = is_recall_query(cleaned)
-    quote_count = estimate_quote_count(cleaned) if quote_mode else None
+    quote_mode = is_recall_query(clean_query)
+    quote_count = estimate_quote_count(clean_query) if quote_mode else None
     if attachments:
         for attachment in attachments:
             preview = (attachment.get("text") or "").strip().replace("\n", " ")
@@ -1130,7 +1131,7 @@ def _process_memory_text(text: str, use_openai: bool, *, attachments: list[dict]
                 )
             )
     bot_reply = _chat_response(
-        cleaned,
+        clean_query,
         use_openai=use_openai,
         quote_count=quote_count,
         attachments=attachments,
@@ -1505,7 +1506,8 @@ def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = Fa
 
 def _maybe_handle_recall_query(text: str) -> bool:
     """Check for recall triggers and reply with ledger content if matched."""
-    if not is_recall_query(text):
+    clean_query = re.sub(r"^\[Attachment:[^\]]+\]\s*", "", text or "").strip()
+    if not is_recall_query(clean_query):
         return False
 
     entity = _get_entity()
@@ -1525,7 +1527,7 @@ def _maybe_handle_recall_query(text: str) -> bool:
     try:
         response = MEMORY_SERVICE.build_recall_response(
             entity,
-            text,
+            clean_query,
             schema,
             ledger_id=ledger_id,
             mode=recall_mode,
