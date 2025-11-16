@@ -304,6 +304,17 @@ def _response_ok(summary: Mapping[str, Any] | None) -> bool:
     return isinstance(status, int) and 200 <= status < 300
 
 
+def _promotion_result_ok(result: Mapping[str, Any] | None) -> bool:
+    if not isinstance(result, Mapping):
+        return False
+    return _response_ok(result.get("lawfulness")) and _response_ok(result.get("metrics"))
+
+
+def _ensure_slots_recall_mode() -> None:
+    if st.session_state.get("recall_mode") != "slots":
+        st.session_state.recall_mode = "slots"
+
+
 def _apply_backdoor_promotion(
     entity: str,
     ledger_id: str | None,
@@ -350,9 +361,7 @@ def _update_auto_promotion_tracker(
     if "auto_promotion_tracker" not in st.session_state:
         st.session_state.auto_promotion_tracker = {}
     tracker = st.session_state.auto_promotion_tracker
-    ok = False
-    if isinstance(result, Mapping):
-        ok = _response_ok(result.get("lawfulness")) and _response_ok(result.get("metrics"))
+    ok = _promotion_result_ok(result)
     tracker[key] = {
         "ok": ok,
         "result": result,
@@ -388,6 +397,8 @@ def _auto_promote_entity_if_needed() -> None:
         _update_auto_promotion_tracker(entity, ledger_id, result=None, error=str(exc))
         return
     _update_auto_promotion_tracker(entity, ledger_id, result=result)
+    if _promotion_result_ok(result):
+        _ensure_slots_recall_mode()
 
 
 def _fetch_prime_schema(entity: str | None) -> dict[int, dict]:
@@ -2383,9 +2394,10 @@ def _render_app():
                 except Exception as exc:
                     st.error(f"Promotion failed: {exc}")
                 else:
-                    success = _response_ok(result.get("lawfulness")) and _response_ok(result.get("metrics"))
+                    success = _promotion_result_ok(result)
                     if success:
                         st.success("Entity promoted – S2 writes & search unlocked.")
+                        _ensure_slots_recall_mode()
                     else:
                         st.warning("Promotion attempted – inspect HTTP details below.")
                     st.json(result)

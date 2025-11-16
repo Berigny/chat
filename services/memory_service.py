@@ -30,7 +30,7 @@ __all__ = [
 ]
 
 
-_QUOTE_KEYWORD_PATTERN = re.compile(r"\b(remember|recall|quote|show)\b")
+_QUOTE_KEYWORD_PATTERN = re.compile(r"\b(remember|recall|quote(?:s|d|ing)?|show)\b")
 _DIALOGUE_LABEL_PATTERN = re.compile(
     r"^(?:you|user|assistant|bot|system|model|ai|llm)\s*:", re.IGNORECASE
 )
@@ -45,6 +45,17 @@ _PREFIXES = (
     "remind me",
     "what was the update",
     "recall",
+)
+_LEDGER_LOOKUP_HINTS = (
+    "quote",
+    "quotes",
+    "quoted",
+    "quoting",
+    "sentence",
+    "paragraph",
+    "entry",
+    "line",
+    "memory",
 )
 
 _DIGIT_PATTERN = re.compile(r"\b\d+\b")
@@ -1345,6 +1356,20 @@ class MemoryService:
         return True
 
 
+def _mentions_ledger_lookup(text: str) -> bool:
+    if "ledger" not in text:
+        return False
+    return any(hint in text for hint in _LEDGER_LOOKUP_HINTS)
+
+
 def is_recall_query(text: str) -> bool:
     normalized = (text or "").strip().lower()
-    return normalized.startswith(_PREFIXES) or _QUOTE_KEYWORD_PATTERN.search(normalized) is not None
+    if not normalized:
+        return False
+    if normalized.startswith(_PREFIXES):
+        return True
+    if _QUOTE_KEYWORD_PATTERN.search(normalized):
+        return True
+    if _mentions_ledger_lookup(normalized):
+        return True
+    return False
