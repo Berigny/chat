@@ -2307,7 +2307,7 @@ def _render_app():
                     st.warning("Enter a probe query first.")
                 else:
                     try:
-                        payload = API_SERVICE.search(
+                        payload, raw_response = API_SERVICE.search_with_response(
                             entity,
                             probe_query.strip(),
                             ledger_id=ledger_id,
@@ -2327,6 +2327,29 @@ def _render_app():
                     except requests.RequestException as exc:
                         st.error(f"Search call failed: {exc}")
                     else:
+                        summary = _summarize_http_response(raw_response)
+                        status_display = summary.get("status")
+                        st.caption("HTTP response details")
+                        st.write(f"HTTP status: {status_display if status_display is not None else 'unknown'}")
+                        detail = summary.get("detail")
+                        if isinstance(detail, (dict, list)):
+                            st.json(detail)
+                        elif detail is not None:
+                            st.code(str(detail) or "<empty response>", language="json")
+                        else:
+                            fallback_text = getattr(raw_response, "text", "") or ""
+                            if fallback_text:
+                                st.code(fallback_text, language="json")
+                        header_candidates = {
+                            "content-type": raw_response.headers.get("Content-Type"),
+                            "x-request-id": raw_response.headers.get("X-Request-ID"),
+                            "x-ledger-id": raw_response.headers.get("X-Ledger-ID"),
+                        }
+                        visible_headers = {k: v for k, v in header_candidates.items() if v}
+                        if visible_headers:
+                            st.caption("Selected headers")
+                            st.json(visible_headers)
+
                         st.success("Search payload received.")
                         response_text = payload.get("response") if isinstance(payload, Mapping) else None
                         if response_text:
