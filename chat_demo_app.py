@@ -124,6 +124,13 @@ RECOMMENDED_S2_METRICS = {
     "K": 0.5,
 }
 
+SAFE_PROMOTION_METRICS = {
+    "ΔE": -1.0,
+    "ΔDrift": -1.0,
+    "ΔRetention": 0.8,
+    "K": 0.0,
+}
+
 
 def _get_entity() -> str | None:
     return st.session_state.get("entity")
@@ -262,6 +269,125 @@ def _ensure_ledger_bootstrap() -> None:
     active = st.session_state.get("ledger_id") or DEFAULT_LEDGER_ID
     if active:
         _create_or_switch_ledger(active, notify=False)
+
+
+def _auto_promotion_key(entity: str | None, ledger_id: str | None) -> str | None:
+    if not entity:
+        return None
+    normalized_ledger = ledger_id or ""
+    return f"{entity}::{normalized_ledger}"
+
+
+def _summarize_http_response(response):
+    summary: dict[str, Any] = {}
+    if response is None:
+        return summary
+    status = getattr(response, "status_code", None)
+    if status is not None:
+        summary["status"] = status
+    detail: Any | None = None
+    try:
+        detail = response.json()
+    except Exception:
+        text = (getattr(response, "text", "") or "").strip()
+        if text:
+            detail = text
+    if detail is not None:
+        summary["detail"] = detail
+    return summary
+
+
+def _response_ok(summary: Mapping[str, Any] | None) -> bool:
+    if not isinstance(summary, Mapping):
+        return False
+    status = summary.get("status")
+    return isinstance(status, int) and 200 <= status < 300
+
+
+def _apply_backdoor_promotion(
+    entity: str,
+    ledger_id: str | None,
+    *,
+    metrics_payload: Mapping[str, Any],
+) -> dict[str, Any]:
+    base_url = API.rstrip("/")
+    params = {"entity": entity}
+    if ledger_id:
+        params["ledger_id"] = ledger_id
+    headers = {"Content-Type": "application/json"}
+    if SETTINGS.api_key:
+        headers["x-api-key"] = SETTINGS.api_key
+    lawfulness_resp = requests.patch(
+        f"{base_url}/ledger/lawfulness",
+        params=params,
+        headers=headers,
+        json={"value": 3},
+        timeout=10,
+    )
+    metrics_resp = requests.patch(
+        f"{base_url}/ledger/metrics",
+        params=params,
+        headers=headers,
+        json=dict(metrics_payload or {}),
+        timeout=10,
+    )
+    return {
+        "lawfulness": _summarize_http_response(lawfulness_resp),
+        "metrics": _summarize_http_response(metrics_resp),
+    }
+
+
+def _update_auto_promotion_tracker(
+    entity: str | None,
+    ledger_id: str | None,
+    *,
+    result: Mapping[str, Any] | None,
+    error: str | None = None,
+):
+    key = _auto_promotion_key(entity, ledger_id)
+    if not key:
+        return
+    if "auto_promotion_tracker" not in st.session_state:
+        st.session_state.auto_promotion_tracker = {}
+    tracker = st.session_state.auto_promotion_tracker
+    ok = False
+    if isinstance(result, Mapping):
+        ok = _response_ok(result.get("lawfulness")) and _response_ok(result.get("metrics"))
+    tracker[key] = {
+        "ok": ok,
+        "result": result,
+        "error": error if error else (None if ok else "Non-2xx promotion response"),
+        "updated": time.time(),
+    }
+
+
+def _get_auto_promotion_record(entity: str | None, ledger_id: str | None) -> Mapping[str, Any] | None:
+    key = _auto_promotion_key(entity, ledger_id)
+    if not key:
+        return None
+    tracker = st.session_state.get("auto_promotion_tracker") or {}
+    record = tracker.get(key)
+    return record
+
+
+def _auto_promote_entity_if_needed() -> None:
+    entity = _get_entity() or DEFAULT_ENTITY
+    ledger_id = st.session_state.get("ledger_id")
+    record = _get_auto_promotion_record(entity, ledger_id)
+    if record and record.get("ok"):
+        return
+    if not entity:
+        return
+    try:
+        result = _apply_backdoor_promotion(
+            entity,
+            ledger_id,
+            metrics_payload=SAFE_PROMOTION_METRICS,
+        )
+    except requests.RequestException as exc:
+        _update_auto_promotion_tracker(entity, ledger_id, result=None, error=str(exc))
+        return
+    _update_auto_promotion_tracker(entity, ledger_id, result=result)
 
 
 def _fetch_prime_schema(entity: str | None) -> dict[int, dict]:
@@ -1757,6 +1883,7 @@ def _render_app():
 
     _maybe_handle_demo_mode()
     _ensure_ledger_bootstrap()
+    _auto_promote_entity_if_needed()
 
     send_icon = _load_base64_image("right-up.png")
     attach_icon = _load_base64_image("add.png")
@@ -2110,10 +2237,95 @@ def _render_app():
                         st.json(payload)
                     else:
                         st.code(str(payload) or "<empty response>", language="json")
+                    if resp.status_code == 404:
+                        st.info("/search/index is not enabled on this deployment yet.")
                     st.toast(
                         "Search index build triggered – only needed once after the first anchor.",
                         icon="🔍",
                     )
+
+            entity = _get_entity() or DEFAULT_ENTITY
+            ledger_id = st.session_state.get("ledger_id")
+
+            st.divider()
+            st.write("### Search diagnostics")
+            st.caption("Probe the recall/search endpoints without leaving the debug tab.")
+            promotion_record = _get_auto_promotion_record(entity, ledger_id)
+            if promotion_record is None:
+                st.caption("Auto-promotion attempts to raise lawfulness to tier 3 on load.")
+            elif promotion_record.get("ok"):
+                st.success("Default auto-promotion applied – S2 gates should be open.")
+            else:
+                error_text = promotion_record.get("error")
+                if error_text:
+                    st.warning(f"Auto-promotion still failing: {error_text}")
+                else:
+                    st.warning("Auto-promotion pending – inspect response details below.")
+            if promotion_record and promotion_record.get("result"):
+                with st.expander("Auto-promotion response", expanded=not promotion_record.get("ok")):
+                    st.json(promotion_record["result"])
+
+            default_query = st.session_state.get(
+                "search_probe_query",
+                "do you have any quotes about God?",
+            )
+            probe_query = st.text_input(
+                "Probe query",
+                value=default_query,
+                key="search_probe_query",
+            )
+            mode_options = ["auto (engine default)", "recall", "slots", "s1", "body"]
+            selected_mode = st.selectbox(
+                "Search mode override",
+                mode_options,
+                index=0,
+                key="search_probe_mode",
+                help="Force a specific /search mode while debugging recall.",
+            )
+            mode_value = None if selected_mode.startswith("auto") else selected_mode
+            probe_limit = st.number_input(
+                "Result limit",
+                min_value=1,
+                max_value=20,
+                value=5,
+                step=1,
+                key="search_probe_limit",
+            )
+            if st.button("Probe /search endpoint", key="probe_search_endpoint"):
+                if not probe_query.strip():
+                    st.warning("Enter a probe query first.")
+                else:
+                    try:
+                        payload = API_SERVICE.search(
+                            entity,
+                            probe_query.strip(),
+                            ledger_id=ledger_id,
+                            mode=mode_value,
+                            limit=int(probe_limit),
+                        )
+                    except requests.HTTPError as exc:
+                        summary = _summarize_http_response(exc.response)
+                        status = summary.get("status", "unknown")
+                        st.error(f"/search returned HTTP {status}")
+                        detail = summary.get("detail")
+                        if detail is not None:
+                            if isinstance(detail, (dict, list)):
+                                st.json(detail)
+                            else:
+                                st.code(str(detail), language="json")
+                    except requests.RequestException as exc:
+                        st.error(f"Search call failed: {exc}")
+                    else:
+                        st.success("Search payload received.")
+                        response_text = payload.get("response") if isinstance(payload, Mapping) else None
+                        if response_text:
+                            st.caption("Response text")
+                            st.code(response_text)
+                        slots = payload.get("slots") if isinstance(payload, Mapping) else None
+                        if isinstance(slots, list) and slots:
+                            st.caption("Slots returned")
+                            st.json(slots)
+                        st.json(payload or {})
 
             st.divider()
             st.write("### 🧪 TEST ONLY – Entity promotion back-door")
@@ -2122,8 +2334,6 @@ def _render_app():
                 "while the scoring pipeline is being wired."
             )
 
-            entity = _get_entity() or DEFAULT_ENTITY
-            ledger_id = st.session_state.get("ledger_id")
             hdr = {"Content-Type": "application/json"}
             if SETTINGS.api_key:
                 hdr["x-api-key"] = SETTINGS.api_key
@@ -2146,7 +2356,7 @@ def _render_app():
                     st.error(f"Lawfulness patch failed: {exc}")
 
             # 2.  safe metrics in one click
-            safe_metrics = {"ΔE": -1.0, "ΔDrift": -1.0, "ΔRetention": 0.8, "K": 0.0}
+            safe_metrics = dict(SAFE_PROMOTION_METRICS)
             if st.button("Patch safe metrics", key="patch_metrics"):
                 try:
                     resp = requests.patch(
@@ -2165,26 +2375,21 @@ def _render_app():
             # 3.  one-click “Promote to S2”
             if st.button("🔓 Promote entity to S2 tier", key="promote_s2_backdoor"):
                 try:
-                    # lawfulness 3
-                    resp1 = requests.patch(
-                        f"{API.rstrip('/')}/ledger/lawfulness",
-                        params={"entity": entity, "ledger_id": ledger_id} if ledger_id else {"entity": entity},
-                        headers=hdr,
-                        json={"value": 3},
-                        timeout=10,
+                    result = _apply_backdoor_promotion(
+                        entity,
+                        ledger_id,
+                        metrics_payload=safe_metrics,
                     )
-                    # metrics gate
-                    resp2 = requests.patch(
-                        f"{API.rstrip('/')}/ledger/metrics",
-                        params={"entity": entity, "ledger_id": ledger_id} if ledger_id else {"entity": entity},
-                        headers=hdr,
-                        json=safe_metrics,
-                        timeout=10,
-                    )
-                    st.success("Entity promoted – S2 writes & search unlocked.")
-                    st.json({"lawfulness": resp1.status_code, "metrics": resp2.status_code})
                 except Exception as exc:
                     st.error(f"Promotion failed: {exc}")
+                else:
+                    success = _response_ok(result.get("lawfulness")) and _response_ok(result.get("metrics"))
+                    if success:
+                        st.success("Entity promoted – S2 writes & search unlocked.")
+                    else:
+                        st.warning("Promotion attempted – inspect HTTP details below.")
+                    st.json(result)
+                    _update_auto_promotion_tracker(entity, ledger_id, result=result)
 
             if st.button("Promote to S2 tier", key="promote_s2"):
                 entity = _get_entity() or DEFAULT_ENTITY
