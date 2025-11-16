@@ -315,6 +315,14 @@ def _ensure_slots_recall_mode() -> None:
         st.session_state.recall_mode = "slots"
 
 
+def _apply_latest_anchor_to_probe() -> None:
+    """Populate the search probe input with the most recent anchor snippet."""
+
+    latest = st.session_state.get("search_probe_latest_preview")
+    if latest:
+        st.session_state["search_probe_query"] = latest
+
+
 def _apply_backdoor_promotion(
     entity: str,
     ledger_id: str | None,
@@ -2276,21 +2284,34 @@ def _render_app():
                 with st.expander("Auto-promotion response", expanded=not promotion_record.get("ok")):
                     st.json(promotion_record["result"])
 
-            latest_anchor_requested = False
+            col_probe, col_use_latest = st.columns([3, 1])
+            with col_use_latest:
+                if st.button("Use latest anchor text", key="use_latest_anchor_text"):
+                    with st.spinner("Fetching latest anchor text…"):
+                        try:
+                            latest_text = API_SERVICE.latest_memory_text(
+                                entity,
+                                ledger_id=ledger_id,
+                            )
+                        except requests.RequestException as exc:
+                            st.error(f"Latest memory lookup failed: {exc}")
+                        else:
+                            if latest_text:
+                                st.session_state["search_probe_query"] = latest_text
+                                st.session_state["search_probe_latest_preview"] = latest_text
+                                _run_search_probe(latest_text)
+                            else:
+                                st.info("No anchored memories found yet.")
             default_query = st.session_state.get(
                 "search_probe_query",
                 "do you have any quotes about God?",
             )
-            col_probe, col_use_latest = st.columns([3, 1])
             with col_probe:
                 probe_query = st.text_input(
                     "Probe query",
                     value=default_query,
                     key="search_probe_query",
                 )
-            with col_use_latest:
-                if st.button("Use latest anchor text", key="use_latest_anchor_text"):
-                    latest_anchor_requested = True
 
             latest_preview = st.session_state.get("search_probe_latest_preview")
             if latest_preview:
@@ -2380,23 +2401,6 @@ def _render_app():
 
             if st.button("Probe /search endpoint", key="probe_search_endpoint"):
                 _run_search_probe(probe_query)
-
-            if latest_anchor_requested:
-                with st.spinner("Fetching latest anchor text…"):
-                    try:
-                        latest_text = API_SERVICE.latest_memory_text(
-                            entity,
-                            ledger_id=ledger_id,
-                        )
-                    except requests.RequestException as exc:
-                        st.error(f"Latest memory lookup failed: {exc}")
-                    else:
-                        if latest_text:
-                            st.session_state["search_probe_query"] = latest_text
-                            st.session_state["search_probe_latest_preview"] = latest_text
-                            _run_search_probe(latest_text)
-                        else:
-                            st.info("No anchored memories found yet.")
 
             def _should_offer_body_retry(payload: Mapping[str, Any] | None) -> bool:
                 if not isinstance(payload, Mapping):
