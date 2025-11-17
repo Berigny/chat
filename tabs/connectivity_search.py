@@ -374,3 +374,61 @@ def render_tab(
             except Exception:
                 detail = resp.text
             st.json(detail)
+
+    st.divider()
+    st.write("### /ledger/s2 debug")
+    debug_headers: dict[str, str] = {}
+    if settings.api_key:
+        debug_headers["x-api-key"] = settings.api_key
+    if ledger_id:
+        debug_headers["X-Ledger-ID"] = ledger_id
+    debug_headers["Content-Type"] = "application/json"
+    debug_entity = get_entity() or default_entity
+    debug_payload = {
+        "11": {"summary": "Test summary"},
+        "13": {"summary": "Another facet"},
+    }
+    st.caption("Send a simple S2 payload to inspect raw HTTP responses from the engine.")
+    st.json(debug_payload)
+    if st.button("Debug /ledger/s2", key="s2_endpoint_debug"):
+        try:
+            resp = requests.put(
+                f"{api_base.rstrip('/')}/ledger/s2",
+                params={"entity": debug_entity},
+                json=debug_payload,
+                headers=debug_headers,
+                timeout=10,
+            )
+        except Exception as exc:  # pragma: no cover - network dependent
+            st.error(f"S2 call error: {exc}")
+        else:
+            st.write(f"HTTP status: {resp.status_code}")
+            try:
+                detail = resp.json()
+            except Exception:
+                detail = resp.text
+            st.json(detail if detail else {})
+
+    st.divider()
+    st.write("### /ledger/metrics debug")
+    metrics_payload = {"ΔE": -1.0, "ΔDrift": -0.5, "ΔRetention": 0.8, "K": 0.0}
+    st.caption("Replay the recommended metrics payload to surface validation errors.")
+    st.json(metrics_payload)
+    if st.button("Debug /ledger/metrics", key="metrics_endpoint_debug"):
+        try:
+            resp = requests.patch(
+                f"{api_base.rstrip('/')}/ledger/metrics",
+                params={"entity": debug_entity},
+                json=metrics_payload,
+                headers=debug_headers,
+                timeout=10,
+            )
+        except Exception as exc:  # pragma: no cover - network dependent
+            st.error(f"Metrics call error: {exc}")
+        else:
+            st.write(f"HTTP status: {resp.status_code}")
+            try:
+                detail = resp.json()
+            except Exception:
+                detail = resp.text
+            st.json(detail if detail else {})
