@@ -65,6 +65,7 @@ from prime_pipeline import (
 )
 
 SETTINGS = load_settings()
+os.environ.setdefault("ROCKSDB_DATA_PATH", SETTINGS.rocksdb_data_path)
 API = SETTINGS.api_base
 DEFAULT_ENTITY = SETTINGS.default_entity
 DEFAULT_LEDGER_ID = SETTINGS.default_ledger_id

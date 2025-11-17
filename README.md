@@ -159,6 +159,22 @@ Older deployments that do not implement the new endpoints simply hide the tabs a
 “not available” notice. Prompt construction also threads the traversal and inference summaries
 into the augmented prompt so the LLM can acknowledge long-running jobs without manual probing.
 
+## RocksDB probe verification
+
+Point the UI at your live ledger directory by exporting `ROCKSDB_DATA_PATH` (defaults to
+`/app/rocksdb-data`). The **Memory & Inference** tab now exposes a **RocksDB probe** form that
+invokes `tests.rocksdb_probe.run_probe()` directly from the Streamlit surface:
+
+1. Enter the entity ID, a synthetic prompt (pre-filled with “kangaroo neon laser”), and the prime
+   pattern you expect the ledger to traverse (e.g. `2*3*5*7`).
+2. Click **Run RocksDB probe** to anchor the prompt via the embedded RocksDB client and walk the
+   keyspace using the multiplicative pattern.
+3. Expand the JSON results panel and compare the returned key/value pairs with
+   `MemoryService.memory_lookup()` output (also surfaced via the sidebar “Raw Ledger” expander).
+
+This workflow makes it easy to validate whether the multiplicative primes you supply at anchor time
+produce the same storage hits you see via the API before running a full end-to-end chat session.
+
 ## Manual smoke test – S2 promotion button
 
 1. Launch `chat_demo_app.py` (`make demo`) and authenticate as any demo account so the Connectivity Debug tab is visible.
