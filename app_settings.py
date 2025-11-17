@@ -28,6 +28,7 @@ class AppSettings:
     metric_floors: dict[str, float]
     genai_api_key: str | None
     openai_api_key: str | None
+    rocksdb_data_path: str
 
 
 def _safe_secret(key: str) -> Any:
@@ -75,6 +76,7 @@ def load_settings() -> AppSettings:
     metric_floors = {**DEFAULT_METRIC_FLOORS, **_load_metric_floors(metric_source)}
     genai_api_key = _safe_secret("API_KEY") or os.getenv("API_KEY")
     openai_api_key = _safe_secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
+    rocksdb_data_path = os.getenv("ROCKSDB_DATA_PATH", "/app/rocksdb-data")
     return AppSettings(
         api_base=api_base.rstrip("/"),
         api_key=api_key or "demo-key",
@@ -83,6 +85,7 @@ def load_settings() -> AppSettings:
         metric_floors=metric_floors,
         genai_api_key=genai_api_key,
         openai_api_key=openai_api_key,
+        rocksdb_data_path=rocksdb_data_path,
     )
 
 
