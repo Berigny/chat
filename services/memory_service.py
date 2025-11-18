@@ -1280,10 +1280,34 @@ class MemoryService:
             mode=search_mode,
             limit=resolved_limit,
         )
+        logger.info("search payload=%s", payload)
         response = payload.get("response") if isinstance(payload, Mapping) else None
         if isinstance(response, str):
             response = response.strip()
-        return response or None
+        if response:
+            return response
+
+        if not isinstance(payload, Mapping):
+            return None
+
+        results = payload.get("results")
+        if not isinstance(results, list):
+            return None
+
+        snippets = []
+        for item in results:
+            if not isinstance(item, dict):
+                continue
+            snippet = item.get("snippet") or item.get("text")
+            if isinstance(snippet, str):
+                snippet = snippet.strip()
+                if snippet:
+                    snippets.append(snippet)
+
+        if not snippets:
+            return None
+
+        return "\n".join(snippets)
 
     # ------------------------------------------------------------------
     # Structured ledger helpers
