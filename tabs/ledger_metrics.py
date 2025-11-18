@@ -7,6 +7,7 @@ from typing import Any, Callable, Mapping
 import streamlit as st
 
 from services.api import requests
+from tabs.metrics_editor import render_entity_metrics_panel
 
 
 RefreshLedgers = Callable[[bool], None]
@@ -100,11 +101,11 @@ def render_tab(
 
     col_left, col_right = st.columns(2)
     with col_left:
-        st.markdown(
-            """
-            <div class="prime-ledger-block">
-                <h2 class="prime-heading" style="font-size: 1.2rem; font-weight: 400">Prime-Ledger Snapshot</h2>
-                <p class="prime-text">A live, word-perfect copy of everything you’ve anchored - sealed in primes, mathematically identical forever.</p>
+    st.markdown(
+        """
+        <div class="prime-ledger-block">
+            <h2 class="prime-heading" style="font-size: 1.2rem; font-weight: 400">Prime-Ledger Snapshot</h2>
+            <p class="prime-text">A live, word-perfect copy of everything you’ve anchored - sealed in primes, mathematically identical forever.</p>
             </div>
             """,
             unsafe_allow_html=True,
@@ -132,6 +133,12 @@ def render_tab(
         with metric_cols[2]:
             st.metric("Durability h", f"{durability_hours:.1f}")
         st.markdown('</div>', unsafe_allow_html=True)
+
+    render_entity_metrics_panel(
+        api_service,
+        entity=get_entity(),
+        ledger_id=st.session_state.get("ledger_id"),
+    )
 
     st.markdown("### Möbius lattice rotation")
     if st.button("♾️ Möbius Transform", help="Reproject the exponent lattice"):
