@@ -1272,7 +1272,7 @@ class MemoryService:
             return None
 
         resolved_limit = limit if limit is not None else estimate_quote_count(query)
-        search_mode = mode or "recall"
+        search_mode = mode or "all"
         payload = self.api_service.search(
             entity,
             query,

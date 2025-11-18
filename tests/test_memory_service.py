@@ -57,7 +57,7 @@ def test_build_recall_response_returns_engine_text() -> None:
     response = service.build_recall_response("demo", "recall meeting", {}, ledger_id="ledger-alpha")
 
     assert response == "Here’s what the ledger currently recalls:\n• Meeting notes"
-    assert api.last_call["mode"] == "recall"
+    assert api.last_call["mode"] == "all"
     assert api.last_call["limit"] >= 1
     assert api.last_call["ledger_id"] == "ledger-alpha"
 

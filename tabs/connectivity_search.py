@@ -13,7 +13,7 @@ from services.api import requests
 
 GetEntityFn = Callable[[], str | None]
 PromotionCallback = Callable[[str, str | None, Mapping[str, Any]], Mapping[str, Any]]
-BooleanCallback = Callable[[], None]
+ResetRecallModeCallback = Callable[[], None]
 LedgerTracker = Callable[[str | None, str | None, Mapping[str, Any] | None], None]
 AutoRecordLookup = Callable[[str | None, str | None], Mapping[str, Any] | None]
 MetricsPatchCallback = Callable[[str, Mapping[str, Any], str | None], None]
@@ -30,7 +30,7 @@ def render_tab(
     clean_attachment_header: Callable[[str | None], str],
     apply_backdoor_promotion: PromotionCallback,
     promotion_result_ok: Callable[[Mapping[str, Any] | None], bool],
-    ensure_slots_recall_mode: BooleanCallback,
+    reset_recall_mode: ResetRecallModeCallback,
     update_auto_promotion_tracker: LedgerTracker,
     get_auto_promotion_record: AutoRecordLookup,
     recommended_s2_metrics: Mapping[str, Any],
@@ -259,9 +259,9 @@ def render_tab(
         except requests.RequestException as exc:
             st.error(f"S2 promotion failed: {exc}")
         else:
-            ensure_slots_recall_mode()
-            st.toast("S2 recall unlocked – slots search enabled.", icon="🚀")
-            st.success("Promotion succeeded – recall mode updated.")
+            reset_recall_mode()
+            st.toast("S2 recall unlocked – all-mode search enabled.", icon="🚀")
+            st.success("Promotion succeeded – recall mode reset.")
 
     safe_metrics = dict(safe_promotion_metrics)
     if st.button("🔓 Promote entity to S2 tier (test back-door)", key="promote_s2_backdoor"):
@@ -277,7 +277,7 @@ def render_tab(
             success = promotion_result_ok(result)
             if success:
                 st.success("Entity promoted – S2 writes & search unlocked.")
-                ensure_slots_recall_mode()
+                reset_recall_mode()
             else:
                 st.warning("Promotion attempted – inspect HTTP details below.")
             st.json(result)

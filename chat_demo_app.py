@@ -318,9 +318,11 @@ def _promotion_result_ok(result: Mapping[str, Any] | None) -> bool:
     return _response_ok(result.get("lawfulness")) and _response_ok(result.get("metrics"))
 
 
-def _ensure_slots_recall_mode() -> None:
-    if st.session_state.get("recall_mode") != "slots":
-        st.session_state.recall_mode = "slots"
+def _reset_recall_mode() -> None:
+    """Return the recall mode selector to the default 'all' state."""
+
+    if st.session_state.get("recall_mode") != "all":
+        st.session_state.recall_mode = "all"
 
 
 def _apply_latest_anchor_to_probe() -> None:
@@ -414,7 +416,7 @@ def _auto_promote_entity_if_needed() -> None:
         return
     _update_auto_promotion_tracker(entity, ledger_id, result=result)
     if _promotion_result_ok(result):
-        _ensure_slots_recall_mode()
+        _reset_recall_mode()
 
 
 def _fetch_prime_schema(entity: str | None) -> dict[int, dict]:
@@ -1531,7 +1533,8 @@ def _maybe_handle_recall_query(text: str) -> bool:
             )
         except requests.RequestException as exc:
             LOGGER.warning("Failed to persist placeholder recall metrics: %s", exc)
-    recall_mode = st.session_state.get("recall_mode") or "s1"
+    fallback_mode = st.session_state.get("recall_mode") or "all"
+    recall_mode, _ = _resolve_recall_mode(clean_query, fallback=fallback_mode)
     try:
         response = MEMORY_SERVICE.build_recall_response(
             entity,
@@ -1542,7 +1545,10 @@ def _maybe_handle_recall_query(text: str) -> bool:
         )
     except requests.RequestException as exc:
         st.error(f"Recall failed: {exc}")
+        st.session_state.recall_mode = "all"
         return True
+
+    st.session_state.recall_mode = "all"
 
     if response:
         st.session_state.chat_history.append(("Bot", response))
@@ -1811,17 +1817,26 @@ def _payload_contains_body_shards(value: object, *, depth: int = 0, max_depth: i
     return False
 
 
+_RECALL_MODE_PATTERNS: dict[str, re.Pattern[str]] = {
+    "body": re.compile(r"\b(body|attachments?|attachment|transcript|document|pdf|full[\s-]?text)\b", re.IGNORECASE),
+    "slots": re.compile(r"\bslots?\b", re.IGNORECASE),
+    "s1": re.compile(r"\bs1\b", re.IGNORECASE),
+    "s2": re.compile(r"\bs2\b|\bprime\s*(11|13|17|19)\b", re.IGNORECASE),
+}
+
+
+def _resolve_recall_mode(query: str, fallback: str = "all") -> tuple[str, bool]:
+    """Infer the best recall mode from the prompt text."""
+
+    normalized = (query or "").strip()
+    for mode, pattern in _RECALL_MODE_PATTERNS.items():
+        if pattern.search(normalized):
+            return mode, True
+    return (fallback or "all", False)
+
+
 def _default_recall_mode() -> str:
-    candidates = [
-        st.session_state.get("latest_assembly"),
-        st.session_state.get("latest_structured_ledger"),
-        st.session_state.get("recall_payload"),
-        st.session_state.get("ledger_state"),
-    ]
-    for candidate in candidates:
-        if _payload_contains_body_shards(candidate):
-            return "body"
-    return "s1"
+    return "all"
 
 
 DEMO_USERS = {
@@ -2146,7 +2161,7 @@ def _render_app():
             clean_attachment_header=_clean_attachment_header,
             apply_backdoor_promotion=_apply_backdoor_promotion,
             promotion_result_ok=_promotion_result_ok,
-            ensure_slots_recall_mode=_ensure_slots_recall_mode,
+            reset_recall_mode=_reset_recall_mode,
             update_auto_promotion_tracker=_update_auto_promotion_tracker,
             get_auto_promotion_record=_get_auto_promotion_record,
             recommended_s2_metrics=RECOMMENDED_S2_METRICS,
