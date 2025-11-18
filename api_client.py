@@ -487,9 +487,11 @@ class DualSubstrateClient:
     ) -> dict[str, Any]:
         """Update ℝ metrics; server enforces bounds."""
 
-        body = {"entity": entity, **(payload or {})}
+        params = {"entity": entity}
+        body = dict(payload or {})
         resp = requests.patch(
             f"{self.base_url}/ledger/metrics",
+            params=params,
             json=body,
             headers=self._headers(ledger_id=ledger_id),
             timeout=5,
