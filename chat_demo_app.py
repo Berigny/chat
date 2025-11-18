@@ -1535,6 +1535,7 @@ def _maybe_handle_recall_query(text: str) -> bool:
             LOGGER.warning("Failed to persist placeholder recall metrics: %s", exc)
     fallback_mode = st.session_state.get("recall_mode") or "all"
     recall_mode, _ = _resolve_recall_mode(clean_query, fallback=fallback_mode)
+    LOGGER.info(f"Recall query: '{clean_query}', Mode: '{recall_mode}'")
     try:
         response = MEMORY_SERVICE.build_recall_response(
             entity,
@@ -1548,6 +1549,7 @@ def _maybe_handle_recall_query(text: str) -> bool:
         st.session_state.recall_mode = "all"
         return True
 
+    LOGGER.info(f"Recall response payload: {response}")
     st.session_state.recall_mode = "all"
 
     if response:
