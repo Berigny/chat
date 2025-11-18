@@ -101,11 +101,11 @@ def render_tab(
 
     col_left, col_right = st.columns(2)
     with col_left:
-    st.markdown(
-        """
-        <div class="prime-ledger-block">
-            <h2 class="prime-heading" style="font-size: 1.2rem; font-weight: 400">Prime-Ledger Snapshot</h2>
-            <p class="prime-text">A live, word-perfect copy of everything you’ve anchored - sealed in primes, mathematically identical forever.</p>
+        st.markdown(
+            """
+            <div class="prime-ledger-block">
+                <h2 class="prime-heading" style="font-size: 1.2rem; font-weight: 400">Prime-Ledger Snapshot</h2>
+                <p class="prime-text">A live, word-perfect copy of everything you’ve anchored - sealed in primes, mathematically identical forever.</p>
             </div>
             """,
             unsafe_allow_html=True,
