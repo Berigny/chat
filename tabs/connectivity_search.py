@@ -354,8 +354,8 @@ def render_tab(
 
     st.divider()
     st.write("### /ledger/metrics debug")
-    metrics_payload = {"ΔE": -1.0, "ΔDrift": -0.5, "ΔRetention": 0.8, "K": 0.0}
-    st.caption("Replay the recommended metrics payload to surface validation errors.")
+    metrics_payload = {"dE": -1.0, "dDrift": -0.5, "dRetention": 0.8, "K": 0.0}
+    st.caption("Replay the recommended metrics payload (ΔE/ΔDrift/ΔRetention/K) to surface validation errors.")
     st.json(metrics_payload)
     if st.button("Debug /ledger/metrics", key="metrics_endpoint_debug"):
         try:

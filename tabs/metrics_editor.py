@@ -10,11 +10,17 @@ import streamlit as st
 from services.api import requests
 
 
-DEFAULT_METRICS_PAYLOAD = {"ΔE": -1.0, "ΔDrift": -0.5, "ΔRetention": 0.8, "K": 0.0}
+DEFAULT_METRICS_PAYLOAD = {"dE": -1.0, "dDrift": -0.5, "dRetention": 0.8, "K": 0.0}
+METRIC_LABELS = {
+    "dE": "ΔE",
+    "dDrift": "ΔDrift",
+    "dRetention": "ΔRetention",
+    "K": "K",
+}
 METRIC_FIELDS: tuple[tuple[str, str], ...] = (
-    ("ΔE", "ΔE (must remain negative to unlock S2/search)"),
-    ("ΔDrift", "ΔDrift (must remain negative)"),
-    ("ΔRetention", "ΔRetention (must remain positive)"),
+    ("dE", "ΔE (must remain negative to unlock S2/search)"),
+    ("dDrift", "ΔDrift (must remain negative)"),
+    ("dRetention", "ΔRetention (must remain positive)"),
     ("K", "K (must be ≥ 0)"),
 )
 
@@ -83,9 +89,14 @@ def render_entity_metrics_panel(
         st.warning(f"Failed to load metrics: {snapshot.error}")
     metrics = snapshot.metrics
     st.caption("Current ℝ metrics (r_metrics) stored for this entity/ledger.")
-    st.table(
-        [{"Metric": key, "Value": f"{value:.3f}"} for key, value in metrics.items()],
-    )
+    table_rows = []
+    for key, _ in METRIC_FIELDS:
+        value = metrics.get(key)
+        if value is None:
+            continue
+        label = METRIC_LABELS.get(key, key)
+        table_rows.append({"Metric": label, "Value": f"{float(value):.3f}"})
+    st.table(table_rows)
 
     st.caption(
         "ΔE / ΔDrift must remain negative; ΔRetention must remain positive; K must stay ≥ 0."
@@ -100,7 +111,7 @@ def render_entity_metrics_panel(
             with column:
                 default_value = metrics.get(field, DEFAULT_METRICS_PAYLOAD[field])
                 updated_payload[field] = st.number_input(
-                    field,
+                    METRIC_LABELS.get(field, field),
                     value=float(default_value),
                     help=help_text,
                     key=f"metric_input_{field}_{form_key_suffix}",

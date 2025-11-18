@@ -12,6 +12,6 @@ def test_sanitize_json_payload_from_string() -> None:
 
 
 def test_prepare_metric_rows_from_mapping() -> None:
-    rows = prepare_metric_rows({"ΔE": 1.234, "Status": "ok"})
-    assert rows[0] == ("ΔE", "1.23")
+    rows = prepare_metric_rows({"dE": 1.234, "Status": "ok"})
+    assert rows[0] == ("dE", "1.23")
     assert rows[1] == ("Status", "ok")

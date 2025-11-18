@@ -118,24 +118,24 @@ METRIC_FLOORS = {**DEFAULT_METRIC_FLOORS, **SETTINGS.metric_floors}
 API_SERVICE = ApiService(API, SETTINGS.api_key)
 
 PLACEHOLDER_METRICS_GUARD = {
-    "ΔE": -1.0,
-    "ΔDrift": -1.0,
-    "ΔRetention": 1.0,
+    "dE": -1.0,
+    "dDrift": -1.0,
+    "dRetention": 1.0,
     "K": 0.0,
 }
 
 RECOMMENDED_S2_METRICS = {
     **METRIC_FLOORS,
-    "ΔRetention": 1.0,
-    "ΔE": 1.0,
-    "ΔDrift": 0.0,
+    "dRetention": 1.0,
+    "dE": 1.0,
+    "dDrift": 0.0,
     "K": 0.5,
 }
 
 SAFE_PROMOTION_METRICS = {
-    "ΔE": -1.0,
-    "ΔDrift": -1.0,
-    "ΔRetention": 0.8,
+    "dE": -1.0,
+    "dDrift": -1.0,
+    "dRetention": 0.8,
     "K": 0.0,
 }
 
