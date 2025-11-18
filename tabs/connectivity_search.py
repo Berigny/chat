@@ -30,7 +30,7 @@ def render_tab(
     clean_attachment_header: Callable[[str | None], str],
     apply_backdoor_promotion: PromotionCallback,
     promotion_result_ok: Callable[[Mapping[str, Any] | None], bool],
-    reset_recall_mode: ResetRecallModeCallback,
+    reset_recall_mode: ResetRecallModeCallback | None = None,
     update_auto_promotion_tracker: LedgerTracker,
     get_auto_promotion_record: AutoRecordLookup,
     recommended_s2_metrics: Mapping[str, Any],
@@ -259,7 +259,8 @@ def render_tab(
         except requests.RequestException as exc:
             st.error(f"S2 promotion failed: {exc}")
         else:
-            reset_recall_mode()
+            if reset_recall_mode:
+                reset_recall_mode()
             st.toast("S2 recall unlocked – all-mode search enabled.", icon="🚀")
             st.success("Promotion succeeded – recall mode reset.")
 
@@ -277,7 +278,8 @@ def render_tab(
             success = promotion_result_ok(result)
             if success:
                 st.success("Entity promoted – S2 writes & search unlocked.")
-                reset_recall_mode()
+                if reset_recall_mode:
+                    reset_recall_mode()
             else:
                 st.warning("Promotion attempted – inspect HTTP details below.")
             st.json(result)
