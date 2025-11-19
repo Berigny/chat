@@ -155,14 +155,39 @@ def test_build_recall_response_ignores_prompt_echo_response_payload() -> None:
     assert api.modes == ["all", "body"]
 
 
-def test_build_recall_response_returns_none_for_empty_payload() -> None:
+def test_build_recall_response_returns_message_when_no_results() -> None:
     class ApiStub(SimpleNamespace):
         def search(self, *_, **__):
             return {}
 
     service = MemoryService(api_service=ApiStub(), prime_weights={})
 
-    assert service.build_recall_response("demo", "recall meeting", {}) is None
+    assert (
+        service.build_recall_response("demo", "recall meeting", {})
+        == "- No ledger memories matched the topic (recall, meeting)."
+    )
+
+
+def test_build_recall_response_falls_back_to_memory_lookup_entries() -> None:
+    class ApiStub(SimpleNamespace):
+        def __init__(self) -> None:
+            self.search_calls = 0
+
+        def search(self, *_, **__):
+            self.search_calls += 1
+            return {"results": [{"snippet": "Do you have any quotes about God?"}]}
+
+        def fetch_memories(self, *_, **__):
+            return [
+                {"summary": "Light for the million – quote about God", "meta": {"source": "chat_demo"}},
+                {"summary": "Irrelevant entry", "meta": {"source": "chat_demo"}},
+            ]
+
+    service = MemoryService(api_service=ApiStub(), prime_weights={})
+
+    response = service.build_recall_response("demo", "Do you have any quotes about God?", {})
+
+    assert response.startswith("- Light for the million – quote about God")
 
 
 def test_mobius_refresh_waits_for_rotation() -> None:

@@ -978,13 +978,14 @@ class MemoryService:
         since: int | None = None,
     ) -> list[dict]:
         try:
-            data = self.api_service.fetch_memories(
+            raw = self.api_service.fetch_memories(
                 entity,
                 ledger_id=ledger_id,
                 limit=limit,
                 since=since,
             )
-            if any(isinstance(item, dict) and item.get("text") for item in data):
+            data = [item for item in raw if isinstance(item, dict)]
+            if data:
                 return data
         except Exception:
             pass
@@ -1291,6 +1292,8 @@ class MemoryService:
             return None
 
         resolved_limit = limit if limit is not None else estimate_quote_count(query)
+        keywords_raw = _keywords_from_prompt(query)
+        normalized_keywords = [k.lower() for k in keywords_raw if len(k) >= 3]
         search_mode = mode or "all"
         modes_to_try = [search_mode]
         if mode is None and search_mode != "body":
@@ -1332,6 +1335,48 @@ class MemoryService:
 
             if snippets:
                 return "\n".join(snippets)
+
+        entries: list[dict] = []
+        try:
+            entries = self.memory_lookup(
+                entity,
+                ledger_id=ledger_id,
+                limit=resolved_limit,
+                since=since,
+            )
+        except Exception:
+            entries = []
+
+        fallback_snippets: list[str] = []
+        for entry in entries:
+            raw_text = (
+                entry.get("summary")
+                or entry.get("text")
+                or entry.get("snippet")
+            )
+            text = strip_ledger_noise((raw_text or "").strip())
+            if not text or _is_prompt_echo(text, query):
+                continue
+            lowered = text.lower()
+            if normalized_keywords and not any(k in lowered for k in normalized_keywords):
+                continue
+            source = entry.get("meta", {}).get("source") or entry.get("name") or entry.get("attachment") or ""
+            snippet = text[:240].replace("\n", " ")
+            if len(text) > len(snippet):
+                snippet += "…"
+            label = f" ({source})" if source else ""
+            fallback_snippets.append(f"- {snippet}{label}")
+            if len(fallback_snippets) >= resolved_limit:
+                break
+
+        if fallback_snippets:
+            return "\n".join(fallback_snippets)
+
+        if normalized_keywords:
+            focus = ", ".join(keywords_raw[:3])
+            return f"- No ledger memories matched the topic ({focus})."
+
+        return "- No ledger memories matched that recall request."
 
         return None
 
