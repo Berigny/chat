@@ -1435,7 +1435,43 @@ class MemoryService:
             if snippets:
                 return "\n".join(snippets)
 
-        entries: list[dict] = []
+        fallback_snippets: list[str] = []
+
+        def append_snippet(text: str, source: str | None = None) -> None:
+            snippet = text[:240].replace("\n", " ")
+            if len(text) > len(snippet):
+                snippet += "…"
+            label = f" ({source})" if source else ""
+            fallback_snippets.append(f"- {snippet}{label}")
+
+        def process_entries(entries: Sequence[Mapping[str, Any]]) -> bool:
+            for entry in entries:
+                raw_text = (
+                    entry.get("summary")
+                    or entry.get("text")
+                    or entry.get("snippet")
+                    or entry.get("body")
+                )
+                text = strip_ledger_noise((raw_text or "").strip())
+                if (
+                    not text
+                    or _is_prompt_echo(text, query)
+                    or _looks_like_prompt_request(text)
+                    or not _matches_topic(text, normalized_keywords)
+                ):
+                    continue
+                source = (
+                    entry.get("meta", {}).get("source")
+                    or entry.get("name")
+                    or entry.get("attachment")
+                    or entry.get("title")
+                    or ""
+                )
+                append_snippet(text, source)
+                if len(fallback_snippets) >= resolved_limit:
+                    return True
+            return bool(fallback_snippets)
+
         try:
             entries = self.memory_lookup(
                 entity,
@@ -1446,38 +1482,31 @@ class MemoryService:
         except Exception:
             entries = []
 
-        fallback_snippets: list[str] = []
-        for entry in entries:
-            raw_text = (
-                entry.get("summary")
-                or entry.get("text")
-                or entry.get("snippet")
-            )
-            text = strip_ledger_noise((raw_text or "").strip())
-            if (
-                not text
-                or _is_prompt_echo(text, query)
-                or _looks_like_prompt_request(text)
-                or not _matches_topic(text, normalized_keywords)
-            ):
-                continue
-            lowered = text.lower()
-            if normalized_keywords and not any(k in lowered for k in normalized_keywords):
-                continue
-            source = entry.get("meta", {}).get("source") or entry.get("name") or entry.get("attachment") or ""
-            snippet = text[:240].replace("\n", " ")
-            if len(text) > len(snippet):
-                snippet += "…"
-            label = f" ({source})" if source else ""
-            fallback_snippets.append(f"- {snippet}{label}")
-            if len(fallback_snippets) >= resolved_limit:
-                break
+        if process_entries(entries):
+            return "\n".join(fallback_snippets)
 
-        if fallback_snippets:
+        assembly_entries: list[Mapping[str, Any]] = []
+        if entity:
+            try:
+                assembly_payload = self.api_service.fetch_assembly(
+                    entity,
+                    ledger_id=ledger_id,
+                    k=max(resolved_limit * 2, 8),
+                    quote_safe=True,
+                )
+            except Exception:
+                assembly_payload = {}
+            if isinstance(assembly_payload, Mapping):
+                for key in ("bodies", "summaries", "claims"):
+                    bucket = assembly_payload.get(key)
+                    if isinstance(bucket, Sequence):
+                        assembly_entries.extend(entry for entry in bucket if isinstance(entry, Mapping))
+
+        if process_entries(assembly_entries):
             return "\n".join(fallback_snippets)
 
         if normalized_keywords:
-            focus = ", ".join(keywords_raw[:3])
+            focus = ", ".join(normalized_keywords[:3])
             return f"- No ledger memories matched the topic ({focus})."
 
         return "- No ledger memories matched that recall request."

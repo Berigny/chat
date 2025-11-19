@@ -250,6 +250,29 @@ def test_build_recall_response_filters_irrelevant_memory_entries() -> None:
     assert "Definition of God anchored quote" in response
 
 
+def test_build_recall_response_uses_assembly_when_memories_empty() -> None:
+    class ApiStub(SimpleNamespace):
+        def search(self, *_, **__):
+            return {"results": []}
+
+        def fetch_memories(self, *_, **__):
+            return []
+
+        def fetch_assembly(self, *_, **__):
+            return {
+                "bodies": [
+                    {"text": "Prime excerpt discussing God definition and meaning", "meta": {"source": "assembly"}},
+                    {"text": "Unrelated topic"},
+                ]
+            }
+
+    service = MemoryService(api_service=ApiStub(), prime_weights={})
+
+    response = service.build_recall_response("demo", "definition of God meaning", {})
+
+    assert "Prime excerpt discussing God definition and meaning" in response
+
+
 def test_mobius_refresh_waits_for_rotation() -> None:
     api = DummyAssemblyApi()
     service = MemoryService(api_service=api, prime_weights={})
