@@ -57,6 +57,10 @@ _LEDGER_LOOKUP_HINTS = (
     "line",
     "memory",
 )
+_PROMPT_PREFIX_PATTERN = re.compile(
+    r"^(?:do|does|did|can|could|would|will|please|what|where|why|how|tell|list|show|recall)\b",
+    re.IGNORECASE,
+)
 
 _DIGIT_PATTERN = re.compile(r"\b\d+\b")
 _NUMBER_WORDS = {
@@ -135,6 +139,26 @@ def _is_prompt_echo(candidate: str | None, query: str | None) -> bool:
     coverage_candidate = len(overlap) / len(candidate_terms)
     coverage_query = len(overlap) / len(query_terms)
     return coverage_candidate >= 0.7 and coverage_query >= 0.6
+
+
+def _looks_like_prompt_request(text: str | None) -> bool:
+    if not text:
+        return False
+    normalized = text.strip().lower().lstrip("•- ").strip()
+    if not normalized:
+        return False
+    if normalized.startswith(("you:", "bot:", "assistant:", "user:", "model:")):
+        normalized = normalized.split(":", 1)[1].strip()
+    if not normalized:
+        return False
+    has_lookup_hint = any(hint in normalized for hint in _LEDGER_LOOKUP_HINTS) or "ledger" in normalized
+    if not has_lookup_hint:
+        return False
+    if normalized.endswith("?"):
+        return True
+    if "please" in normalized and ("recall" in normalized or "quote" in normalized):
+        return True
+    return bool(_PROMPT_PREFIX_PATTERN.match(normalized))
 
 
 def strip_ledger_noise(text: str, *, user_only: bool = False) -> str:
@@ -1311,7 +1335,7 @@ class MemoryService:
             response = payload.get("response") if isinstance(payload, Mapping) else None
             if isinstance(response, str):
                 response = response.strip()
-                if response and _is_prompt_echo(response, query):
+                if response and (_is_prompt_echo(response, query) or _looks_like_prompt_request(response)):
                     response = None
             if response:
                 return response
@@ -1330,7 +1354,7 @@ class MemoryService:
                 snippet = item.get("snippet") or item.get("text")
                 if isinstance(snippet, str):
                     snippet = snippet.strip()
-                    if snippet and not _is_prompt_echo(snippet, query):
+                    if snippet and not _looks_like_prompt_request(snippet) and not _is_prompt_echo(snippet, query):
                         snippets.append(snippet)
 
             if snippets:
@@ -1355,7 +1379,7 @@ class MemoryService:
                 or entry.get("snippet")
             )
             text = strip_ledger_noise((raw_text or "").strip())
-            if not text or _is_prompt_echo(text, query):
+            if not text or _is_prompt_echo(text, query) or _looks_like_prompt_request(text):
                 continue
             lowered = text.lower()
             if normalized_keywords and not any(k in lowered for k in normalized_keywords):

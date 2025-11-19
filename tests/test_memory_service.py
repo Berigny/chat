@@ -122,7 +122,7 @@ def test_build_recall_response_skips_prompt_echo_snippet() -> None:
             mode = kwargs.get("mode")
             self.modes.append(mode)
             if len(self.modes) == 1:
-                return {"results": [{"snippet": "Do you have any quotes about God?"}]}
+                return {"results": [{"snippet": "Please recall 5 quotes about God from the ledger?"}]}
             return {"results": [{"snippet": "Ledger answer"}]}
 
     api = ApiStub()
@@ -132,6 +132,27 @@ def test_build_recall_response_skips_prompt_echo_snippet() -> None:
 
     assert response == "Ledger answer"
     assert api.modes == ["all", "body"]
+
+
+def test_build_recall_response_skips_prompt_like_snippet_with_ledger_hint() -> None:
+    class ApiStub(SimpleNamespace):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def search(self, entity, query, **kwargs):
+            mode = kwargs.get("mode")
+            self.calls.append(mode)
+            if len(self.calls) == 1:
+                return {"results": [{"snippet": "- do you have any quotes about God - please recall from ledger"}]}
+            return {"results": [{"snippet": "Ledger quote result"}]}
+
+    api = ApiStub()
+    service = MemoryService(api_service=api, prime_weights={})
+
+    response = service.build_recall_response("demo", "Please recall 5 quotes about God", {})
+
+    assert response == "Ledger quote result"
+    assert api.calls == ["all", "body"]
 
 
 def test_build_recall_response_ignores_prompt_echo_response_payload() -> None:
