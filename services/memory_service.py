@@ -118,6 +118,25 @@ def _keywords_from_prompt(text: str) -> list[str]:
     return list(dict.fromkeys(words))
 
 
+def _tokenize_simple(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", (text or "").lower())
+
+
+def _is_prompt_echo(candidate: str | None, query: str | None) -> bool:
+    if not candidate or not query:
+        return False
+    candidate_terms = set(_tokenize_simple(candidate))
+    query_terms = set(_tokenize_simple(query))
+    if not candidate_terms or not query_terms:
+        return False
+    overlap = candidate_terms & query_terms
+    if candidate_terms == query_terms:
+        return True
+    coverage_candidate = len(overlap) / len(candidate_terms)
+    coverage_query = len(overlap) / len(query_terms)
+    return coverage_candidate >= 0.7 and coverage_query >= 0.6
+
+
 def strip_ledger_noise(text: str, *, user_only: bool = False) -> str:
     if not text:
         return ""
@@ -1289,6 +1308,8 @@ class MemoryService:
             response = payload.get("response") if isinstance(payload, Mapping) else None
             if isinstance(response, str):
                 response = response.strip()
+                if response and _is_prompt_echo(response, query):
+                    response = None
             if response:
                 return response
 
@@ -1306,7 +1327,7 @@ class MemoryService:
                 snippet = item.get("snippet") or item.get("text")
                 if isinstance(snippet, str):
                     snippet = snippet.strip()
-                    if snippet:
+                    if snippet and not _is_prompt_echo(snippet, query):
                         snippets.append(snippet)
 
             if snippets:

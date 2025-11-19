@@ -113,6 +113,48 @@ def test_build_recall_response_retries_body_mode_when_empty() -> None:
     assert api.modes == ["all", "body"]
 
 
+def test_build_recall_response_skips_prompt_echo_snippet() -> None:
+    class ApiStub(SimpleNamespace):
+        def __init__(self) -> None:
+            self.modes: list[str] = []
+
+        def search(self, entity, query, **kwargs):
+            mode = kwargs.get("mode")
+            self.modes.append(mode)
+            if len(self.modes) == 1:
+                return {"results": [{"snippet": "Do you have any quotes about God?"}]}
+            return {"results": [{"snippet": "Ledger answer"}]}
+
+    api = ApiStub()
+    service = MemoryService(api_service=api, prime_weights={})
+
+    response = service.build_recall_response("demo", "Do you have any quotes about God?", {})
+
+    assert response == "Ledger answer"
+    assert api.modes == ["all", "body"]
+
+
+def test_build_recall_response_ignores_prompt_echo_response_payload() -> None:
+    class ApiStub(SimpleNamespace):
+        def __init__(self) -> None:
+            self.modes: list[str] = []
+
+        def search(self, entity, query, **kwargs):
+            mode = kwargs.get("mode")
+            self.modes.append(mode)
+            if mode == "all":
+                return {"response": "Do you have any quotes about God?"}
+            return {"results": [{"snippet": "Ledger echo free result"}]}
+
+    api = ApiStub()
+    service = MemoryService(api_service=api, prime_weights={})
+
+    response = service.build_recall_response("demo", "Do you have any quotes about God?", {})
+
+    assert response == "Ledger echo free result"
+    assert api.modes == ["all", "body"]
+
+
 def test_build_recall_response_returns_none_for_empty_payload() -> None:
     class ApiStub(SimpleNamespace):
         def search(self, *_, **__):
