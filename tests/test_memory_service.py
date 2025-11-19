@@ -123,14 +123,14 @@ def test_build_recall_response_skips_prompt_echo_snippet() -> None:
             self.modes.append(mode)
             if len(self.modes) == 1:
                 return {"results": [{"snippet": "Please recall 5 quotes about God from the ledger?"}]}
-            return {"results": [{"snippet": "Ledger answer"}]}
+            return {"results": [{"snippet": "Here is a ledger answer discussing God and definitions"}]}
 
     api = ApiStub()
     service = MemoryService(api_service=api, prime_weights={})
 
     response = service.build_recall_response("demo", "Do you have any quotes about God?", {})
 
-    assert response == "Ledger answer"
+    assert response == "Here is a ledger answer discussing God and definitions"
     assert api.modes == ["all", "body"]
 
 
@@ -144,14 +144,35 @@ def test_build_recall_response_skips_prompt_like_snippet_with_ledger_hint() -> N
             self.calls.append(mode)
             if len(self.calls) == 1:
                 return {"results": [{"snippet": "- do you have any quotes about God - please recall from ledger"}]}
-            return {"results": [{"snippet": "Ledger quote result"}]}
+            return {"results": [{"snippet": "Ledger quote result describing God and definition"}]}
 
     api = ApiStub()
     service = MemoryService(api_service=api, prime_weights={})
 
     response = service.build_recall_response("demo", "Please recall 5 quotes about God", {})
 
-    assert response == "Ledger quote result"
+    assert response == "Ledger quote result describing God and definition"
+    assert api.calls == ["all", "body"]
+
+
+def test_build_recall_response_requires_topic_overlap_in_results() -> None:
+    class ApiStub(SimpleNamespace):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        def search(self, entity, query, **kwargs):
+            mode = kwargs.get("mode")
+            self.calls.append(mode)
+            if mode == "all":
+                return {"results": [{"snippet": "Random lattice update without mention"}]}
+            return {"results": [{"snippet": "Definition of God appears in this ledger quote"}]}
+
+    api = ApiStub()
+    service = MemoryService(api_service=api, prime_weights={})
+
+    response = service.build_recall_response("demo", "Please recall definitions of God", {})
+
+    assert response == "Definition of God appears in this ledger quote"
     assert api.calls == ["all", "body"]
 
 
@@ -165,14 +186,14 @@ def test_build_recall_response_ignores_prompt_echo_response_payload() -> None:
             self.modes.append(mode)
             if mode == "all":
                 return {"response": "Do you have any quotes about God?"}
-            return {"results": [{"snippet": "Ledger echo free result"}]}
+            return {"results": [{"snippet": "Ledger echo free result including God definition"}]}
 
     api = ApiStub()
     service = MemoryService(api_service=api, prime_weights={})
 
     response = service.build_recall_response("demo", "Do you have any quotes about God?", {})
 
-    assert response == "Ledger echo free result"
+    assert response == "Ledger echo free result including God definition"
     assert api.modes == ["all", "body"]
 
 
@@ -185,7 +206,7 @@ def test_build_recall_response_returns_message_when_no_results() -> None:
 
     assert (
         service.build_recall_response("demo", "recall meeting", {})
-        == "- No ledger memories matched the topic (recall, meeting)."
+        == "- No ledger memories matched the topic (meeting)."
     )
 
 
@@ -209,6 +230,24 @@ def test_build_recall_response_falls_back_to_memory_lookup_entries() -> None:
     response = service.build_recall_response("demo", "Do you have any quotes about God?", {})
 
     assert response.startswith("- Light for the million – quote about God")
+
+
+def test_build_recall_response_filters_irrelevant_memory_entries() -> None:
+    class ApiStub(SimpleNamespace):
+        def search(self, *_, **__):
+            return {"results": []}
+
+        def fetch_memories(self, *_, **__):
+            return [
+                {"summary": "Long lattice description unrelated to topic", "meta": {"source": "chat_demo"}},
+                {"summary": "Definition of God anchored quote", "meta": {"source": "chat_demo"}},
+            ]
+
+    service = MemoryService(api_service=ApiStub(), prime_weights={})
+
+    response = service.build_recall_response("demo", "quotes about God definitions", {})
+
+    assert "Definition of God anchored quote" in response
 
 
 def test_mobius_refresh_waits_for_rotation() -> None:

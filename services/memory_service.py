@@ -61,6 +61,45 @@ _PROMPT_PREFIX_PATTERN = re.compile(
     r"^(?:do|does|did|can|could|would|will|please|what|where|why|how|tell|list|show|recall)\b",
     re.IGNORECASE,
 )
+_TOPIC_STOPWORDS = {
+    "please",
+    "recall",
+    "remember",
+    "quote",
+    "quotes",
+    "ledger",
+    "about",
+    "from",
+    "have",
+    "you",
+    "your",
+    "that",
+    "this",
+    "into",
+    "with",
+    "for",
+    "and",
+    "the",
+    "any",
+    "some",
+    "can",
+    "could",
+    "would",
+    "will",
+    "should",
+    "find",
+    "show",
+    "tell",
+    "list",
+    "give",
+    "provide",
+    "fetch",
+    "please",
+    "kindly",
+    "topic",
+    "entries",
+    "entry",
+}
 
 _DIGIT_PATTERN = re.compile(r"\b\d+\b")
 _NUMBER_WORDS = {
@@ -118,12 +157,43 @@ MOBIUS_REFRESH_INTERVAL = 180.0
 
 def _keywords_from_prompt(text: str) -> list[str]:
     lowered = (text or "").lower()
-    words = re.findall(r"\b[a-z0-9]{3,}\b", lowered)
+    words = [
+        word
+        for word in re.findall(r"\b[a-z0-9]{3,}\b", lowered)
+        if word not in _TOPIC_STOPWORDS
+    ]
     return list(dict.fromkeys(words))
 
 
 def _tokenize_simple(text: str) -> list[str]:
     return re.findall(r"[a-z0-9]+", (text or "").lower())
+
+
+def _topic_terms(text: str | None) -> list[str]:
+    tokens = _tokenize_simple(text or "")
+    terms: list[str] = []
+    for token in tokens:
+        if len(token) < 3 or token in _TOPIC_STOPWORDS:
+            continue
+        if token not in terms:
+            terms.append(token)
+    return terms
+
+
+def _matches_topic(text: str, topic_terms: Sequence[str]) -> bool:
+    if not topic_terms:
+        return True
+    tokens = set(_tokenize_simple(text))
+    if not tokens:
+        return False
+    hits = [term for term in topic_terms if term in tokens]
+    if not hits:
+        return False
+    required = 1 if len(topic_terms) <= 2 else 2
+    if len(hits) >= max(required, len(topic_terms) // 2):
+        return True
+    coverage = len(hits) / len(topic_terms)
+    return coverage >= 0.5
 
 
 def _is_prompt_echo(candidate: str | None, query: str | None) -> bool:
@@ -1317,7 +1387,7 @@ class MemoryService:
 
         resolved_limit = limit if limit is not None else estimate_quote_count(query)
         keywords_raw = _keywords_from_prompt(query)
-        normalized_keywords = [k.lower() for k in keywords_raw if len(k) >= 3]
+        normalized_keywords = _topic_terms(query)
         search_mode = mode or "all"
         modes_to_try = [search_mode]
         if mode is None and search_mode != "body":
@@ -1354,7 +1424,12 @@ class MemoryService:
                 snippet = item.get("snippet") or item.get("text")
                 if isinstance(snippet, str):
                     snippet = snippet.strip()
-                    if snippet and not _looks_like_prompt_request(snippet) and not _is_prompt_echo(snippet, query):
+                    if (
+                        snippet
+                        and not _looks_like_prompt_request(snippet)
+                        and not _is_prompt_echo(snippet, query)
+                        and _matches_topic(snippet, normalized_keywords)
+                    ):
                         snippets.append(snippet)
 
             if snippets:
@@ -1379,7 +1454,12 @@ class MemoryService:
                 or entry.get("snippet")
             )
             text = strip_ledger_noise((raw_text or "").strip())
-            if not text or _is_prompt_echo(text, query) or _looks_like_prompt_request(text):
+            if (
+                not text
+                or _is_prompt_echo(text, query)
+                or _looks_like_prompt_request(text)
+                or not _matches_topic(text, normalized_keywords)
+            ):
                 continue
             lowered = text.lower()
             if normalized_keywords and not any(k in lowered for k in normalized_keywords):
