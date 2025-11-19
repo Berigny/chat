@@ -64,9 +64,16 @@ def test_build_recall_response_returns_engine_text() -> None:
 
 def test_build_recall_response_uses_custom_mode() -> None:
     class ApiStub(SimpleNamespace):
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+            super().__init__(payload={"response": "body mode"})
+
         def search(self, entity, query, **kwargs):
             self.last_call = {"entity": entity, "query": query, **kwargs}
-            return {"response": "body mode"}
+            mode = kwargs.get("mode")
+            if mode:
+                self.calls.append(mode)
+            return self.payload
 
     api = ApiStub()
     service = MemoryService(api_service=api, prime_weights={})
@@ -82,6 +89,28 @@ def test_build_recall_response_uses_custom_mode() -> None:
     assert response == "body mode"
     assert api.last_call["mode"] == "body"
     assert api.last_call["ledger_id"] == "ledger-beta"
+    assert api.calls == ["body"]
+
+
+def test_build_recall_response_retries_body_mode_when_empty() -> None:
+    class ApiStub(SimpleNamespace):
+        def __init__(self) -> None:
+            self.modes: list[str] = []
+
+        def search(self, entity, query, **kwargs):
+            mode = kwargs.get("mode")
+            self.modes.append(mode)
+            if mode == "all":
+                return {"results": []}
+            return {"results": [{"snippet": "Ledger body hit"}]}
+
+    api = ApiStub()
+    service = MemoryService(api_service=api, prime_weights={})
+
+    response = service.build_recall_response("demo", "recall topic", {})
+
+    assert response == "Ledger body hit"
+    assert api.modes == ["all", "body"]
 
 
 def test_build_recall_response_returns_none_for_empty_payload() -> None:

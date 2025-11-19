@@ -1273,41 +1273,46 @@ class MemoryService:
 
         resolved_limit = limit if limit is not None else estimate_quote_count(query)
         search_mode = mode or "all"
-        payload = self.api_service.search(
-            entity,
-            query,
-            ledger_id=ledger_id,
-            mode=search_mode,
-            limit=resolved_limit,
-        )
-        logger.info("search payload=%s", payload)
-        response = payload.get("response") if isinstance(payload, Mapping) else None
-        if isinstance(response, str):
-            response = response.strip()
-        if response:
-            return response
+        modes_to_try = [search_mode]
+        if mode is None and search_mode != "body":
+            modes_to_try.append("body")
 
-        if not isinstance(payload, Mapping):
-            return None
+        for current_mode in modes_to_try:
+            payload = self.api_service.search(
+                entity,
+                query,
+                ledger_id=ledger_id,
+                mode=current_mode,
+                limit=resolved_limit,
+            )
+            logger.info("search payload (mode=%s)=%s", current_mode, payload)
+            response = payload.get("response") if isinstance(payload, Mapping) else None
+            if isinstance(response, str):
+                response = response.strip()
+            if response:
+                return response
 
-        results = payload.get("results")
-        if not isinstance(results, list):
-            return None
-
-        snippets = []
-        for item in results:
-            if not isinstance(item, dict):
+            if not isinstance(payload, Mapping):
                 continue
-            snippet = item.get("snippet") or item.get("text")
-            if isinstance(snippet, str):
-                snippet = snippet.strip()
-                if snippet:
-                    snippets.append(snippet)
 
-        if not snippets:
-            return None
+            results = payload.get("results")
+            if not isinstance(results, list) or not results:
+                continue
 
-        return "\n".join(snippets)
+            snippets = []
+            for item in results:
+                if not isinstance(item, dict):
+                    continue
+                snippet = item.get("snippet") or item.get("text")
+                if isinstance(snippet, str):
+                    snippet = snippet.strip()
+                    if snippet:
+                        snippets.append(snippet)
+
+            if snippets:
+                return "\n".join(snippets)
+
+        return None
 
     # ------------------------------------------------------------------
     # Structured ledger helpers
