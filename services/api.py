@@ -141,6 +141,34 @@ class ApiService:
     ) -> List[Dict[str, Any]]:
         return self._client.fetch_memories(entity, ledger_id=ledger_id, limit=limit, since=since)
 
+    def assemble_context(
+        self,
+        entity: str,
+        k: int = 3,
+        quote_safe: bool | None = True,
+        since: int | None = None,
+        ledger_id: str | None = None,
+    ) -> Dict[str, Any]:
+        """Call the ``/assemble`` endpoint using the shared client defaults."""
+
+        params: Dict[str, Any] = {"entity": entity}
+        if k is not None:
+            params["k"] = int(k)
+        if quote_safe is not None:
+            params["quote_safe"] = "true" if quote_safe else "false"
+        if since is not None:
+            params["since"] = since
+
+        response = requests.get(
+            f"{self._client.base_url}/assemble",
+            params=params,
+            headers=self._client._headers(ledger_id=ledger_id),
+            timeout=self._client.timeout,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, Mapping) else {}
+
     def fetch_assembly(
         self,
         entity: str,
@@ -150,10 +178,10 @@ class ApiService:
         quote_safe: bool | None = None,
         since: int | None = None,
     ) -> Dict[str, Any]:
-        return self._client.assemble_context(
+        return self.assemble_context(
             entity,
             ledger_id=ledger_id,
-            k=k,
+            k=k if k is not None else 3,
             quote_safe=quote_safe,
             since=since,
         )
