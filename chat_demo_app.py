@@ -1596,6 +1596,7 @@ def _maybe_handle_recall_query(text: str) -> bool:
     entity = _get_entity()
     schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
     ledger_id = st.session_state.get("ledger_id")
+    _maybe_refresh_search_index(entity, ledger_id)
     if entity:
         placeholder_metrics = dict(PLACEHOLDER_METRICS_GUARD)
         try:
