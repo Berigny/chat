@@ -364,7 +364,7 @@ def _maybe_refresh_search_index(entity: str | None, ledger_id: str | None, *, fo
     last_build = float(state.get("last_build") or 0.0)
     if not (force or dirty):
         return
-    if not force and dirty and now - last_build < SEARCH_INDEX_REFRESH_INTERVAL:
+    if not force and not dirty and now - last_build < SEARCH_INDEX_REFRESH_INTERVAL:
         return
     params = {"entity": entity}
     if ledger_id:
