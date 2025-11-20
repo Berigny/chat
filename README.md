@@ -5,6 +5,22 @@ Demo chassis lives on Streamlit Cloud (free).
 No shared code, no shared infra – zero blast-radius.
 5-minute spin-up, 30-second deploy loop.”
 
+## Dual-substrate architecture & deployment
+
+- **Signal split:** A continuous ℝ substrate handles gradient-driven pattern search and embedding alignment, while the discrete ℚₚ prime ledger preserves symbolic identity, exact factors, and arithmetic anchoring. The two streams stay synchronized through shared entity IDs, mirrored factor slots, and cross-projections that keep approximate vectors tethered to stable prime signatures.
+- **Fly.io layout:** The Fly-hosted engine exposes `/anchor`, `/memories`, `/rotate`, `/traverse`, and `/inference/state`, backed by RocksDB for the prime ledger and a lightweight Python service for continuous updates. Stateless Fly machines fan out the API, while ledger volumes stay colocated for low-latency retrieval and Möbius refresh cycles.
+- **Front-ends:** Streamlit surfaces (`chat_demo_app.py` for the demo/chat UX and `admin_app.py` for operators) call the Fly engine directly. They live in this [Chat repo](./) alongside shared helpers and can be redeployed independently of the Fly layer.
+
+### Q&A
+
+- **Is the arithmetic true p-adic or ultrametric-inspired?** The ledger operates on an ultrametric-inspired prime-factor lattice rather than full field-complete p-adic arithmetic; primes anchor identity and distance while avoiding heavy p-adic carries.
+- **How are ℝ and ℚₚ composed?** The system treats them as a direct product: continuous embeddings stay in ℝ, discrete factors in ℚₚ, and prompts stitch the two via tensor-style projections that inject prime weights into the continuous context window without collapsing either space.
+- **What is the normalization mechanism?** Continuous updates use gradient-style normalization (token and energy scaling), while the discrete ledger leans on variational balancing of prime deltas to keep slot weights bounded without erasing exactness.
+- **Which emergent behaviors are observed?** Stable recall across sessions, clustering of recurring entities along shared prime slots, lower prompt churn due to deduped anchors, and faster retrieval routes when Möbius rotations keep the lattice fresh.
+- **What happens if you relax K_Unity = 1?** Allowing K_Unity to drift above or below 1 introduces amplitude skew between continuous and discrete streams—ℝ vectors over-amplify or underweight prime guidance—so coherence falls off and retrieval paths become noisy until renormalized.
+
+**Stage:** integration
+
 ## Real metrics patch (engine)
 
 Before the `/metrics` route in your Fly-hosted `main.py`, initialize:
