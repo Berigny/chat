@@ -140,6 +140,7 @@ SAFE_PROMOTION_METRICS = {
 }
 
 SEARCH_INDEX_REFRESH_INTERVAL = 90.0
+_ATTACHMENT_QUERY_HINTS = ("attachment", "attachments", "pdf", "document", "file", "upload", "chunk")
 
 
 def _get_entity() -> str | None:
@@ -396,6 +397,60 @@ def _maybe_refresh_search_index(entity: str | None, ledger_id: str | None, *, fo
         state["last_status"] = response.json()
     except ValueError:
         state["last_status"] = {"status": response.text[:120] if response.text else "ok"}
+
+
+def _store_attachment_preview(name: str, chunks: Sequence[str]) -> None:
+    if not chunks:
+        return
+    snippets: list[str] = []
+    for chunk in chunks:
+        excerpt = (chunk or "").strip()
+        if not excerpt:
+            continue
+        normalized = re.sub(r"\s+", " ", excerpt)
+        snippets.append(normalized[:500])
+        if len(snippets) >= 5:
+            break
+    if not snippets:
+        return
+
+    entry = {
+        "name": name,
+        "captured": time.time(),
+        "snippets": snippets,
+    }
+    bucket = st.session_state.setdefault("recent_attachments", [])
+    bucket.append(entry)
+    st.session_state.recent_attachments = bucket[-3:]
+
+
+def _references_attachment_query(query: str) -> bool:
+    normalized = (query or "").lower()
+    return any(hint in normalized for hint in _ATTACHMENT_QUERY_HINTS)
+
+
+def _attachment_quote_fallback(query: str) -> str | None:
+    if not _references_attachment_query(query):
+        return None
+    attachments = st.session_state.get("recent_attachments") or []
+    if not attachments:
+        return None
+    latest = attachments[-1]
+    name = latest.get("name") or "attachment"
+    snippets = latest.get("snippets") or []
+    if not snippets:
+        return None
+    lines = [f"Here are excerpts from {name}:"]
+    for snippet in snippets[:4]:
+        preview = snippet.strip()
+        if not preview:
+            continue
+        if len(preview) > 240:
+            preview = f"{preview[:240]}…"
+        lines.append(f"- {preview}")
+    if len(lines) == 1:
+        return None
+    return "\n".join(lines)
 
 
 def _apply_backdoor_promotion(
@@ -1495,6 +1550,7 @@ def _anchor_attachment(attachment: dict):
     )
     if anchored:
         _maybe_refresh_search_index(_get_entity(), st.session_state.get("ledger_id"))
+        _store_attachment_preview(name, chunks)
     st.session_state.chat_history.append(("Attachment", status))
 
 
@@ -1626,8 +1682,19 @@ def _maybe_handle_recall_query(text: str) -> bool:
     LOGGER.info(f"Recall response payload: {response}")
     st.session_state.recall_mode = "all"
 
-    if response:
-        st.session_state.chat_history.append(("Bot", response))
+    fallback_attachment = False
+    response_text = response or ""
+    fallback_attachment = (
+        not response_text
+        or response_text.strip().lower().startswith("- no ledger memories matched")
+    )
+    if fallback_attachment:
+        attachment_response = _attachment_quote_fallback(clean_query)
+        if attachment_response:
+            st.session_state.chat_history.append(("Bot", attachment_response))
+            return True
+    if response_text:
+        st.session_state.chat_history.append(("Bot", response_text))
     return True
 
 
