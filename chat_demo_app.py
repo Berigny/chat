@@ -43,6 +43,7 @@ from agent_selector import (
 from services.api import ApiService, requests
 from services.api_service import EnrichmentHelper
 from services.ethics_service import EthicsService
+from services.ledger_traversal import LedgerTraversalService
 from services.memory_service import (
     MemoryService,
     derive_time_filters,
@@ -604,6 +605,7 @@ PRIME_SERVICE = PrimeService(API_SERVICE, FALLBACK_PRIME)
 MEMORY_SERVICE = MemoryService(API_SERVICE, PRIME_WEIGHTS)
 ENRICHMENT_HELPER = EnrichmentHelper(API_SERVICE, PRIME_SERVICE)
 PROMPT_SERVICE = create_prompt_service(MEMORY_SERVICE)
+LEDGER_TRAVERSAL_SERVICE = LedgerTraversalService(API_SERVICE, MEMORY_SERVICE)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1369,6 +1371,82 @@ def _refresh_capabilities_block() -> str:
     return block
 
 
+def _extract_json_object(raw: str) -> dict | None:
+    if not raw:
+        return None
+    trimmed = raw.strip()
+    if "{" not in trimmed:
+        return None
+    candidate = trimmed
+    if "```" in trimmed:
+        start = trimmed.find("{")
+        end = trimmed.rfind("}")
+        if start != -1 and end != -1 and end > start:
+            candidate = trimmed[start : end + 1]
+    try:
+        data = json.loads(candidate)
+    except json.JSONDecodeError:
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def _build_traversal_intent_prompt(question: str, entity: str | None, ledger_id: str | None) -> str:
+    default_entity = entity or DEFAULT_ENTITY
+    lines = [
+        "You translate user questions into ledger traversal intents.",
+        "Return STRICT JSON only with keys: path, entity, quote_safe, and k.",
+        "path must be '/assemble' for summary-oriented recall or '/body' for transcript/full text retrieval.",
+        "Use quote_safe=true when the user wants verbatim quotes or citations.",
+        f"Default entity: {default_entity}.",
+    ]
+    if ledger_id:
+        lines.append(f"Ledger ID: {ledger_id}.")
+    lines.append(f"Question: {question}")
+    return "\n".join(lines)
+
+
+def _translate_traversal_intent(question: str) -> dict | None:
+    if not (genai and GENAI_KEY):
+        return None
+    prompt = _build_traversal_intent_prompt(
+        question,
+        _get_entity() or DEFAULT_ENTITY,
+        st.session_state.get("ledger_id"),
+    )
+    try:
+        model = genai.GenerativeModel(
+            "gemini-2.0-flash",
+            generation_config={"response_mime_type": "application/json"},
+        )
+        response = model.generate_content(prompt)
+    except Exception:
+        return None
+    raw = getattr(response, "text", None) or ""
+    return _extract_json_object(raw)
+
+
+def _record_latest_assembly(
+    *,
+    entity: str | None,
+    ledger_id: str | None,
+    k: int | None,
+    quote_safe: bool,
+    since: int | None,
+    assembly: object,
+) -> None:
+    if not entity or assembly is None:
+        return
+    st.session_state.latest_assembly = {
+        "entity": entity,
+        "ledger_id": ledger_id,
+        "k": k,
+        "quote_safe": quote_safe,
+        "since": since,
+        "captured_at": time.time(),
+        "payload": assembly,
+    }
+
+
 def _augment_prompt(
     user_question: str,
     *,
@@ -1377,8 +1455,9 @@ def _augment_prompt(
     since: int | None = None,
     until: int | None = None,
     quote_safe: bool | None = None,
+    entity: str | None = None,
 ) -> str:
-    entity = _get_entity()
+    entity = entity or _get_entity()
     schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
     ledger_id = st.session_state.get("ledger_id")
     derived_since, derived_until = derive_time_filters(user_question)
@@ -1849,31 +1928,56 @@ def _chat_response(
     since, until = derive_time_filters(prompt)
     quote_mode = quote_count is not None and quote_count > 0
     assembly = None
-    if entity:
-        k = quote_count if quote_count else LEDGER_SNIPPET_LIMIT
-        assembly = MEMORY_SERVICE.assemble_context(
-            entity,
+    assembly_k = quote_count if quote_count else LEDGER_SNIPPET_LIMIT
+    assembly_quote_safe = quote_mode
+    target_entity = entity
+
+    translator_intent = _translate_traversal_intent(prompt)
+    if translator_intent:
+        traversal = LEDGER_TRAVERSAL_SERVICE.execute_intent(
+            translator_intent,
+            default_entity=entity or DEFAULT_ENTITY,
             ledger_id=ledger_id,
-            k=k,
-            quote_safe=quote_mode,
+            quote_safe_default=quote_mode,
             since=since,
         )
-        st.session_state.latest_assembly = {
-            "entity": entity,
-            "ledger_id": ledger_id,
-            "k": k,
-            "quote_safe": quote_mode,
-            "since": since,
-            "captured_at": time.time(),
-            "payload": assembly,
-        }
+        target_entity = traversal.get("entity") or target_entity
+        assembly = traversal.get("assembly")
+        assembly_k = traversal.get("k") or assembly_k
+        assembly_quote_safe = traversal.get("quote_safe", assembly_quote_safe)
+        _record_latest_assembly(
+            entity=target_entity,
+            ledger_id=ledger_id,
+            k=assembly_k,
+            quote_safe=assembly_quote_safe,
+            since=since,
+            assembly=assembly,
+        )
+
+    if assembly is None and target_entity:
+        assembly = MEMORY_SERVICE.assemble_context(
+            target_entity,
+            ledger_id=ledger_id,
+            k=assembly_k,
+            quote_safe=assembly_quote_safe,
+            since=since,
+        )
+        _record_latest_assembly(
+            entity=target_entity,
+            ledger_id=ledger_id,
+            k=assembly_k,
+            quote_safe=assembly_quote_safe,
+            since=since,
+            assembly=assembly,
+        )
     llm_prompt = _augment_prompt(
         prompt,
         attachments=attachments,
         assembly=assembly,
         since=since,
         until=until,
-        quote_safe=quote_mode,
+        quote_safe=assembly_quote_safe,
+        entity=target_entity,
     )
 
     if use_openai:
