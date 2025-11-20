@@ -141,6 +141,7 @@ SAFE_PROMOTION_METRICS = {
 
 SEARCH_INDEX_REFRESH_INTERVAL = 90.0
 _ATTACHMENT_QUERY_HINTS = ("attachment", "attachments", "pdf", "document", "file", "upload", "chunk")
+_TOPIC_TOKEN_PATTERN = re.compile(r"[a-z0-9]{3,}")
 
 
 def _get_entity() -> str | None:
@@ -429,17 +430,36 @@ def _references_attachment_query(query: str) -> bool:
     return any(hint in normalized for hint in _ATTACHMENT_QUERY_HINTS)
 
 
+def _topic_terms_from_query(text: str) -> list[str]:
+    normalized = (text or "").lower()
+    return [token for token in _TOPIC_TOKEN_PATTERN.findall(normalized) if token not in {"the", "and", "about", "from"}]
+
+
 def _attachment_quote_fallback(query: str) -> str | None:
-    if not _references_attachment_query(query):
-        return None
+    attachment_mode = _references_attachment_query(query)
+    terms = _topic_terms_from_query(query)
+    terms_set = set(terms)
     attachments = st.session_state.get("recent_attachments") or []
     if not attachments:
         return None
-    latest = attachments[-1]
-    name = latest.get("name") or "attachment"
-    snippets = latest.get("snippets") or []
-    if not snippets:
+    prioritized: list[tuple[str, list[str]]] = []
+    for entry in reversed(attachments):
+        snippets = entry.get("snippets") or []
+        if not snippets:
+            continue
+        if attachment_mode:
+            prioritized.append((entry.get("name") or "attachment", snippets))
+            continue
+        matched = []
+        for snippet in snippets:
+            lowered = snippet.lower()
+            if not terms_set or any(term in lowered for term in terms_set):
+                matched.append(snippet)
+        if matched:
+            prioritized.append((entry.get("name") or "attachment", matched))
+    if not prioritized:
         return None
+    name, snippets = prioritized[0]
     lines = [f"Here are excerpts from {name}:"]
     for snippet in snippets[:4]:
         preview = snippet.strip()
