@@ -139,6 +139,8 @@ SAFE_PROMOTION_METRICS = {
     "K": 0.0,
 }
 
+SEARCH_INDEX_REFRESH_INTERVAL = 90.0
+
 
 def _get_entity() -> str | None:
     return st.session_state.get("entity")
@@ -331,6 +333,69 @@ def _apply_latest_anchor_to_probe() -> None:
     latest = st.session_state.get("search_probe_latest_preview")
     if latest:
         st.session_state["search_probe_query"] = latest
+
+
+def _search_index_state(entity: str, ledger_id: str | None) -> dict[str, Any]:
+    """Return the dirty/refresh tracking state for a search index."""
+
+    tracker = st.session_state.setdefault("search_index_state", {})
+    key = f"{entity}::{ledger_id or ''}"
+    state = tracker.get(key)
+    if not isinstance(state, dict):
+        state = {"dirty": True, "last_build": 0.0}
+    tracker[key] = state
+    return state
+
+
+def _mark_search_index_dirty(entity: str | None, ledger_id: str | None) -> None:
+    if not entity:
+        return
+    state = _search_index_state(entity, ledger_id)
+    state["dirty"] = True
+    state["last_dirty"] = time.time()
+
+
+def _maybe_refresh_search_index(entity: str | None, ledger_id: str | None, *, force: bool = False) -> None:
+    if not entity:
+        return
+    state = _search_index_state(entity, ledger_id)
+    dirty = bool(state.get("dirty", True))
+    now = time.time()
+    last_build = float(state.get("last_build") or 0.0)
+    if not (force or dirty):
+        return
+    if not force and dirty and now - last_build < SEARCH_INDEX_REFRESH_INTERVAL:
+        return
+    params = {"entity": entity}
+    if ledger_id:
+        params["ledger_id"] = ledger_id
+    headers = {}
+    if SETTINGS.api_key:
+        headers["x-api-key"] = SETTINGS.api_key
+    try:
+        response = requests.post(
+            f"{API.rstrip('/')}/search/index",
+            params=params,
+            headers=headers,
+            timeout=30,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        LOGGER.warning(
+            "Search index refresh failed for %s/%s: %s",
+            entity,
+            ledger_id or "default",
+            exc,
+        )
+        state["last_error"] = str(exc)
+        return
+    state["last_build"] = now
+    state["dirty"] = False
+    state["last_error"] = None
+    try:
+        state["last_status"] = response.json()
+    except ValueError:
+        state["last_status"] = {"status": response.text[:120] if response.text else "ok"}
 
 
 def _apply_backdoor_promotion(
@@ -1112,13 +1177,18 @@ def _process_memory_text(text: str, use_openai: bool, *, attachments: list[dict]
     if not cleaned:
         st.warning("Enter some text first.")
         return
+    entity = _get_entity()
+    ledger_id = st.session_state.get("ledger_id")
     # Let the LLM structure the memory for anchoring.
     factors = _let_llm_structure_memory(cleaned)
-    _anchor(cleaned, record_chat=False, notify=False, factors_override=factors)
+    anchored_primary = _anchor(cleaned, record_chat=False, notify=False, factors_override=factors)
+    if anchored_primary:
+        _maybe_refresh_search_index(entity, ledger_id)
     agent_payload = _maybe_extract_agent_payload(cleaned)
     if agent_payload:
         agent_text, factors_override = agent_payload
         if _anchor(agent_text, record_chat=True, notify=True, factors_override=factors_override):
+            _maybe_refresh_search_index(entity, ledger_id)
             st.session_state.chat_history.append(("Agent", agent_text))
         return
     if "chat_history" not in st.session_state:
@@ -1423,6 +1493,8 @@ def _anchor_attachment(attachment: dict):
         if anchored
         else f"Could not anchor {name} – see warnings above."
     )
+    if anchored:
+        _maybe_refresh_search_index(_get_entity(), st.session_state.get("ledger_id"))
     st.session_state.chat_history.append(("Attachment", status))
 
 
@@ -1512,6 +1584,7 @@ def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = Fa
         if _anchor(full_block, record_chat=False, factors_override=factors):
             st.session_state.rolling_text = []
             st.session_state.last_anchor_ts = time.time()
+            _maybe_refresh_search_index(_get_entity(), st.session_state.get("ledger_id"))
 
 
 def _maybe_handle_recall_query(text: str) -> bool:
@@ -1607,6 +1680,7 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
         st.session_state.latest_structured_metrics = metrics_payload
     else:
         _persist_structured_views_from_ledger(entity)
+    _mark_search_index_dirty(entity, ledger_id)
     if record_chat:
         st.session_state.chat_history.append(("You", text))
     if notify:
