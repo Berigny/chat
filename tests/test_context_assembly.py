@@ -8,7 +8,7 @@ class DummyApiService:
         self.payload = payload
         self.calls: list[dict[str, Any]] = []
 
-    def fetch_assembly(
+    def assemble_context(
         self,
         entity: str,
         *,

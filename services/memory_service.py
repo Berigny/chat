@@ -573,7 +573,7 @@ class MemoryService:
             return copy.deepcopy(cached[1])
 
         try:
-            payload = self.api_service.fetch_assembly(
+            payload = self.api_service.assemble_context(
                 entity,
                 ledger_id=ledger_id,
                 k=normalized_k,
@@ -1488,7 +1488,7 @@ class MemoryService:
         assembly_entries: list[Mapping[str, Any]] = []
         if entity:
             try:
-                assembly_payload = self.api_service.fetch_assembly(
+                assembly_payload = self.api_service.assemble_context(
                     entity,
                     ledger_id=ledger_id,
                     k=max(resolved_limit * 2, 8),

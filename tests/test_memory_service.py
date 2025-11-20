@@ -7,7 +7,7 @@ class DummyAssemblyApi:
     def __init__(self) -> None:
         self.calls = 0
 
-    def fetch_assembly(self, *_, **__):
+    def assemble_context(self, *_, **__):
         self.calls += 1
         return {"summaries": [], "bodies": [], "claims": []}
 
@@ -258,7 +258,7 @@ def test_build_recall_response_uses_assembly_when_memories_empty() -> None:
         def fetch_memories(self, *_, **__):
             return []
 
-        def fetch_assembly(self, *_, **__):
+        def assemble_context(self, *_, **__):
             return {
                 "bodies": [
                     {"text": "Prime excerpt discussing God definition and meaning", "meta": {"source": "assembly"}},
