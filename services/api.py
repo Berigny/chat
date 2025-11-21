@@ -19,6 +19,9 @@ _TRAVERSAL_NODE_OVERRIDES: dict[str, int] = {
 }
 _DEFAULT_TRAVERSAL_NODE = 0
 
+# Export a stable, prompt-friendly list of supported ledger entities.
+TRAVERSAL_ENTITY_SLUGS: tuple[str, ...] = tuple(sorted(_TRAVERSAL_NODE_OVERRIDES))
+
 _ALLOWED_S2_PRIME_KEYS = {"11", "13", "17", "19"}
 
 import requests
@@ -651,4 +654,4 @@ class ApiService:
         return self._client.update_metrics(entity, payload, ledger_id=ledger_id)
 
 
-__all__ = ["ApiService", "requests"]
+__all__ = ["ApiService", "TRAVERSAL_ENTITY_SLUGS", "requests"]

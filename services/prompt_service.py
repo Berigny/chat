@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+import json
 from datetime import datetime
 from typing import Any, Iterable, Mapping, Sequence
 
+from .api import TRAVERSAL_ENTITY_SLUGS
 from .memory_service import MemoryService, strip_ledger_noise
 
 
@@ -14,7 +16,14 @@ S1_PRIMES = {2, 3, 5, 7}
 S2_PRIMES = {11, 13, 17, 19}
 
 
-__all__ = ["PromptService", "create_prompt_service", "LEDGER_SNIPPET_LIMIT"]
+__all__ = [
+    "PromptService",
+    "TRANSLATOR_SYSTEM_PROMPT",
+    "build_synthesis_prompt",
+    "build_traversal_intent_prompt",
+    "create_prompt_service",
+    "LEDGER_SNIPPET_LIMIT",
+]
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +31,74 @@ LEDGER_SNIPPET_LIMIT = 5
 LEDGER_SNIPPET_CHARS = 250
 ATTACHMENT_SNIPPET_CHARS = 400
 ATTACHMENT_LIMIT = 3
+
+TRANSLATOR_SYSTEM_PROMPT = """
+You translate user requests into ledger traversal intents.
+- Always respond with JSON only.
+- JSON keys: entity, path, quote_safe, and k.
+- path must be '/assemble' for summary recall or '/body' for verbatim transcripts.
+- quote_safe is true when the user expects citations or exact quotes; otherwise false.
+- k is a small integer (1-8) describing how many ledger memories to fetch.
+- Valid ledger entities: {entities}.
+""".strip()
+
+
+def build_traversal_intent_prompt(
+    question: str,
+    *,
+    default_entity: str,
+    ledger_id: str | None = None,
+) -> str:
+    """Return the traversal translator prompt grounded in known ledger entities.
+
+    The prompt keeps the JSON envelope explicit so the downstream intent parser can
+    remain stable. ``default_entity`` should reflect the active workspace slug to
+    prevent the model from inventing unsupported entities.
+    """
+
+    lines = [
+        TRANSLATOR_SYSTEM_PROMPT.format(entities=", ".join(TRAVERSAL_ENTITY_SLUGS)),
+        f"Default entity: {default_entity}.",
+    ]
+    if ledger_id:
+        lines.append(f"Ledger ID: {ledger_id}.")
+    lines.append(f"User question: {question}")
+    lines.append("Return JSON only with keys: path, entity, quote_safe, k.")
+    return "\n".join(lines)
+
+
+def build_synthesis_prompt(
+    user_query: str,
+    retrieved_context: str | Mapping[str, object] | Sequence[Mapping[str, object]] | None,
+) -> str:
+    """Create a synthesis prompt for the stop-and-go retrieval design.
+
+    ``retrieved_context`` may be a pre-rendered string or a structured payload
+    from the traversal phase; it is coerced into a JSON block so the model can
+    cite only what was fetched.
+    """
+
+    if isinstance(retrieved_context, str):
+        context_block = retrieved_context.strip()
+    elif retrieved_context is None:
+        context_block = ""
+    else:
+        try:
+            context_block = json.dumps(retrieved_context, ensure_ascii=False, indent=2)
+        except TypeError:
+            context_block = str(retrieved_context)
+    if not context_block:
+        context_block = "(No retrieved ledger context was provided.)"
+    return "\n".join(
+        [
+            "You are the synthesis leg of a stop-and-go retrieval pipeline.",
+            "Use only the retrieved ledger context to answer. If nothing is relevant, state that explicitly and suggest a clarifying follow-up.",
+            f"User question: {user_query}",
+            "\nRetrieved ledger context:",
+            context_block,
+            "\nResponse:",
+        ]
+    )
 
 
 def _recent_chat_block(history: Sequence[tuple[str, str]], *, max_entries: int = 15) -> str | None:
