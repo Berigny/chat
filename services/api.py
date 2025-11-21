@@ -413,6 +413,25 @@ class ApiService:
             limit=limit,
         )
 
+    def search_with_response(
+        self,
+        entity: str,
+        query: str,
+        *,
+        ledger_id: Optional[str] = None,
+        mode: Optional[str] = None,
+        limit: Optional[int] = None,
+    ) -> tuple[Dict[str, Any], "requests.Response"]:
+        """Call ``/search`` and return both parsed JSON and raw HTTP response."""
+
+        return self._client.search_with_response(
+            entity,
+            query,
+            ledger_id=ledger_id,
+            mode=mode,
+            limit=limit,
+        )
+
     def search_slots(
         self,
         entity: str,

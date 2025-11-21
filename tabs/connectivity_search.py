@@ -159,7 +159,7 @@ def render_tab(
             st.warning("Enter a probe query first.")
             return
         try:
-            payload = api_service.search(
+            payload, response = api_service.search_with_response(
                 entity,
                 cleaned_query,
                 ledger_id=ledger_id,
@@ -175,6 +175,13 @@ def render_tab(
             st.session_state["search_probe_last_mode"] = (
                 mode_override if mode_override is not None else mode_value
             )
+            st.session_state["search_probe_last_response"] = {
+                "status": response.status_code,
+                "reason": response.reason,
+                "elapsed": getattr(response, "elapsed", None),
+                "headers": dict(response.headers),
+                "url": response.url,
+            }
             response_text = payload.get("response") if isinstance(payload, Mapping) else None
             if response_text:
                 st.caption("Response text")
@@ -183,6 +190,15 @@ def render_tab(
             if isinstance(slots, list) and slots:
                 st.caption("Slots returned")
                 st.json(slots)
+            with st.expander("HTTP metadata", expanded=False):
+                st.write(
+                    f"HTTP {response.status_code} ({response.reason or 'n/a'})"
+                )
+                if getattr(response, "elapsed", None):
+                    st.caption(f"Elapsed: {response.elapsed.total_seconds():.3f}s")
+                st.caption(f"URL: {response.url}")
+                st.json(dict(response.headers))
+                st.code(response.text[:2000] or "<empty response>", language="json")
             st.json(payload or {})
 
     if st.button("Probe /search endpoint", key="probe_search_endpoint"):
@@ -202,6 +218,7 @@ def render_tab(
 
     last_payload = st.session_state.get("search_probe_last_payload")
     last_query = st.session_state.get("search_probe_last_query")
+    last_response_meta = st.session_state.get("search_probe_last_response")
     if _should_offer_body_retry(last_payload):
         st.warning(
             "The last probe returned zero results. Body mode inspects the raw memory body "
@@ -215,6 +232,22 @@ def render_tab(
         )
         if st.button("Retry in body mode", key="retry_search_body_mode"):
             _run_search_probe(last_query or probe_query, mode_override="body")
+
+    if isinstance(last_response_meta, Mapping):
+        with st.expander("Last /search HTTP details", expanded=False):
+            status = last_response_meta.get("status")
+            reason = last_response_meta.get("reason")
+            elapsed = last_response_meta.get("elapsed")
+            url = last_response_meta.get("url")
+            if status:
+                st.write(f"HTTP {status} ({reason or 'n/a'})")
+            if getattr(elapsed, "total_seconds", None):
+                st.caption(f"Elapsed: {elapsed.total_seconds():.3f}s")
+            if url:
+                st.caption(f"URL: {url}")
+            headers = last_response_meta.get("headers")
+            if isinstance(headers, Mapping):
+                st.json(dict(headers))
 
     st.divider()
     st.write("### 🧪 TEST ONLY – Entity promotion back-door")
