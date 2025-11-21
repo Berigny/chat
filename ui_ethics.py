@@ -43,12 +43,9 @@ def render() -> None:
 
     api_url = st.text_input("API URL", value=DEFAULT_API, key="ethics_api_url")
     api_key = st.text_input(
-        "API Key",
-        value=os.getenv("DUALSUBSTRATE_API_KEY", ""),
-        type="password",
-        key="ethics_api_key",
+        "API Key", value=os.getenv("DUALSUBSTRATE_API_KEY", ""), type="password", key="ethics_api_key"
     )
-    entity = st.text_input("Entity", value="demo_user")
+    entity = st.text_input("Entity", value="demo_user", key="ethics_entity")
 
     ledger_raw = st.text_area(
         "Ledger snapshot JSON",
