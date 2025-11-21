@@ -37,11 +37,15 @@ def render() -> None:
     st.caption("Submit candidate deltas and text to the v2 coherence endpoint.")
 
     api_url = st.text_input("API URL", value=DEFAULT_API, key="coherence_api_url")
-    api_key = st.text_input("API Key", value=os.getenv("DUALSUBSTRATE_API_KEY", ""), type="password")
+    api_key = st.text_input(
+        "API Key", value=os.getenv("DUALSUBSTRATE_API_KEY", ""), type="password", key="coherence_api_key"
+    )
 
     col_entity, col_text = st.columns(2)
-    entity = col_entity.text_input("Entity", value="demo_user")
-    text = col_text.text_input("Text", value="", placeholder="Optional text to assess")
+    entity = col_entity.text_input("Entity", value="demo_user", key="coherence_entity")
+    text = col_text.text_input(
+        "Text", value="", placeholder="Optional text to assess", key="coherence_text"
+    )
 
     deltas_raw = st.text_area(
         "Prime deltas JSON",
@@ -93,4 +97,13 @@ def render() -> None:
         render_json_viewer("Raw response", response.raw or {})
 
 
-__all__ = ["render"]
+def render_coherence_tab(client: DualSubstrateV2Client | None = None) -> None:
+    """Render the coherence tab with a shared API client."""
+
+    if client:
+        st.session_state.setdefault("coherence_api_url", client.base_url)
+        st.session_state.setdefault("coherence_api_key", client.api_key or "")
+    render()
+
+
+__all__ = ["render", "render_coherence_tab"]

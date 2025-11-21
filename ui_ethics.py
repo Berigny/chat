@@ -42,8 +42,10 @@ def render() -> None:
     st.caption("Send ledger state and enrichment deltas to the ethics guardrail endpoint.")
 
     api_url = st.text_input("API URL", value=DEFAULT_API, key="ethics_api_url")
-    api_key = st.text_input("API Key", value=os.getenv("DUALSUBSTRATE_API_KEY", ""), type="password")
-    entity = st.text_input("Entity", value="demo_user")
+    api_key = st.text_input(
+        "API Key", value=os.getenv("DUALSUBSTRATE_API_KEY", ""), type="password", key="ethics_api_key"
+    )
+    entity = st.text_input("Entity", value="demo_user", key="ethics_entity")
 
     ledger_raw = st.text_area(
         "Ledger snapshot JSON",
@@ -104,4 +106,13 @@ def render() -> None:
         render_json_viewer("Raw response", response.raw or {"decision": response.decision})
 
 
-__all__ = ["render"]
+def render_ethics_tab(client: DualSubstrateV2Client | None = None) -> None:
+    """Render the ethics tab with a shared API client."""
+
+    if client:
+        st.session_state.setdefault("ethics_api_url", client.base_url)
+        st.session_state.setdefault("ethics_api_key", client.api_key or "")
+    render()
+
+
+__all__ = ["render", "render_ethics_tab"]
