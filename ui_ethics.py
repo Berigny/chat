@@ -104,4 +104,13 @@ def render() -> None:
         render_json_viewer("Raw response", response.raw or {"decision": response.decision})
 
 
-__all__ = ["render"]
+def render_ethics_tab(client: DualSubstrateV2Client | None = None) -> None:
+    """Render the ethics tab with a shared API client."""
+
+    if client:
+        st.session_state.setdefault("ethics_api_url", client.base_url)
+        st.session_state.setdefault("ethics_api_key", client.api_key or "")
+    render()
+
+
+__all__ = ["render", "render_ethics_tab"]
