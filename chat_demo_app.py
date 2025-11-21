@@ -51,7 +51,13 @@ from services.memory_service import (
     is_recall_query,
     strip_ledger_noise,
 )
-from services.prompt_service import LEDGER_SNIPPET_LIMIT, create_prompt_service
+from services.prompt_service import (
+    LEDGER_SNIPPET_LIMIT,
+    TRANSLATOR_SYSTEM_PROMPT,
+    build_synthesis_prompt,
+    build_traversal_intent_prompt,
+    create_prompt_service,
+)
 from services.prime_service import PrimeService
 from services.structured_writer import write_structured_views
 from services.ledger_tasks import (
@@ -1392,17 +1398,11 @@ def _extract_json_object(raw: str) -> dict | None:
 
 def _build_traversal_intent_prompt(question: str, entity: str | None, ledger_id: str | None) -> str:
     default_entity = entity or DEFAULT_ENTITY
-    lines = [
-        "You translate user questions into ledger traversal intents.",
-        "Return STRICT JSON only with keys: path, entity, quote_safe, and k.",
-        "path must be '/assemble' for summary-oriented recall or '/body' for transcript/full text retrieval.",
-        "Use quote_safe=true when the user wants verbatim quotes or citations.",
-        f"Default entity: {default_entity}.",
-    ]
-    if ledger_id:
-        lines.append(f"Ledger ID: {ledger_id}.")
-    lines.append(f"Question: {question}")
-    return "\n".join(lines)
+    return build_traversal_intent_prompt(
+        question,
+        default_entity=default_entity,
+        ledger_id=ledger_id,
+    )
 
 
 def _translate_traversal_intent(question: str) -> dict | None:
@@ -1417,6 +1417,7 @@ def _translate_traversal_intent(question: str) -> dict | None:
         model = genai.GenerativeModel(
             "gemini-2.0-flash",
             generation_config={"response_mime_type": "application/json"},
+            system_instruction=TRANSLATOR_SYSTEM_PROMPT,
         )
         response = model.generate_content(prompt)
     except Exception:
@@ -1970,7 +1971,7 @@ def _chat_response(
             since=since,
             assembly=assembly,
         )
-    llm_prompt = _augment_prompt(
+    retrieved_context = _augment_prompt(
         prompt,
         attachments=attachments,
         assembly=assembly,
@@ -1979,6 +1980,7 @@ def _chat_response(
         quote_safe=assembly_quote_safe,
         entity=target_entity,
     )
+    llm_prompt = build_synthesis_prompt(prompt, retrieved_context)
 
     if use_openai:
         if not (OpenAI and OPENAI_API_KEY):
