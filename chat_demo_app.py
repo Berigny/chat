@@ -88,6 +88,46 @@ ASSET_DIR = Path(__file__).parent
 _RERUN_FN = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
 
 
+def _openai_ready() -> bool:
+    return bool(OpenAI and OPENAI_API_KEY)
+
+
+def _gemini_ready() -> bool:
+    return bool(genai and GENAI_KEY)
+
+
+def _select_llm_provider(prefer_openai: bool) -> str | None:
+    openai_ready = _openai_ready()
+    gemini_ready = _gemini_ready()
+    if prefer_openai and openai_ready:
+        return "openai"
+    if not prefer_openai and gemini_ready:
+        return "gemini"
+    if openai_ready:
+        return "openai"
+    if gemini_ready:
+        return "gemini"
+    return None
+
+
+def _get_openai_client():
+    if not _openai_ready():
+        return None
+    client = st.session_state.get("_openai_client")
+    if client:
+        return client
+    client = OpenAI(api_key=OPENAI_API_KEY)
+    st.session_state["_openai_client"] = client
+    return client
+
+
+def _build_gemini_model(*, json_mode: bool = False):
+    if not _gemini_ready():
+        return None
+    generation_config = {"response_mime_type": "application/json"} if json_mode else None
+    return genai.GenerativeModel("gemini-2.0-flash", generation_config=generation_config)
+
+
 def _llm_factor_extractor(text: str, schema: dict[int, dict]) -> list[dict]:
     if not (genai and GENAI_KEY):
         return []
@@ -1263,7 +1303,7 @@ def _process_memory_text(text: str, use_openai: bool, *, attachments: list[dict]
     entity = _get_entity()
     ledger_id = st.session_state.get("ledger_id")
     # Let the LLM structure the memory for anchoring.
-    factors = _let_llm_structure_memory(cleaned)
+    factors = _let_llm_structure_memory(cleaned, prefer_openai=use_openai)
     anchored_primary = _anchor(cleaned, record_chat=False, notify=False, factors_override=factors)
     if anchored_primary:
         _maybe_refresh_search_index(entity, ledger_id)
@@ -1349,10 +1389,10 @@ def _cosine(a, b):
 
 
 def _semantic_score(prompt: str) -> float:
-    if not (OpenAI and OPENAI_API_KEY):
+    client = _get_openai_client()
+    if not client:
         return 0.0
     try:
-        client = OpenAI(api_key=OPENAI_API_KEY)
         target = "provide exact quotes from prior user statements"
         emb_prompt = client.embeddings.create(model="text-embedding-3-small", input=prompt).data[0].embedding
         emb_target = client.embeddings.create(model="text-embedding-3-small", input=target).data[0].embedding
@@ -1686,10 +1726,12 @@ def _latest_user_transcript(current_request: str, *, limit: int = 5) -> str | No
     )
 
 
-def _let_llm_structure_memory(text: str) -> list[dict] | None:
+def _let_llm_structure_memory(text: str, *, prefer_openai: bool | None = None) -> list[dict] | None:
     """Prompt the LLM to extract key concepts as prime factors."""
-    if not (OpenAI and OPENAI_API_KEY):
-        st.warning("OpenAI API key missing for memory structuring.")
+    prefer_openai = use_openai_provider() if prefer_openai is None else prefer_openai
+    provider = _select_llm_provider(prefer_openai)
+    if provider is None:
+        st.warning("No LLM provider configured for memory structuring.")
         return None
 
     schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
@@ -1708,18 +1750,36 @@ def _let_llm_structure_memory(text: str) -> list[dict] | None:
     Text to analyze:
     {text}
     """
-    client = OpenAI(api_key=OPENAI_API_KEY)
+
+    payload: dict | None = None
+    provider_label = "OpenAI" if provider == "openai" else "Gemini"
     try:
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            response_format={"type": "json_object"},
-        )
-        payload = json.loads(response.choices[0].message.content)
-        if "factors" in payload and isinstance(payload["factors"], list):
-            return payload["factors"]
+        if provider == "openai":
+            client = _get_openai_client()
+            if not client:
+                st.warning("OpenAI unavailable for memory structuring.")
+                return None
+            response = client.chat.completions.create(
+                model="gpt-3.5-turbo",
+                messages=[{"role": "user", "content": prompt}],
+                response_format={"type": "json_object"},
+            )
+            payload = _extract_json_object(response.choices[0].message.content)
+        else:
+            model = _build_gemini_model(json_mode=True)
+            if not model:
+                st.warning("Gemini API key missing for memory structuring.")
+                return None
+            response = model.generate_content(prompt)
+            payload = _extract_json_object(getattr(response, "text", ""))
     except Exception as e:
-        st.error(f"Failed to structure memory with LLM: {e}")
+        st.error(f"Failed to structure memory with {provider_label}: {e}")
+        return None
+
+    factors = payload.get("factors") if isinstance(payload, Mapping) else None
+    if isinstance(factors, list):
+        return factors
+    st.warning(f"{provider_label} did not return structured factors.")
     return None
 
 
@@ -1736,7 +1796,7 @@ def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = Fa
         or quote_mode
     )
     if should_anchor:
-        factors = _let_llm_structure_memory(full_block)
+        factors = _let_llm_structure_memory(full_block, prefer_openai=use_openai_provider())
         if _anchor(full_block, record_chat=False, factors_override=factors):
             st.session_state.rolling_text = []
             st.session_state.last_anchor_ts = time.time()
@@ -1982,11 +2042,17 @@ def _chat_response(
     )
     llm_prompt = build_synthesis_prompt(prompt, retrieved_context)
 
-    if use_openai:
-        if not (OpenAI and OPENAI_API_KEY):
-            st.warning("OpenAI API key missing.")
-            return
-        client = OpenAI(api_key=OPENAI_API_KEY)
+    provider = _select_llm_provider(use_openai)
+    if provider == "openai":
+        client = _get_openai_client()
+        if not client:
+            if _gemini_ready():
+                st.warning("OpenAI unavailable – switching to Gemini.")
+                provider = "gemini"
+            else:
+                st.warning("OpenAI API key missing.")
+                return None
+    if provider == "openai":
         messages = [{"role": "user", "content": llm_prompt}]
         try:
             response = client.chat.completions.create(model="gpt-3.5-turbo", messages=messages)
@@ -2001,9 +2067,11 @@ def _chat_response(
         st.session_state.chat_history.append(("Bot", full))
         return full
 
-    if not (genai and GENAI_KEY):
+    if provider != "gemini":
         return "Gemini API key missing."
-    model = genai.GenerativeModel("gemini-2.0-flash")
+    model = _build_gemini_model()
+    if not model:
+        return "Gemini API key missing."
     # Provide a more complete chat history to the model.
     history = [
         {"role": "user" if h[0] == "You" else "model", "parts": [h[1]]}
@@ -2278,8 +2346,8 @@ def _render_app():
     if "prime_symbols" not in st.session_state:
         st.session_state.prime_symbols = DEFAULT_PRIME_SYMBOLS
     init_llm_provider(
-        openai_ready=bool(OpenAI and OPENAI_API_KEY),
-        gemini_ready=bool(genai and GENAI_KEY),
+        openai_ready=_openai_ready(),
+        gemini_ready=_gemini_ready(),
     )
 
     if st.session_state.user_type == "Demo user" and st.session_state.login_time:
@@ -2309,8 +2377,8 @@ def _render_app():
             st.code(m.get('text', '')[:200] + ("…" if len(m.get('text', '')) > 200 else ""))
 
     render_llm_selector(
-        openai_ready=bool(OpenAI and OPENAI_API_KEY),
-        gemini_ready=bool(genai and GENAI_KEY),
+        openai_ready=_openai_ready(),
+        gemini_ready=_gemini_ready(),
     )
 
     if st.session_state.get("prefill_top_input"):
@@ -2358,10 +2426,10 @@ def _render_app():
             if digest != st.session_state.last_audio_digest:
                 st.session_state.last_audio_digest = digest
                 norm = _normalize_audio(audio_bytes)
-                if not (OpenAI and OPENAI_API_KEY):
+                client = _get_openai_client()
+                if not client:
                     st.warning("OpenAI API key missing.")
                 else:
-                    client = OpenAI(api_key=OPENAI_API_KEY)
                     try:
                         transcript = client.audio.transcriptions.create(
                             model="whisper-1",
