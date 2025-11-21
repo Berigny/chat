@@ -5,9 +5,11 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any, Iterable, Mapping
+from typing import Any, Iterable, Mapping, Sequence
 
 import requests
+
+from models import CoherenceResponse, LedgerEntry, PolicyDecisionResponse
 
 
 logger = logging.getLogger(__name__)
@@ -624,4 +626,105 @@ def _coerce_ledger_records(payload: Any) -> list[dict[str, str]]:
     return records
 
 
-__all__ = ["DualSubstrateClient"]
+@dataclass
+class DualSubstrateV2Client:
+    """HTTP client for the v2 evaluation endpoints."""
+
+    base_url: str
+    api_key: str | None = None
+    timeout: int = 10
+
+    def _headers(self) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if self.api_key:
+            headers["x-api-key"] = self.api_key
+        return headers
+
+    def _full_url(self, path: str) -> str:
+        path = path if path.startswith("/") else f"/{path}"
+        return f"{self.base_url.rstrip('/')}/v2{path}"
+
+    def _request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: Mapping[str, Any] | None = None,
+        json_payload: Any | None = None,
+    ) -> requests.Response:
+        url = self._full_url(path)
+        try:
+            response = requests.request(
+                method,
+                url,
+                params=dict(params or {}),
+                json=json_payload,
+                headers=self._headers(),
+                timeout=self.timeout,
+            )
+        except requests.RequestException:
+            logger.exception("Request to %s failed", url)
+            raise
+
+        if not response.ok:
+            message = _extract_error_message(response)
+            logger.error("API error (%s): %s", response.status_code, message)
+            response.raise_for_status()
+        return response
+
+    def write_ledger(
+        self,
+        *,
+        entity: str,
+        text: str | None = None,
+        factors: Sequence[Mapping[str, Any]] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> LedgerEntry:
+        payload: dict[str, Any] = {"entity": entity}
+        if text is not None:
+            payload["text"] = text
+        if factors:
+            payload["factors"] = list(factors)
+        if metadata:
+            payload["metadata"] = dict(metadata)
+
+        response = self._request("post", "/ledger/write", json_payload=payload)
+        body = _safe_json(response)
+        return LedgerEntry.from_dict(body)
+
+    def read_ledger(self, entry_id: str) -> LedgerEntry:
+        response = self._request("get", f"/ledger/read/{entry_id}")
+        body = _safe_json(response)
+        return LedgerEntry.from_dict(body)
+
+    def evaluate_coherence(self, payload: Mapping[str, Any]) -> CoherenceResponse:
+        response = self._request("post", "/coherence/evaluate", json_payload=dict(payload))
+        body = _safe_json(response)
+        return CoherenceResponse.from_dict(body)
+
+    def evaluate_ethics(self, payload: Mapping[str, Any]) -> PolicyDecisionResponse:
+        response = self._request("post", "/ethics/evaluate", json_payload=dict(payload))
+        body = _safe_json(response)
+        return PolicyDecisionResponse.from_dict(body)
+
+
+def _safe_json(response: requests.Response) -> Mapping[str, Any]:
+    try:
+        parsed = response.json()
+    except ValueError:
+        return {}
+    return parsed if isinstance(parsed, Mapping) else {}
+
+
+def _extract_error_message(response: requests.Response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = response.text
+    if isinstance(payload, Mapping):
+        detail = payload.get("detail") or payload.get("message") or payload.get("error")
+        return str(detail) if detail is not None else json.dumps(payload)
+    return str(payload)
+
+
+__all__ = ["DualSubstrateClient", "DualSubstrateV2Client"]
