@@ -37,7 +37,12 @@ def render() -> None:
     st.caption("Submit candidate deltas and text to the v2 coherence endpoint.")
 
     api_url = st.text_input("API URL", value=DEFAULT_API, key="coherence_api_url")
-    api_key = st.text_input("API Key", value=os.getenv("DUALSUBSTRATE_API_KEY", ""), type="password")
+    api_key = st.text_input(
+        "API Key",
+        value=os.getenv("DUALSUBSTRATE_API_KEY", ""),
+        type="password",
+        key="coherence_api_key",
+    )
 
     col_entity, col_text = st.columns(2)
     entity = col_entity.text_input("Entity", value="demo_user")
