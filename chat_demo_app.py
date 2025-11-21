@@ -34,6 +34,7 @@ try:
 except ModuleNotFoundError:
     PdfReader = None
 
+from api_client import DualSubstrateV2Client as ApiClient
 from app_settings import DEFAULT_METRIC_FLOORS, load_settings
 from agent_selector import (
     init_llm_provider,
@@ -66,6 +67,8 @@ from services.ledger_tasks import (
     reset_discrete_ledger,
 )
 from tabs import about, chat as chat_tab, connectivity_search, ledger_metrics, memory_inference
+import ui_coherence
+import ui_ethics
 from prime_pipeline import (
     call_factor_extraction_llm,
     normalize_override_factors,
@@ -84,6 +87,7 @@ if genai and GENAI_KEY:
 
 OPENAI_API_KEY = SETTINGS.openai_api_key
 ASSET_DIR = Path(__file__).parent
+API_CLIENT = ApiClient(API, api_key=SETTINGS.api_key)
 
 _RERUN_FN = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
 
@@ -2470,6 +2474,8 @@ def _render_app():
             "Connectivity & Search",
             "Ledger & Metrics",
             "About DualSubstrate",
+            "Coherence",
+            "Ethics",
         ]
     )
 
@@ -2531,6 +2537,12 @@ def _render_app():
 
     with tabs[4]:
         about.render_tab()
+
+    with tabs[5]:
+        ui_coherence.render_coherence_tab(API_CLIENT)
+
+    with tabs[6]:
+        ui_ethics.render_ethics_tab(API_CLIENT)
 
 
 def main() -> None:
