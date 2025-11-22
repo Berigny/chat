@@ -21,20 +21,20 @@ class DummyApiService:
         self.anchor_calls.append((entity, factors_list, ledger_id, text or ""))
         return {"edges": [], "energy": 1.0, "text": text or ""}
 
-    def put_ledger_body(self, entity: str, prime: int, body_payload, *, ledger_id=None, metadata=None):
-        if isinstance(body_payload, Mapping):
-            payload = dict(body_payload)
-        else:
-            payload = {"body": body_payload}
+    def write_body_entry(self, entity: str, prime: int, text: str, *, ledger_id=None, metadata=None):
+        metadata_payload = {"text": text}
+        if isinstance(metadata, Mapping):
+            metadata_payload.update(metadata)
         self.body_calls.append(
             {
                 "entity": entity,
                 "prime": prime,
-                "payload": payload,
+                "metadata": metadata_payload,
                 "ledger_id": ledger_id,
                 "metadata_arg": metadata,
             }
         )
+        return {"entry_id": f"{prime}:1", "state": {"metadata": metadata_payload}}
 
     def fetch_ledger(self, entity: str, *, ledger_id: str | None = None) -> Mapping[str, Any]:
         return {}
@@ -83,7 +83,7 @@ def test_ingest_allows_mediated_flow() -> None:
     assert api.anchor_calls
     assert api.body_calls
     call = api.body_calls[0]
-    assert call["metadata_arg"] is None
-    metadata = call["payload"].get("metadata")
+    assert isinstance(call["metadata_arg"], Mapping)
+    metadata = call.get("metadata")
     assert isinstance(metadata, dict)
     assert metadata.get("kind") == "memory"

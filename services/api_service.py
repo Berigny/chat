@@ -73,20 +73,27 @@ class EnrichmentHelper:
                 ledger_id=ledger_id,
             )
             reserved.add(prime)
-            body_payload: dict[str, Any] = {"body": text}
-            if supplemental_meta:
-                body_payload["metadata"] = dict(supplemental_meta)
-            self.api_service.put_ledger_body(
+            ledger_entry = self.api_service.write_body_entry(
                 entity,
                 prime,
-                body_payload,
+                text,
                 ledger_id=ledger_id,
+                metadata=supplemental_meta,
             )
             minted.append(
                 {
                     "prime": prime,
-                    "body": text,
-                    "metadata": dict(supplemental_meta),
+                    "body": (
+                        ledger_entry.get("state", {})
+                        .get("metadata", {})
+                        .get("text", text)
+                    ),
+                    "metadata": (
+                        ledger_entry.get("state", {})
+                        .get("metadata", {})
+                        if isinstance(ledger_entry, Mapping)
+                        else dict(supplemental_meta)
+                    ),
                 }
             )
         return minted
