@@ -10,6 +10,7 @@ from typing import Any, Callable, Mapping, Sequence
 import streamlit as st
 
 from services.api import requests
+from backend_client import BackendAPIClient, build_action_request
 
 
 GetEntityFn = Callable[[], str | None]
@@ -41,29 +42,11 @@ def _parse_json_field(label: str, raw: str, *, fallback: Any) -> tuple[Any, str 
         return fallback, f"{label}: {exc}"
 
 
-def _build_action_request(
-    action: str,
-    entity: str | None,
-    ledger_id: str | None,
-    default_entity: str,
-) -> dict[str, Any]:
-    return {
-        "action_request": {
-            "actor": entity or default_entity,
-            "action": action,
-            "key": {
-                "namespace": _normalize_namespace(ledger_id),
-                "identifier": f"{_entity_slug(entity, default_entity)}-structured",
-            },
-            "parameters": {"tier": 3.0},
-        }
-    }
-
-
 def render_tab(
     *,
     api_base: str,
     settings: Any,
+    backend_client: BackendAPIClient,
     default_entity: str,
     get_entity: GetEntityFn,
     clean_attachment_header: Callable[[str | None], str],
@@ -117,54 +100,12 @@ def render_tab(
     if st.button("Build search index", key="build_search_index"):
         entity = get_entity() or default_entity
         try:
-            resp = requests.get(
-                f"{host_url}/admin/reindex",
-                params={"entity": entity},
-                headers=headers,
-                timeout=30,
-            )
-        except Exception as exc:  # pragma: no cover - network dependent
+            payload = backend_client.reindex_ledger(entity)
+        except requests.RequestException as exc:  # pragma: no cover - network dependent
             st.error(f"Index build error: {exc}")
         else:
-            st.write(f"HTTP status: {resp.status_code}")
-            try:
-                payload = resp.json()
-            except Exception:
-                payload = resp.text
-
-            detail: str | None = None
-            if isinstance(payload, dict):
-                raw_detail = payload.get("detail") or payload.get("message")
-                if isinstance(raw_detail, list):
-                    detail_items = []
-                    for item in raw_detail:
-                        if isinstance(item, dict) and item.get("msg"):
-                            detail_items.append(str(item.get("msg")))
-                        elif isinstance(item, str):
-                            detail_items.append(item)
-                    detail = "; ".join(detail_items)
-                elif isinstance(raw_detail, str):
-                    detail = raw_detail
-
-            if resp.status_code == 422:
-                st.warning(
-                    detail
-                    or "Reindex expects a valid entity. Use Demo_dev and anchor at least one memory first."
-                )
-            elif resp.ok:
-                st.toast(
-                    "Reindex triggered – only needed once after the first anchor.",
-                    icon="🔍",
-                )
-                if isinstance(payload, (dict, list)):
-                    st.json(payload)
-                else:
-                    st.code(str(payload) or "<empty response>", language="json")
-            else:
-                st.error(
-                    detail
-                    or f"Index build failed with HTTP {resp.status_code}. Please retry after anchoring."
-                )
+            st.toast("Reindex triggered – only needed once after the first anchor.", icon="🔍")
+            st.json(payload or {"status": "ok"})
 
     entity = get_entity() or default_entity
     ledger_id = st.session_state.get("ledger_id")
@@ -221,105 +162,46 @@ def render_tab(
         if not cleaned_query:
             st.warning("Enter a probe query first.")
             return
-        normalized_query = cleaned_query.strip().lower()
-        params = {
-            "q": normalized_query,
-            "mode": "any",
-            "limit": int(probe_limit),
+        try:
+            payload = backend_client.search_memories(
+                entity=entity,
+                query=cleaned_query,
+                limit=int(probe_limit),
+            )
+        except requests.RequestException as exc:
+            st.error(f"Search call failed: {exc}")
+            return
+
+        st.info("Search request succeeded.")
+        st.session_state["search_probe_last_payload"] = payload if isinstance(payload, Mapping) else {}
+        st.session_state["search_probe_last_query"] = cleaned_query
+        st.session_state["search_probe_last_response"] = {
+            "status": 200,
+            "reason": "OK",
+            "elapsed": None,
+            "headers": {},
+            "url": f"{host_url}/search",
         }
-        if entity:
-            params["entity"] = entity
-        response = None
-        try:
-            response = requests.get(
-                f"{host_url}/search",
-                params=params,
-                headers=headers,
-                timeout=15,
-            )
-        except requests.RequestException as exc:
-            st.error(f"Search call failed: {exc}")
-            return
-        except Exception as exc:
-            st.error(f"Search payload error: {exc}")
-            return
-        if response is None:
-            st.error("No response received from search endpoint.")
-            return
-
-        status = response.status_code
-        if status == 422:
-            try:
-                detail_payload = response.json()
-            except Exception:
-                detail_payload = None
-            message = None
-            if isinstance(detail_payload, dict):
-                raw_detail = detail_payload.get("detail") or detail_payload.get("message")
-                if isinstance(raw_detail, list):
-                    detail_parts = []
-                    for item in raw_detail:
-                        if isinstance(item, dict) and item.get("msg"):
-                            detail_parts.append(str(item.get("msg")))
-                        elif isinstance(item, str):
-                            detail_parts.append(item)
-                    message = "; ".join(detail_parts)
-                elif isinstance(raw_detail, str):
-                    message = raw_detail
-            st.warning(
-                message
-                or "Search needs both an entity (e.g., Demo_dev) and a query before it can run."
-            )
-            st.caption("HTTP 422 returned from /search.")
-            return
-        if status == 500:
-            st.error(
-                "Search unavailable (build index first). Run ‘Build search index’ "
-                "via `/admin/reindex`, then retry."
-            )
-            st.caption("HTTP 500 returned from /search.")
-            return
-
-        try:
-            response.raise_for_status()
-            payload = response.json()
-        except requests.RequestException as exc:
-            st.error(f"Search call failed: {exc}")
-            return
-        except Exception as exc:
-            st.error(f"Search payload error: {exc}")
-            return
-        else:
-            st.info("Search request succeeded.")
-            st.session_state["search_probe_last_payload"] = payload if isinstance(payload, Mapping) else {}
-            st.session_state["search_probe_last_query"] = normalized_query
-            st.session_state["search_probe_last_response"] = {
-                "status": response.status_code,
-                "reason": response.reason,
-                "elapsed": getattr(response, "elapsed", None),
-                "headers": dict(response.headers),
-                "url": response.url,
-            }
-            results = payload.get("results") if isinstance(payload, Mapping) else None
-            if isinstance(results, Sequence):
-                st.caption(f"{len(results)} result(s)")
-                for idx, row in enumerate(results, start=1):
-                    if not isinstance(row, Mapping):
-                        continue
-                    entry_id = row.get("entry_id") or f"result-{idx}"
-                    score = row.get("score")
-                    st.write(f"**{entry_id}** — score {score if score is not None else 'n/a'}")
-                    snippet = row.get("snippet")
-                    if isinstance(snippet, str) and snippet.strip():
-                        st.code(snippet.strip(), language="text")
-                    entry_payload = row.get("entry")
-                    if isinstance(entry_payload, Mapping):
-                        with st.expander(f"Entry payload: {entry_id}", expanded=False):
-                            st.json(entry_payload)
-                if not results:
-                    st.info("no memories yet")
-            else:
+        results = payload.get("results") if isinstance(payload, Mapping) else None
+        if isinstance(results, Sequence):
+            st.caption(f"{len(results)} result(s)")
+            for idx, row in enumerate(results, start=1):
+                if not isinstance(row, Mapping):
+                    continue
+                entry_id = row.get("entry_id") or f"result-{idx}"
+                score = row.get("score")
+                st.write(f"**{entry_id}** — score {score if score is not None else 'n/a'}")
+                snippet = row.get("snippet")
+                if isinstance(snippet, str) and snippet.strip():
+                    st.code(snippet.strip(), language="text")
+                entry_payload = row.get("entry")
+                if isinstance(entry_payload, Mapping):
+                    with st.expander(f"Entry payload: {entry_id}", expanded=False):
+                        st.json(entry_payload)
+            if not results:
                 st.info("no memories yet")
+        else:
+            st.info("no memories yet")
 
     if st.button("Probe /search endpoint", key="probe_search_endpoint"):
         _run_search_probe(probe_query)
@@ -347,7 +229,13 @@ def render_tab(
         "Send an ActionRequest payload to `/coherence/evaluate` and `/ethics/evaluate`. "
         "This mirrors the automatic back-door promotion logic."
     )
-    payload_preview = _build_action_request("auto-promote", entity, ledger_id, default_entity)
+    payload_preview = build_action_request(
+        actor=entity or default_entity,
+        action="auto-promote",
+        key_namespace=_normalize_namespace(ledger_id),
+        key_identifier=f"{_entity_slug(entity, default_entity)}-structured",
+        parameters={"tier": 3.0},
+    )
     st.json(payload_preview)
     if st.button("Run governance diagnostics", key="governance_diag_btn"):
         try:
