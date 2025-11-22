@@ -131,6 +131,8 @@ def _render_rocksdb_probe(entity: str | None) -> None:
                         probe_pattern,
                         int(probe_top_n),
                     )
+                except PermissionError:
+                    st.info("RocksDB filesystem probe is disabled in this hosted environment.")
                 except FileNotFoundError as exc:
                     st.error(f"RocksDB path not found: {exc}")
                 except Exception as exc:  # pragma: no cover - surface probe errors
