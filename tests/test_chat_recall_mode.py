@@ -31,9 +31,9 @@ def _prepare_session_state() -> None:
     st.session_state.chat_history = []
 
 
-def test_chat_recall_uses_all_mode_by_default(monkeypatch):
+def test_chat_recall_uses_body_mode_by_default(monkeypatch):
     _prepare_session_state()
-    st.session_state.recall_mode = "all"
+    st.session_state.recall_mode = "body"
     memory_stub = _MemoryStub()
     monkeypatch.setattr(chat_demo_app, "MEMORY_SERVICE", memory_stub)
     monkeypatch.setattr(chat_demo_app, "API_SERVICE", _ApiStub())
@@ -42,13 +42,13 @@ def test_chat_recall_uses_all_mode_by_default(monkeypatch):
 
     assert handled
     assert memory_stub.calls
-    assert memory_stub.calls[0]["mode"] == "all"
-    assert st.session_state.recall_mode == "all"
+    assert memory_stub.calls[0]["mode"] == "body"
+    assert st.session_state.recall_mode == "body"
 
 
 def test_chat_recall_detects_body_mode_from_query(monkeypatch):
     _prepare_session_state()
-    st.session_state.recall_mode = "all"
+    st.session_state.recall_mode = "body"
     memory_stub = _MemoryStub()
     monkeypatch.setattr(chat_demo_app, "MEMORY_SERVICE", memory_stub)
     monkeypatch.setattr(chat_demo_app, "API_SERVICE", _ApiStub())
@@ -58,4 +58,4 @@ def test_chat_recall_detects_body_mode_from_query(monkeypatch):
     assert handled
     assert memory_stub.calls
     assert memory_stub.calls[0]["mode"] == "body"
-    assert st.session_state.recall_mode == "all"
+    assert st.session_state.recall_mode == "body"

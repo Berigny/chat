@@ -1415,10 +1415,10 @@ class MemoryService:
         resolved_limit = limit if limit is not None else estimate_quote_count(query)
         keywords_raw = _keywords_from_prompt(query)
         normalized_keywords = _topic_terms(query)
-        search_mode = mode or "all"
+        search_mode = mode or "body"
         modes_to_try = [search_mode]
-        if mode is None and search_mode != "body":
-            modes_to_try.append("body")
+        if mode is None and search_mode != "all":
+            modes_to_try.append("all")
 
         for current_mode in modes_to_try:
             payload = self.api_service.search(

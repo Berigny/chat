@@ -418,10 +418,10 @@ def _promotion_result_ok(result: Mapping[str, Any] | None) -> bool:
 
 
 def _reset_recall_mode() -> None:
-    """Return the recall mode selector to the default 'all' state."""
+    """Return the recall mode selector to the default recall state."""
 
-    if st.session_state.get("recall_mode") != "all":
-        st.session_state.recall_mode = "all"
+    if st.session_state.get("recall_mode") != "body":
+        st.session_state.recall_mode = "body"
 
 
 def _apply_latest_anchor_to_probe() -> None:
@@ -1840,7 +1840,7 @@ def _maybe_handle_recall_query(text: str) -> bool:
             )
         except requests.RequestException as exc:
             LOGGER.warning("Failed to persist placeholder recall metrics: %s", exc)
-    fallback_mode = st.session_state.get("recall_mode") or "all"
+    fallback_mode = st.session_state.get("recall_mode") or _default_recall_mode()
     recall_mode, _ = _resolve_recall_mode(clean_query, fallback=fallback_mode)
     LOGGER.info(f"Recall query: '{clean_query}', Mode: '{recall_mode}'")
     try:
@@ -1853,11 +1853,11 @@ def _maybe_handle_recall_query(text: str) -> bool:
         )
     except requests.RequestException as exc:
         st.error("Recall failed. Please try again after rebuilding the search index.")
-        st.session_state.recall_mode = "all"
+        st.session_state.recall_mode = _default_recall_mode()
         return True
 
     LOGGER.info(f"Recall response payload: {response}")
-    st.session_state.recall_mode = "all"
+    st.session_state.recall_mode = _default_recall_mode()
 
     fallback_attachment = False
     response_text = response or ""
@@ -2153,7 +2153,7 @@ _RECALL_MODE_PATTERNS: dict[str, re.Pattern[str]] = {
 }
 
 
-def _resolve_recall_mode(query: str, fallback: str = "all") -> tuple[str, bool]:
+def _resolve_recall_mode(query: str, fallback: str = "body") -> tuple[str, bool]:
     """Infer the best recall mode from the prompt text."""
 
     normalized = (query or "").strip()
@@ -2164,7 +2164,7 @@ def _resolve_recall_mode(query: str, fallback: str = "all") -> tuple[str, bool]:
 
 
 def _default_recall_mode() -> str:
-    return "all"
+    return "body"
 
 
 DEMO_USERS = {
