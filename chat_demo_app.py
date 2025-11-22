@@ -62,7 +62,6 @@ from services.prompt_service import (
     create_prompt_service,
 )
 from services.prime_service import PrimeService
-from services.structured_writer import write_structured_views
 from services.ledger_tasks import (
     fetch_metrics_snapshot,
     perform_lattice_rotation,
@@ -997,25 +996,6 @@ def _persist_structured_views(entity: str, structured: dict, *, ledger_id: str |
 
     flat_map = _derive_flat_s2_map(structured)
 
-    writer_payload: dict[str, Any] = {}
-    if structured:
-        writer_payload = dict(structured)
-        writer_payload["s2"] = []
-
-    score_payload: Mapping[str, Any] | None = None
-    metrics_response: Mapping[str, Any] | None = None
-
-    try:
-        if writer_payload:
-            write_structured_views(
-                API_SERVICE,
-                entity,
-                writer_payload,
-                ledger_id=ledger_id,
-            )
-    except requests.RequestException as exc:
-        LOGGER.warning("Failed to persist structured S1 views: %s", exc)
-
     total_word_count = 0
     if flat_map:
         for entry in flat_map.values():
@@ -1031,57 +1011,45 @@ def _persist_structured_views(entity: str, structured: dict, *, ledger_id: str |
         )
         return {"s2": flat_map}
 
-    if flat_map:
-        headers: dict[str, str] = {"Content-Type": "application/json"}
-        if SETTINGS.api_key:
-            headers["x-api-key"] = SETTINGS.api_key
-        if ledger_id:
-            headers["X-Ledger-ID"] = ledger_id
-        try:
-            response = requests.post(
-                f"{API.rstrip('/')}/score/s2",
-                params={"entity": entity},
-                json=flat_map,
-                headers=headers,
-                timeout=10,
-            )
-            response.raise_for_status()
-            try:
-                score_candidate = response.json()
-            except ValueError:
-                score_candidate = None
-            if isinstance(score_candidate, Mapping):
-                score_payload = dict(score_candidate)
-                metrics_candidate = score_candidate.get("metrics")
-                if not isinstance(metrics_candidate, Mapping):
-                    metrics_candidate = score_candidate
-                if isinstance(metrics_candidate, Mapping):
-                    try:
-                        metrics_response = API_SERVICE.patch_metrics(
-                            entity,
-                            metrics_candidate,
-                            ledger_id=ledger_id,
-                        )
-                    except requests.RequestException as exc:
-                        LOGGER.warning("Failed to persist S2 metrics: %s", exc)
-        except requests.RequestException as exc:
-            LOGGER.warning("Failed to score S2 ledger map: %s", exc)
-
+    summary_lines: list[str] = []
+    for slot in structured.get("slots", []) or []:
+        if not isinstance(slot, Mapping):
+            continue
+        prime = slot.get("prime")
+        summary = slot.get("summary") or slot.get("title")
+        if summary and isinstance(prime, int):
+            summary_lines.append(f"Prime {prime}: {summary}")
+    entry_text = "\n".join(summary_lines) or "Structured ledger update"
+    metadata = {
+        "structured": structured,
+        "s2_map": flat_map,
+        "source": "chat-demo",
+        "entity": entity,
+        "ledger_id": ledger_id,
+    }
+    coordinates = {
+        "slots": float(len(structured.get("slots") or [])),
+        "s2_entries": float(len(flat_map)),
+    }
+    key_payload = _ledger_entry_key(entity, ledger_id, suffix="structured")
     try:
-        API_SERVICE.put_ledger_s2(
-            entity,
-            flat_map,
-            ledger_id=ledger_id,
+        ledger_response = BACKEND_CLIENT.write_ledger_entry(
+            key_namespace=key_payload["namespace"],
+            key_identifier=key_payload["identifier"],
+            text=entry_text,
+            phase="structured-ledger",
+            entity=entity,
+            metadata=metadata,
+            coordinates=coordinates,
         )
     except requests.RequestException as exc:
-        LOGGER.warning("Failed to persist S2 ledger map: %s", exc)
+        LOGGER.warning("Failed to persist structured ledger entry: %s", exc)
+        ledger_response = {"error": str(exc)}
 
-    result: dict[str, Any] = {"s2": flat_map}
-    if isinstance(score_payload, Mapping):
-        result["score"] = score_payload
-    if isinstance(metrics_response, Mapping):
-        result["metrics"] = dict(metrics_response)
-    return result
+    return {
+        "s2": flat_map,
+        "ledger_entry": ledger_response,
+    }
 
 
 def _extract_structured_persist_outputs(
