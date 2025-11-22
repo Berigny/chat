@@ -1085,6 +1085,36 @@ class MemoryService:
             pass
         return []
 
+    def search_slots(
+        self,
+        entity: str,
+        query: str,
+        *,
+        ledger_id: str | None = None,
+        limit: int | None = None,
+    ) -> list[dict]:
+        if not entity or not query:
+            return []
+
+        try:
+            slots = self.api_service.search_slots(
+                entity,
+                query,
+                ledger_id=ledger_id,
+                limit=limit,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to search ledger slots for entity %s: %s", entity, exc
+            )
+            return [{"summary": "search unavailable"}]
+
+        normalized: list[dict] = []
+        for slot in slots:
+            if isinstance(slot, Mapping):
+                normalized.append(dict(slot))
+        return normalized
+
     def supports_inference_state(self) -> bool:
         try:
             return bool(self.api_service.supports_inference_state())
@@ -1247,18 +1277,13 @@ class MemoryService:
         if not entity or not query:
             return []
 
-        try:
-            slots = self.api_service.search_slots(
-                entity,
-                query,
-                ledger_id=ledger_id,
-                mode="slots",
-                limit=limit,
-            )
-        except requests.RequestException as exc:
-            logger.warning(
-                "Failed to search ledger slots for entity %s: %s", entity, exc
-            )
+        slots = self.search_slots(
+            entity,
+            query,
+            ledger_id=ledger_id,
+            limit=limit,
+        )
+        if not slots:
             return []
         normalized: list[dict] = []
         for slot in slots:
@@ -1306,15 +1331,17 @@ class MemoryService:
             return ""
         query_hint = " ".join([kw for kw in (keywords or []) if kw]) or "recent ledger context"
         try:
-            slots = self.api_service.search_slots(
+            slots = self.search_slots(
                 entity,
                 query_hint,
                 ledger_id=ledger_id,
-                mode="slots",
                 limit=limit,
             )
-        except Exception:
-            slots = []
+        except Exception as exc:
+            logger.warning(
+                "Failed to render context block for entity %s: %s", entity, exc
+            )
+            return "- search unavailable"
         snippets: list[str] = []
         for slot in slots:
             title = slot.get("title")

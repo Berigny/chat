@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import requests
+
 from services.memory_service import MOBIUS_REFRESH_INTERVAL, MemoryService, is_recall_query
 
 
@@ -35,9 +37,33 @@ def test_select_context_forwards_search_params() -> None:
 
     assert len(results) == 2
     assert results[0]["summary"] == "Met with Alice"
-    assert calls and calls[0]["mode"] == "slots"
+    assert calls and "mode" not in calls[0]
     assert calls[0]["limit"] == 2
     assert calls[0]["ledger_id"] == "ledger-alpha"
+
+
+def test_select_context_returns_message_on_failure() -> None:
+    class ApiStub(SimpleNamespace):
+        def search_slots(self, *_args, **_kwargs):
+            raise requests.RequestException("unavailable")
+
+    service = MemoryService(api_service=ApiStub(), prime_weights={})
+
+    results = service.select_context("demo", "topic", {})
+
+    assert results == [{"summary": "search unavailable"}]
+
+
+def test_render_context_block_handles_search_errors() -> None:
+    class ApiStub(SimpleNamespace):
+        def search_slots(self, *_args, **_kwargs):
+            raise requests.RequestException("unavailable")
+
+    service = MemoryService(api_service=ApiStub(), prime_weights={})
+
+    block = service.render_context_block("demo", {}, keywords=["topic"])
+
+    assert block.strip() == "- search unavailable"
 
 
 def test_build_recall_response_returns_engine_text() -> None:
