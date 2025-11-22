@@ -1,6 +1,7 @@
 import requests
 import streamlit as st
 import pytest
+import requests
 
 import admin_app
 from prime_schema import DEFAULT_PRIME_SCHEMA

@@ -311,7 +311,6 @@ class PrimeService:
             "text": normalized_text,
             "factors": factors,
             "structured": structured,
-            "anchor": {"phase": "ingest"},
             "ledger_entry": ledger_entry,
         }
 

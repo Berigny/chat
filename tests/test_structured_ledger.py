@@ -50,13 +50,13 @@ def test_anchor_uses_ingest_structured_payload(monkeypatch):
                 },
                 "bodies": [],
             }
+            captured["structured"] = structured
             ledger_entry = {
                 "entry_id": "default:demo-structured",
                 "state": {"metadata": {"structured": structured}},
             }
             return {
                 "structured": structured,
-                "anchor": {"edges": [], "energy": 1.0},
                 "ledger_entry": ledger_entry,
             }
 
@@ -76,6 +76,10 @@ def test_anchor_uses_ingest_structured_payload(monkeypatch):
     assert captured["entity"] == "demo"
     assert captured["text"] == "Test entry"
     assert st.session_state.last_structured_entry_id == "default:demo-structured"
+    assert st.session_state.last_anchor_payload == {
+        "entry_id": "default:demo-structured",
+        "state": {"metadata": {"structured": captured["structured"]}},
+    }
     assert st.session_state.latest_structured_ledger == {
         "11": {"summary": long_summary},
         "19": {"summary": long_follow_up},
