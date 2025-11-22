@@ -164,7 +164,6 @@ class DualSubstrateClient:
         query: str,
         *,
         ledger_id: str | None = None,
-        mode: str | None = None,
         limit: int | None = None,
         fuzzy: bool = True,
         semantic_weight: float = 0.45,
@@ -178,8 +177,6 @@ class DualSubstrateClient:
             "semantic_weight": semantic_weight,
             "delta": delta,
         }
-        if mode:
-            params["mode"] = mode
 
         return requests.get(
             f"{self.base_url}/search",
@@ -194,7 +191,6 @@ class DualSubstrateClient:
         query: str,
         *,
         ledger_id: str | None = None,
-        mode: str | None = None,
         limit: int | None = None,
         fuzzy: bool = True,
         semantic_weight: float = 0.45,
@@ -206,7 +202,6 @@ class DualSubstrateClient:
             entity,
             query,
             ledger_id=ledger_id,
-            mode=mode,
             limit=limit,
             fuzzy=fuzzy,
             semantic_weight=semantic_weight,

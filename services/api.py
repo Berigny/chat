@@ -413,7 +413,6 @@ class ApiService:
         query: str,
         *,
         ledger_id: Optional[str] = None,
-        mode: Optional[str] = None,
         limit: Optional[int] = None,
         fuzzy: bool = True,
         semantic_weight: float = 0.45,
@@ -423,7 +422,6 @@ class ApiService:
             entity,
             query,
             ledger_id=ledger_id,
-            mode=mode,
             limit=limit,
             fuzzy=fuzzy,
             semantic_weight=semantic_weight,
@@ -436,7 +434,6 @@ class ApiService:
         query: str,
         *,
         ledger_id: Optional[str] = None,
-        mode: Optional[str] = None,
         limit: Optional[int] = None,
         fuzzy: bool = True,
         semantic_weight: float = 0.45,
@@ -448,7 +445,6 @@ class ApiService:
             entity,
             query,
             ledger_id=ledger_id,
-            mode=mode,
             limit=limit,
             fuzzy=fuzzy,
             semantic_weight=semantic_weight,
@@ -461,14 +457,12 @@ class ApiService:
         query: str,
         *,
         ledger_id: Optional[str] = None,
-        mode: Optional[str] = None,
         limit: Optional[int] = None,
     ) -> List[Dict[str, Any]]:
         payload = self.search(
             entity,
             query,
             ledger_id=ledger_id,
-            mode=mode,
             limit=limit,
         )
         slots = payload.get("slots") if isinstance(payload, dict) else None
