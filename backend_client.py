@@ -49,6 +49,28 @@ def build_action_request(
     return action_request
 
 
+def _normalize_action_request(action_request: Mapping[str, Any]) -> dict[str, Any]:
+    """Coerce arbitrary mappings into a valid ActionRequest payload."""
+
+    actor = action_request.get("actor") if isinstance(action_request, Mapping) else None
+    action = action_request.get("action") if isinstance(action_request, Mapping) else None
+    if not actor or not action:
+        raise ValueError("Action requests require non-empty 'actor' and 'action' fields")
+
+    key_payload = action_request.get("key") if isinstance(action_request, Mapping) else None
+    key_namespace = key_payload.get("namespace") if isinstance(key_payload, Mapping) else None
+    key_identifier = key_payload.get("identifier") if isinstance(key_payload, Mapping) else None
+    parameters = action_request.get("parameters") if isinstance(action_request, Mapping) else None
+
+    return build_action_request(
+        actor=str(actor),
+        action=str(action),
+        key_namespace=key_namespace,
+        key_identifier=key_identifier,
+        parameters=parameters if isinstance(parameters, Mapping) else None,
+    )
+
+
 @dataclass
 class BackendAPIClient:
     """REST client that targets the backend/main FastAPI deployment."""
@@ -150,10 +172,12 @@ class BackendAPIClient:
         return self._json("get", "/search", params=params)
 
     def evaluate_coherence(self, action_request: Mapping[str, Any]) -> Mapping[str, Any]:
-        return self._json("post", "/coherence/evaluate", json_payload=dict(action_request))
+        normalized_request = _normalize_action_request(action_request)
+        return self._json("post", "/coherence/evaluate", json_payload=normalized_request)
 
     def evaluate_ethics(self, action_request: Mapping[str, Any]) -> Mapping[str, Any]:
-        return self._json("post", "/ethics/evaluate", json_payload=dict(action_request))
+        normalized_request = _normalize_action_request(action_request)
+        return self._json("post", "/ethics/evaluate", json_payload=normalized_request)
 
     def reindex_ledger(self, entity: str | None = None) -> Mapping[str, Any]:
         params = {"entity": entity} if entity else None

@@ -41,6 +41,28 @@ def build_action_request(
     return request_payload
 
 
+def _normalize_action_request(action_request: Mapping[str, Any]) -> dict[str, Any]:
+    """Coerce arbitrary mappings into an ActionRequest payload."""
+
+    actor = action_request.get("actor") if isinstance(action_request, Mapping) else None
+    action = action_request.get("action") if isinstance(action_request, Mapping) else None
+    if not actor or not action:
+        raise ValueError("Action requests require non-empty 'actor' and 'action' fields")
+
+    key_payload = action_request.get("key") if isinstance(action_request, Mapping) else None
+    key_namespace = key_payload.get("namespace") if isinstance(key_payload, Mapping) else None
+    key_identifier = key_payload.get("identifier") if isinstance(key_payload, Mapping) else None
+    parameters = action_request.get("parameters") if isinstance(action_request, Mapping) else None
+
+    return build_action_request(
+        actor=str(actor),
+        action=str(action),
+        key_namespace=key_namespace,
+        key_identifier=key_identifier,
+        parameters=parameters if isinstance(parameters, Mapping) else None,
+    )
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -826,12 +848,14 @@ class DualSubstrateV2Client:
         return LedgerEntry.from_dict(body)
 
     def evaluate_coherence(self, payload: Mapping[str, Any]) -> CoherenceResponse:
-        response = self._request("post", "/coherence/evaluate", json_payload=dict(payload))
+        normalized_request = _normalize_action_request(payload)
+        response = self._request("post", "/coherence/evaluate", json_payload=normalized_request)
         body = _safe_json(response)
         return CoherenceResponse.from_dict(body)
 
     def evaluate_ethics(self, payload: Mapping[str, Any]) -> PolicyDecisionResponse:
-        response = self._request("post", "/ethics/evaluate", json_payload=dict(payload))
+        normalized_request = _normalize_action_request(payload)
+        response = self._request("post", "/ethics/evaluate", json_payload=normalized_request)
         body = _safe_json(response)
         return PolicyDecisionResponse.from_dict(body)
 
