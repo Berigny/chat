@@ -1742,6 +1742,7 @@ def _let_llm_structure_memory(text: str, *, prefer_openai: bool | None = None) -
 def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = False):
     if user_text is None and bot_reply is None:
         return
+    _write_turn_to_ledger(user_text, bot_reply, quote_mode=quote_mode)
     st.session_state.rolling_text.append(f"You: {user_text}\nBot: {bot_reply}")
     window_s = 120  # Anchor every 2 minutes
     max_tokens = 500  # Or when the conversation chunk gets long enough
@@ -1757,6 +1758,66 @@ def _update_rolling_memory(user_text: str, bot_reply: str, quote_mode: bool = Fa
             st.session_state.rolling_text = []
             st.session_state.last_anchor_ts = time.time()
             _maybe_refresh_search_index(_get_entity(), st.session_state.get("ledger_id"))
+
+
+def _write_turn_to_ledger(
+    user_text: str | None,
+    bot_reply: str | None,
+    *,
+    quote_mode: bool = False,
+):
+    entity = _get_entity()
+    backend = getattr(PRIME_SERVICE, "backend_client", None)
+    if not entity or not backend:
+        return None
+
+    ledger_id = st.session_state.get("ledger_id")
+    user_clean = (user_text or "").strip()
+    bot_clean = (bot_reply or "").strip()
+    lines = []
+    if user_clean:
+        lines.append(f"You: {user_clean}")
+    if bot_clean:
+        lines.append(f"Bot: {bot_clean}")
+    combined = "\n".join(lines).strip()
+    if not combined:
+        return None
+
+    key_namespace = (ledger_id or "default").strip() or "default"
+    key_identifier = f"{entity}-chat-turn"
+    coordinates: dict[str, float] = {
+        "prime_2": float(max(len(user_clean.split()), 1)),
+        "prime_5": float(len(lines)),
+    }
+    if bot_clean:
+        coordinates["prime_3"] = float(max(len(bot_clean.split()), 1))
+    metadata = {
+        "entity": entity,
+        "ledger_id": ledger_id,
+        "user_text": user_clean,
+        "bot_reply": bot_clean or None,
+        "quote_mode": quote_mode,
+        "source": "chat-demo",
+        "timestamp": time.time(),
+        "chat_history_len": len(st.session_state.get("chat_history") or []),
+    }
+
+    try:
+        ledger_entry = backend.write_ledger_entry(
+            key_namespace=key_namespace,
+            key_identifier=key_identifier,
+            text=combined,
+            phase="chat-turn",
+            entity=entity,
+            metadata=metadata,
+            coordinates=coordinates,
+        )
+    except requests.RequestException as exc:  # pragma: no cover - network guard
+        LOGGER.warning("Failed to persist chat turn: %s", exc)
+        return None
+
+    st.session_state.last_chat_turn_entry = ledger_entry
+    return ledger_entry
 
 
 def _maybe_handle_recall_query(text: str) -> bool:
