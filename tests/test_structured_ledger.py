@@ -138,6 +138,39 @@ def test_persist_structured_views_skips_short_summaries(monkeypatch):
     assert backend_calls == []
 
 
+def test_persist_structured_views_from_backend_entry(monkeypatch):
+    st.session_state.clear()
+    st.session_state.ledger_id = "ledger-gamma"
+    st.session_state.latest_structured_ledger = {}
+    st.session_state.latest_structured_metrics = {}
+    st.session_state.last_structured_entry_id = "default:demo-structured"
+
+    structured_snapshot = {
+        "slots": [{"prime": 11, "summary": "Snapshot"}],
+        "s2": [{"prime": 11, "summary": "Snapshot"}],
+    }
+
+    class DummyBackendClient:
+        def read_ledger_entry(self, entry_id):
+            assert entry_id == "default:demo-structured"
+            return {
+                "state": {
+                    "metadata": {"structured": structured_snapshot},
+                }
+            }
+
+    class DummyAPIService:
+        def fetch_ledger(self, entity, *, ledger_id=None):
+            raise AssertionError("Legacy fetch should not be called when backend entry exists")
+
+    monkeypatch.setattr(chat_demo_app, "BACKEND_CLIENT", DummyBackendClient())
+    monkeypatch.setattr(chat_demo_app, "API_SERVICE", DummyAPIService())
+
+    chat_demo_app._persist_structured_views_from_ledger("demo")
+
+    assert st.session_state.latest_structured_ledger == {"11": {"summary": "Snapshot"}}
+
+
 def test_flat_s2_map_drops_empty_summaries():
     structured = {
         "11": {"summary": "   "},

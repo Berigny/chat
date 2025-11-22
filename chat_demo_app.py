@@ -353,6 +353,11 @@ def _ledger_entry_key(entity: str | None, ledger_id: str | None, *, suffix: str 
     }
 
 
+def _ledger_entry_path(entity: str | None, ledger_id: str | None, *, suffix: str = "structured") -> str:
+    key = _ledger_entry_key(entity, ledger_id, suffix=suffix)
+    return f"{key['namespace']}:{key['identifier']}"
+
+
 def _governance_response_summary(response, *, label: str) -> dict[str, Any]:
     summary = _summarize_http_response(response)
     status = summary.get("status") if isinstance(summary, Mapping) else None
@@ -1045,6 +1050,8 @@ def _persist_structured_views(entity: str, structured: dict, *, ledger_id: str |
     except requests.RequestException as exc:
         LOGGER.warning("Failed to persist structured ledger entry: %s", exc)
         ledger_response = {"error": str(exc)}
+    else:
+        st.session_state["last_structured_entry_id"] = f"{key_payload['namespace']}:{key_payload['identifier']}"
 
     return {
         "s2": flat_map,
@@ -1083,13 +1090,32 @@ def _extract_structured_persist_outputs(
 
 def _persist_structured_views_from_ledger(entity: str) -> None:
     ledger_id = st.session_state.get("ledger_id")
-    try:
-        payload = API_SERVICE.fetch_ledger(entity, ledger_id=ledger_id)
-    except requests.RequestException as exc:
-        LOGGER.warning("Failed to refresh ledger after anchor: %s", exc)
-        return
+    structured_payload: Mapping[str, Any] | None = None
+    entry_path = st.session_state.get("last_structured_entry_id")
+    if entry_path:
+        try:
+            entry_record = BACKEND_CLIENT.read_ledger_entry(entry_path)
+        except requests.RequestException as exc:
+            LOGGER.warning("Failed to load structured entry %s: %s", entry_path, exc)
+        else:
+            metadata = (
+                entry_record.get("state", {}).get("metadata", {})
+                if isinstance(entry_record, Mapping)
+                else {}
+            )
+            structured_candidate = metadata.get("structured")
+            if isinstance(structured_candidate, Mapping):
+                structured_payload = structured_candidate
 
-    structured_data = _extract_structured_views(payload)
+    if structured_payload is None:
+        try:
+            payload = API_SERVICE.fetch_ledger(entity, ledger_id=ledger_id)
+        except requests.RequestException as exc:
+            LOGGER.warning("Failed to refresh legacy ledger after anchor: %s", exc)
+            return
+        structured_payload = payload if isinstance(payload, Mapping) else {}
+
+    structured_data = _extract_structured_views(structured_payload)
     structured = structured_data if isinstance(structured_data, Mapping) else {}
     flat_map = _derive_flat_s2_map(structured)
     if not structured.get("slots"):
