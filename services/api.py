@@ -605,12 +605,23 @@ class ApiService:
         ledger_id: Optional[str] = None,
         metadata: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
+        combined_metadata: Dict[str, Any] = {"entity": entity, "prime": prime, "text": text}
+        if isinstance(metadata, Mapping):
+            combined_metadata.update(metadata)
+
+        coordinates = {f"prime_{prime}": 1.0}
+        phase = combined_metadata.get("phase", "body")
+        created_at = combined_metadata.get("timestamp")
+
         write_response = self._client.write_ledger_entry(
-            entity,
-            prime,
+            key_namespace=ledger_id or "default",
+            key_identifier=entity,
             text=text,
+            phase=str(phase),
             ledger_id=ledger_id,
-            metadata=metadata,
+            metadata=combined_metadata,
+            coordinates=coordinates,
+            created_at=created_at if isinstance(created_at, (int, float)) else None,
         )
         entry_id = None
         if isinstance(write_response, Mapping):

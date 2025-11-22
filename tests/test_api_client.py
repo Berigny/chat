@@ -163,11 +163,15 @@ def test_write_and_read_ledger_entry(monkeypatch):
 
     client = DualSubstrateClient("https://api.example", "secret")
     write_response = client.write_ledger_entry(
-        "demo",
-        41,
+        key_namespace="demo",
+        key_identifier="demo-body",
         text="Anchored body text",
+        phase="body",
         ledger_id="alpha",
         metadata={"kind": "memory"},
+        coordinates={"prime_41": 1.0},
+        created_at=1234,
+        notes="important",
     )
     read_response = client.read_ledger_entry("abc123", ledger_id="alpha")
 
@@ -175,9 +179,12 @@ def test_write_and_read_ledger_entry(monkeypatch):
     assert read_response["state"]["metadata"]["text"] == "Anchored body text"
     assert captured_write["url"].endswith("/ledger/write")
     payload = captured_write["json"]
-    assert payload["entity"] == "demo"
-    assert payload["prime"] == 41
-    assert payload["metadata"] == {"text": "Anchored body text", "kind": "memory"}
+    assert payload["key"] == {"namespace": "demo", "identifier": "demo-body"}
+    assert payload["created_at"] == 1234
+    assert payload["state"]["phase"] == "body"
+    assert payload["state"]["coordinates"] == {"prime_41": 1.0}
+    assert payload["state"]["metadata"] == {"text": "Anchored body text", "kind": "memory"}
+    assert payload["state"]["notes"] == ["important"]
     assert captured_write["headers"]["X-Ledger-ID"] == "alpha"
     assert captured_read["url"].endswith("/ledger/read/abc123")
     assert captured_read["headers"]["X-Ledger-ID"] == "alpha"
