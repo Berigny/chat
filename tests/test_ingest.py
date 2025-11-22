@@ -57,11 +57,12 @@ def prime_service() -> tuple[PrimeService, RecordingApiService, RecordingBackend
     return service, api, backend
 
 
-def _ingest(service: PrimeService, text: str) -> Mapping[str, Any]:
+def _ingest(service: PrimeService, text: str, *, ledger_id: str | None = None) -> Mapping[str, Any]:
     return service.ingest(
         "demo",
         text,
         SCHEMA,
+        ledger_id=ledger_id,
         factors_override=[
             {"prime": 2, "delta": 1},
             {"prime": 37, "delta": 1},
@@ -118,3 +119,26 @@ def test_ingest_blocks_flow_violations_without_writes(
     assert result["flow_errors"]
     assert backend.write_calls == []
     assert not api.anchor_calls
+
+
+def test_ingest_metadata_bundle_includes_structured_fields(
+    prime_service: tuple[PrimeService, RecordingApiService, RecordingBackendClient]
+) -> None:
+    service, _api, backend = prime_service
+
+    text = "Demo transcript for ledger entry"
+    ledger_id = "Ledger-ABC"
+
+    result = _ingest(service, text, ledger_id=ledger_id)
+
+    assert backend.write_calls, "Expected ledger entry write"
+    write_payload = backend.write_calls[-1]
+    assert write_payload["text"] == text
+    metadata = write_payload.get("metadata", {})
+    assert metadata.get("text") == text
+    assert metadata.get("ledger_id") == ledger_id
+    assert metadata.get("structured")
+    assert metadata.get("factors")
+    ledger_entry = result.get("ledger_entry")
+    assert isinstance(ledger_entry, Mapping)
+    assert ledger_entry.get("entry_id") == f"{write_payload['key_namespace']}:{write_payload['key_identifier']}"

@@ -155,57 +155,20 @@ class BodyPrimeAllocator:
             if not cleaned:
                 continue
             metadata = sanitize_metadata(entry.get("metadata"))
-            attempts = 0
-            last_error: requests.HTTPError | None = None
-            while attempts < self.max_attempts:
-                attempts += 1
-                prime = self.next_prime(
-                    reserved=reserved,
-                    entity=entity,
-                    ledger_id=ledger_id,
-                )
-                reserved.add(prime)
-                try:
-                    ledger_entry = self.api_service.write_body_entry(
-                        entity,
-                        prime,
-                        cleaned,
-                        ledger_id=ledger_id,
-                        metadata=metadata,
-                    )
-                except requests.HTTPError as exc:
-                    status = getattr(exc.response, "status_code", None)
-                    if status in {409, 422}:
-                        last_error = exc
-                        self._seed_scope(
-                            entity,
-                            ledger_id=ledger_id,
-                            force=True,
-                        )
-                        continue
-                    raise
-                minted.append(
-                    {
-                        "prime": prime,
-                        "body": (
-                            ledger_entry.get("state", {})
-                            .get("metadata", {})
-                            .get("text", cleaned)
-                        ),
-                        "metadata": (
-                            ledger_entry.get("state", {})
-                            .get("metadata", {})
-                            if isinstance(ledger_entry, Mapping)
-                            else metadata
-                        ),
-                        "key": key,
-                    }
-                )
-                break
-            else:
-                if last_error is not None:
-                    raise last_error
-                raise RuntimeError("Failed to mint ledger body prime after retries")
+            prime = self.next_prime(
+                reserved=reserved,
+                entity=entity,
+                ledger_id=ledger_id,
+            )
+            reserved.add(prime)
+            minted.append(
+                {
+                    "prime": prime,
+                    "body": cleaned,
+                    "metadata": metadata,
+                    "key": key,
+                }
+            )
         return minted
 
 

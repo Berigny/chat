@@ -275,9 +275,9 @@ class PrimeService:
         key_namespace = _normalize_namespace(ledger_id)
         key_identifier = _entity_identifier(entity, suffix="structured")
         coordinates = {
-            "slots": float(len(structured.get("slots", []) or [])),
-            "s1_slots": float(len(structured.get("s1", []) or [])),
-            "s2_slots": float(len(structured.get("s2", []) or [])),
+            "prime_2": float(len(structured.get("slots", []) or [])),
+            "prime_11": float(len(structured.get("s1", []) or [])),
+            "prime_19": float(len(structured.get("s2", []) or [])),
         }
         ledger_entry: Mapping[str, Any] | None = None
         if not self.backend_client:
@@ -292,8 +292,10 @@ class PrimeService:
                 metadata={
                     "entity": entity,
                     "text": normalized_text,
+                    "ledger_id": ledger_id,
                     "factors": factors,
                     "structured": structured,
+                    "bodies": structured.get("bodies", []),
                     "source": "chat-demo",
                     "timestamp": time.time(),
                 },

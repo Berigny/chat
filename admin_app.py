@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Mapping, Optional
 
@@ -12,7 +13,7 @@ from prime_schema import DEFAULT_PRIME_SCHEMA, fetch_schema
 from services.api_service import EnrichmentHelper
 from services.ethics_service import EthicsService
 from services.migration_cli import run_ledger_migration
-from services.structured_writer import write_structured_views
+from services.prime_service import _entity_identifier, _normalize_namespace
 from services.api_helpers import (
     ADMIN_CONFIG_KEY,
     create_or_switch_ledger,
@@ -98,13 +99,51 @@ def _init_session() -> None:
         st.session_state.last_enrichment_report = None
     if "recall_mode" not in st.session_state:
         st.session_state.recall_mode = "s1"
-    if ADMIN_CONFIG_KEY not in st.session_state:
-        st.session_state[ADMIN_CONFIG_KEY] = {
-            "api_url": API_URL,
-            "api_key": _api_key(),
-            "prime_weights": PRIME_WEIGHTS,
-            "fallback_prime": min(DEFAULT_PRIME_SCHEMA),
-        }
+        if ADMIN_CONFIG_KEY not in st.session_state:
+            st.session_state[ADMIN_CONFIG_KEY] = {
+                "api_url": API_URL,
+                "api_key": _api_key(),
+                "prime_weights": PRIME_WEIGHTS,
+                "fallback_prime": min(DEFAULT_PRIME_SCHEMA),
+            }
+
+
+def _persist_structured_metadata(
+    prime_service,
+    entity: str,
+    structured: Mapping[str, Any],
+    *,
+    ledger_id: str | None,
+    text: str,
+) -> Mapping[str, Any] | None:
+    backend_client = getattr(prime_service, "backend_client", None)
+    if backend_client is None:
+        return None
+
+    key_namespace = _normalize_namespace(ledger_id)
+    key_identifier = _entity_identifier(entity, suffix="structured")
+    coordinates = {
+        "prime_2": float(len(structured.get("slots", []) or [])),
+        "prime_11": float(len(structured.get("s1", []) or [])),
+        "prime_19": float(len(structured.get("s2", []) or [])),
+    }
+    metadata = {
+        "entity": entity,
+        "ledger_id": ledger_id,
+        "structured": structured,
+        "bodies": structured.get("bodies", []),
+        "source": "admin-app",
+        "timestamp": time.time(),
+    }
+    return backend_client.write_ledger_entry(
+        key_namespace=key_namespace,
+        key_identifier=key_identifier,
+        text=text,
+        phase="structured-ledger",
+        entity=entity,
+        metadata=metadata,
+        coordinates=coordinates,
+    )
 
 
 def _backfill_body_primes() -> None:
@@ -271,11 +310,12 @@ def _run_enrichment(limit: int = 50, reset_first: bool = True) -> dict | None:
         structured = response_payload.get("structured") if isinstance(response_payload, dict) else None
         if structured:
             try:
-                write_structured_views(
-                    api_service,
+                _persist_structured_metadata(
+                    prime_service,
                     entity,
                     structured,
                     ledger_id=ledger_id,
+                    text=text,
                 )
             except requests.RequestException as exc:
                 summary["failures"].append(f"Structured persist failed: {exc}")
