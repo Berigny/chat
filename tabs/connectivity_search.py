@@ -264,6 +264,13 @@ def render_tab(
         key="ledger_writer_identifier",
     )
     phase_value = st.text_input("Phase label", value="structured-ledger", key="ledger_writer_phase")
+    entry_text = st.text_area(
+        "Entry text",
+        value="",
+        key="ledger_writer_text",
+        height=100,
+        help="Optional free-form text captured with the entry.",
+    )
     coordinates_raw = st.text_area(
         "Coordinates JSON",
         value=json.dumps({"signal": 1.0}, indent=2),
@@ -290,31 +297,21 @@ def render_tab(
             if error:
                 st.error(error)
                 return
-        entry = {
-            "key": {"namespace": writer_ns or namespace_default, "identifier": writer_identifier or identifier_default},
-            "state": {
-                "coordinates": coords,
-                "phase": phase_value or "structured-ledger",
-                "metadata": metadata,
-            },
-        }
-        write_headers = dict(headers)
-        write_headers.setdefault("Content-Type", "application/json")
         try:
-            resp = requests.post(
-                f"{host_url}/ledger/write",
-                headers=write_headers,
-                json=entry,
-                timeout=10,
+            response = backend_client.write_ledger_entry(
+                key_namespace=writer_ns or namespace_default,
+                key_identifier=writer_identifier or identifier_default,
+                text=entry_text or "Connectivity tab entry",
+                phase=phase_value or "structured-ledger",
+                entity=entity or default_entity,
+                metadata=metadata,
+                coordinates=coords if isinstance(coords, Mapping) else None,
             )
-        except Exception as exc:  # pragma: no cover - network dependent
+        except requests.RequestException as exc:  # pragma: no cover - network dependent
             st.error(f"Ledger write failed: {exc}")
         else:
-            st.write(f"HTTP status: {resp.status_code}")
-            try:
-                st.json(resp.json())
-            except Exception:
-                st.code(resp.text or "<empty response>", language="json")
+            st.success("Ledger entry written.")
+            st.json(response)
 
     st.divider()
     st.write("### Ledger entry reader (`/ledger/read/{namespace:identifier}`)")
@@ -330,16 +327,11 @@ def render_tab(
             st.error("Entry path must be in the form `namespace:identifier`.")
         else:
             try:
-                resp = requests.get(
-                    f"{host_url}/ledger/read/{target}",
-                    headers=headers,
-                    timeout=10,
-                )
-            except Exception as exc:  # pragma: no cover - network dependent
+                entry = backend_client.read_ledger_entry(target)
+            except requests.RequestException as exc:  # pragma: no cover - network dependent
                 st.error(f"Ledger read failed: {exc}")
             else:
-                st.write(f"HTTP status: {resp.status_code}")
-                try:
-                    st.json(resp.json())
-                except Exception:
-                    st.code(resp.text or "<empty response>", language="json")
+                if entry:
+                    st.json(entry)
+                else:
+                    st.info("Entry not found.")
