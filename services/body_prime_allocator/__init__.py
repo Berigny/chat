@@ -165,15 +165,13 @@ class BodyPrimeAllocator:
                     ledger_id=ledger_id,
                 )
                 reserved.add(prime)
-                body_payload: dict[str, Any] = {"body": cleaned}
-                if metadata:
-                    body_payload["metadata"] = metadata
                 try:
-                    self.api_service.put_ledger_body(
+                    ledger_entry = self.api_service.write_body_entry(
                         entity,
                         prime,
-                        body_payload,
+                        cleaned,
                         ledger_id=ledger_id,
+                        metadata=metadata,
                     )
                 except requests.HTTPError as exc:
                     status = getattr(exc.response, "status_code", None)
@@ -189,8 +187,17 @@ class BodyPrimeAllocator:
                 minted.append(
                     {
                         "prime": prime,
-                        "body": cleaned,
-                        "metadata": metadata,
+                        "body": (
+                            ledger_entry.get("state", {})
+                            .get("metadata", {})
+                            .get("text", cleaned)
+                        ),
+                        "metadata": (
+                            ledger_entry.get("state", {})
+                            .get("metadata", {})
+                            if isinstance(ledger_entry, Mapping)
+                            else metadata
+                        ),
                         "key": key,
                     }
                 )

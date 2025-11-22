@@ -598,22 +598,33 @@ class ApiService:
     ) -> Dict[str, Any]:
         return self._client.put_ledger_s1(entity, payload, ledger_id=ledger_id)
 
-    def put_ledger_body(
+    def write_body_entry(
         self,
         entity: str,
         prime: int,
-        body_text: str | Mapping[str, Any],
+        text: str,
         *,
         ledger_id: Optional[str] = None,
         metadata: Optional[Mapping[str, Any]] = None,
     ) -> Dict[str, Any]:
-        return self._client.put_ledger_body(
+        write_response = self._client.write_ledger_entry(
             entity,
             prime,
-            body_text,
+            text=text,
             ledger_id=ledger_id,
             metadata=metadata,
         )
+        entry_id = None
+        if isinstance(write_response, Mapping):
+            entry_id = write_response.get("entry_id") or write_response.get("id")
+        if entry_id is None:
+            return {}
+        read_response = self._client.read_ledger_entry(
+            entry_id, ledger_id=ledger_id
+        )
+        if isinstance(read_response, Mapping):
+            return dict(read_response)
+        return {}
 
     def enrich(
         self,

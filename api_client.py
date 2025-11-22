@@ -396,40 +396,48 @@ class DualSubstrateClient:
         data = resp.json()
         return data if isinstance(data, dict) else {}
 
-    def put_ledger_body(
+    def write_ledger_entry(
         self,
         entity: str,
         prime: int,
-        body_text: str | Mapping[str, Any],
         *,
+        text: str,
         ledger_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
     ) -> dict[str, Any]:
-        """Store long-form body text using the refreshed `/ledger/body` contract."""
+        """Write body text into the ledger and return the write response."""
 
-        payload: dict[str, Any] = {"entity": entity, "prime": int(prime)}
-
-        if isinstance(body_text, Mapping):
-            for key, value in body_text.items():
-                if key in {"entity", "prime"}:
-                    continue
-                payload[key] = value
-        else:
-            payload["body"] = body_text
-
+        combined_metadata: dict[str, Any] = {"text": text}
         if metadata:
-            existing = payload.get("metadata")
-            if isinstance(existing, Mapping):
-                merged = {key: value for key, value in existing.items()}
-                merged.update(metadata)
-                payload["metadata"] = merged
-            else:
-                payload["metadata"] = dict(metadata)
+            combined_metadata.update(metadata)
+            combined_metadata.setdefault("text", text)
 
-        resp = requests.put(
-            f"{self.base_url}/ledger/body",
+        payload: dict[str, Any] = {
+            "entity": entity,
+            "prime": int(prime),
+            "metadata": combined_metadata,
+        }
+
+        resp = requests.post(
+            f"{self.base_url}/ledger/write",
             json=payload,
-            params={"entity": entity, "prime": prime},
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+
+    def read_ledger_entry(
+        self,
+        entry_id: str | int,
+        *,
+        ledger_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Read a ledger entry using its ``entry_id``."""
+
+        resp = requests.get(
+            f"{self.base_url}/ledger/read/{entry_id}",
             headers=self._headers(ledger_id=ledger_id),
             timeout=5,
         )

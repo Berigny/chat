@@ -121,18 +121,22 @@ def test_traverse_uses_query_parameters_only(monkeypatch):
     assert captured["json"] is None
 
 
-def test_put_ledger_body_includes_entity_prime_and_body(monkeypatch):
-    captured: dict[str, object] = {}
+def test_write_and_read_ledger_entry(monkeypatch):
+    captured_write: dict[str, object] = {}
+    captured_read: dict[str, object] = {}
 
     class DummyResponse:
+        def __init__(self, payload: dict[str, object]):
+            self._payload = payload
+
         def raise_for_status(self) -> None:
             return None
 
-        def json(self) -> dict:
-            return {"status": "ok"}
+        def json(self) -> dict[str, object]:
+            return self._payload
 
-    def fake_put(url, *, json=None, params=None, headers=None, timeout=None):
-        captured.update(
+    def fake_post(url, *, json=None, params=None, headers=None, timeout=None):
+        captured_write.update(
             {
                 "url": url,
                 "json": json,
@@ -141,27 +145,42 @@ def test_put_ledger_body_includes_entity_prime_and_body(monkeypatch):
                 "timeout": timeout,
             }
         )
-        return DummyResponse()
+        return DummyResponse({"entry_id": "abc123"})
 
-    monkeypatch.setattr(requests, "put", fake_put)
+    def fake_get(url, *, params=None, headers=None, timeout=None):
+        captured_read.update(
+            {
+                "url": url,
+                "params": params,
+                "headers": headers,
+                "timeout": timeout,
+            }
+        )
+        return DummyResponse({"state": {"metadata": {"text": "Anchored body text"}}})
+
+    monkeypatch.setattr(requests, "post", fake_post)
+    monkeypatch.setattr(requests, "get", fake_get)
 
     client = DualSubstrateClient("https://api.example", "secret")
-    client.put_ledger_body(
+    write_response = client.write_ledger_entry(
         "demo",
         41,
-        "Anchored body text",
+        text="Anchored body text",
         ledger_id="alpha",
         metadata={"kind": "memory"},
     )
+    read_response = client.read_ledger_entry("abc123", ledger_id="alpha")
 
-    assert captured["url"].endswith("/ledger/body")
-    assert captured["params"] == {"entity": "demo", "prime": 41}
-    payload = captured["json"]
+    assert write_response == {"entry_id": "abc123"}
+    assert read_response["state"]["metadata"]["text"] == "Anchored body text"
+    assert captured_write["url"].endswith("/ledger/write")
+    payload = captured_write["json"]
     assert payload["entity"] == "demo"
     assert payload["prime"] == 41
-    assert payload["body"] == "Anchored body text"
-    assert payload["metadata"] == {"kind": "memory"}
-    assert captured["headers"]["X-Ledger-ID"] == "alpha"
+    assert payload["metadata"] == {"text": "Anchored body text", "kind": "memory"}
+    assert captured_write["headers"]["X-Ledger-ID"] == "alpha"
+    assert captured_read["url"].endswith("/ledger/read/abc123")
+    assert captured_read["headers"]["X-Ledger-ID"] == "alpha"
 
 
 def test_anchor_posts_json_payload(monkeypatch):

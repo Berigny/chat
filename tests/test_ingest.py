@@ -25,28 +25,28 @@ class RecordingApiService:
         self.anchor_calls.append((entity, payload, ledger_id, text or ""))
         return {"edges": [], "energy": 1.0, "text": text or ""}
 
-    def put_ledger_body(
+    def write_body_entry(
         self,
         entity: str,
         prime: int,
-        body_payload,
+        text: str,
         *,
         ledger_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
-    ) -> None:
-        if isinstance(body_payload, Mapping):
-            payload = dict(body_payload)
-        else:
-            payload = {"body": body_payload}
+    ) -> Mapping[str, Any]:
+        payload_metadata = {"text": text}
+        if metadata:
+            payload_metadata.update(metadata)
         self.body_calls.append(
             {
                 "entity": entity,
                 "prime": prime,
-                "payload": payload,
+                "metadata": payload_metadata,
                 "ledger_id": ledger_id,
                 "metadata_arg": metadata,
             }
         )
+        return {"entry_id": f"{prime}:1", "state": {"metadata": payload_metadata}}
 
     def fetch_ledger(
         self,
@@ -100,10 +100,8 @@ def test_ingest_mints_body_primes_for_structured_payload(prime_service: tuple[Pr
     first_call = api.body_calls[0]
     minted_prime = first_call["prime"]
     assert minted_prime >= service.body_prime_floor
-    assert first_call["metadata_arg"] is None
-    payload = first_call["payload"]
-    assert payload["body"].startswith("Meeting recap")
-    metadata = payload.get("metadata")
+    assert isinstance(first_call["metadata_arg"], Mapping)
+    metadata = first_call["metadata"]
     assert isinstance(metadata, dict)
     assert metadata.get("kind") == "memory"
 
@@ -184,24 +182,23 @@ class ConflictingApiService(SeededApiService):
         super().__init__()
         self.conflict_triggered = False
 
-    def put_ledger_body(
+    def write_body_entry(
         self,
         entity: str,
         prime: int,
-        body_payload,
+        text: str,
         *,
         ledger_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
-    ) -> None:
-        if isinstance(body_payload, Mapping):
-            payload = dict(body_payload)
-        else:
-            payload = {"body": body_payload}
+    ) -> Mapping[str, Any]:
+        payload_metadata = {"text": text}
+        if metadata:
+            payload_metadata.update(metadata)
         self.body_calls.append(
             {
                 "entity": entity,
                 "prime": prime,
-                "payload": payload,
+                "metadata": payload_metadata,
                 "ledger_id": ledger_id,
                 "metadata_arg": metadata,
             }
@@ -215,6 +212,7 @@ class ConflictingApiService(SeededApiService):
                 {"status_code": 422, "text": "duplicate body prime"},
             )()
             raise requests.HTTPError("duplicate body prime", response=response)
+        return {"entry_id": f"{prime}:1", "state": {"metadata": payload_metadata}}
 
 
 def test_ingest_retries_when_body_prime_conflicts() -> None:
