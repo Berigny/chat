@@ -181,14 +181,6 @@ def render_tab(
         st.caption("Latest anchor snippet (verbatim)")
         st.code(latest_preview, language="text")
 
-    mode_options = ["any", "all"]
-    selected_mode = st.selectbox(
-        "Token combination",
-        mode_options,
-        index=0,
-        key="search_probe_mode",
-        help="`any` unions postings; `all` requires every token prime.",
-    )
     probe_limit = st.number_input(
         "Result limit",
         min_value=1,
@@ -197,46 +189,21 @@ def render_tab(
         step=1,
         key="search_probe_limit",
     )
-    fuzzy_enabled = st.checkbox(
-        "Fuzzy",
-        value=True,
-        key="search_probe_fuzzy",
-        help="Toggle fuzzy matching for the `/search` query.",
-    )
-    semantic_weight = st.slider(
-        "Semantic weight",
-        min_value=0.0,
-        max_value=1.0,
-        value=0.45,
-        step=0.05,
-        key="search_probe_semantic_weight",
-        help="Relative weight for semantic embeddings vs. keyword matches.",
-    )
-    delta = st.number_input(
-        "Delta",
-        min_value=0,
-        max_value=10,
-        value=2,
-        step=1,
-        key="search_probe_delta",
-        help="Temporal delta horizon for the `/search` query.",
-    )
 
     def _run_search_probe(query: str) -> None:
         cleaned_query = clean_attachment_header(query)
         if not cleaned_query:
             st.warning("Enter a probe query first.")
             return
+        normalized_query = cleaned_query.strip().lower()
         params = {
-            "q": cleaned_query,
-            "mode": selected_mode,
+            "q": normalized_query,
+            "mode": "any",
             "limit": int(probe_limit),
-            "fuzzy": str(fuzzy_enabled).lower(),
-            "semantic_weight": semantic_weight,
-            "delta": int(delta),
         }
         if entity:
             params["entity"] = entity
+        response = None
         try:
             response = requests.get(
                 f"{host_url}/search",
@@ -244,17 +211,38 @@ def render_tab(
                 headers=headers,
                 timeout=15,
             )
+        except requests.RequestException as exc:
+            st.error(f"Search call failed: {exc}")
+            return
+        except Exception as exc:
+            st.error(f"Search payload error: {exc}")
+            return
+        if response is None:
+            st.error("No response received from search endpoint.")
+            return
+
+        status = response.status_code
+        if status in {422, 500}:
+            st.error(
+                "Search unavailable (build index first). Run ‘Build search index’ "
+                "via `/admin/reindex`, then retry."
+            )
+            st.caption(f"HTTP {status} returned from /search.")
+            return
+
+        try:
             response.raise_for_status()
             payload = response.json()
         except requests.RequestException as exc:
             st.error(f"Search call failed: {exc}")
+            return
         except Exception as exc:
             st.error(f"Search payload error: {exc}")
+            return
         else:
             st.info("Search request succeeded.")
             st.session_state["search_probe_last_payload"] = payload if isinstance(payload, Mapping) else {}
-            st.session_state["search_probe_last_query"] = cleaned_query
-            st.session_state["search_probe_last_mode"] = selected_mode
+            st.session_state["search_probe_last_query"] = normalized_query
             st.session_state["search_probe_last_response"] = {
                 "status": response.status_code,
                 "reason": response.reason,
@@ -278,8 +266,10 @@ def render_tab(
                     if isinstance(entry_payload, Mapping):
                         with st.expander(f"Entry payload: {entry_id}", expanded=False):
                             st.json(entry_payload)
+                if not results:
+                    st.info("no memories yet")
             else:
-                st.json(payload or {})
+                st.info("no memories yet")
 
     if st.button("Probe /search endpoint", key="probe_search_endpoint"):
         _run_search_probe(probe_query)
