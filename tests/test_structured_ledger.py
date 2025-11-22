@@ -6,7 +6,7 @@ import chat_demo_app
 from prime_schema import DEFAULT_PRIME_SCHEMA
 
 
-def test_anchor_uses_ingest_structured_payload(monkeypatch):
+def test_anchor_writes_single_ledger_entry(monkeypatch):
     st.session_state.clear()
     st.session_state.entity = "demo"
     st.session_state.prime_schema = DEFAULT_PRIME_SCHEMA
@@ -18,25 +18,34 @@ def test_anchor_uses_ingest_structured_payload(monkeypatch):
     st.session_state.latest_structured_ledger = {}
     st.session_state.latest_structured_metrics = {}
 
-    captured: dict[str, object] = {}
-
     long_summary = " ".join(["Meeting"] * 80)
     long_follow_up = " ".join(["Follow-up"] * 70)
+    backend_calls: list[dict[str, object]] = []
+
+    class DummyBackendClient:
+        def write_ledger_entry(self, **kwargs):
+            backend_calls.append(kwargs)
+            return {
+                "entry_id": f"{kwargs['key_namespace']}:{kwargs['key_identifier']}",
+                "key": {
+                    "namespace": kwargs["key_namespace"],
+                    "identifier": kwargs["key_identifier"],
+                },
+                "state": {
+                    "metadata": dict(kwargs.get("metadata") or {}),
+                    "coordinates": dict(kwargs.get("coordinates") or {}),
+                },
+            }
+
+        def read_ledger_entry(self, *_args, **_kwargs):
+            raise AssertionError("Backend read should not be called during anchor")
 
     class DummyPrimeService:
         def __init__(self) -> None:
             self.calls: list[dict[str, object]] = []
+            self.backend_client = DummyBackendClient()
 
         def ingest(self, entity, text, schema, *, ledger_id=None, **kwargs):
-            record = {
-                "entity": entity,
-                "text": text,
-                "schema": schema,
-                "ledger_id": ledger_id,
-                "kwargs": kwargs,
-            }
-            self.calls.append(record)
-            captured.update(record)
             structured = {
                 "slots": [{"prime": 2, "title": "Meeting"}],
                 "s1": [],
@@ -50,19 +59,32 @@ def test_anchor_uses_ingest_structured_payload(monkeypatch):
                 },
                 "bodies": [],
             }
-            captured["structured"] = structured
-            ledger_entry = {
-                "entry_id": "default:demo-structured",
-                "state": {"metadata": {"structured": structured}},
-            }
-            return {
+            ledger_entry = self.backend_client.write_ledger_entry(
+                key_namespace="default",
+                key_identifier="demo-structured",
+                text=text.strip(),
+                phase="ingest",
+                entity=entity,
+                metadata={
+                    "entity": entity,
+                    "text": text.strip(),
+                    "ledger_id": ledger_id,
+                    "factors": [{"prime": 2, "delta": 1}],
+                    "structured": structured,
+                    "bodies": [],
+                    "source": "chat-demo",
+                    "timestamp": time.time(),
+                },
+                coordinates={"prime_2": 1.0},
+            )
+            result = {
+                "text": text.strip(),
+                "factors": [{"prime": 2, "delta": 1}],
                 "structured": structured,
                 "ledger_entry": ledger_entry,
             }
-
-    class DummyBackendClient:
-        def read_ledger_entry(self, *_args, **_kwargs):
-            raise AssertionError("Backend client should not be called during anchor")
+            self.calls.append(result)
+            return result
 
     dummy_prime = DummyPrimeService()
 
@@ -73,47 +95,14 @@ def test_anchor_uses_ingest_structured_payload(monkeypatch):
     result = chat_demo_app._anchor("Test entry", record_chat=False, notify=False)
 
     assert result is True
-    assert captured["entity"] == "demo"
-    assert captured["text"] == "Test entry"
+    assert backend_calls and len(backend_calls) == 1
     assert st.session_state.last_structured_entry_id == "default:demo-structured"
-    assert st.session_state.last_anchor_payload == {
-        "entry_id": "default:demo-structured",
-        "state": {"metadata": {"structured": captured["structured"]}},
-    }
+    assert st.session_state.last_anchor_payload == dummy_prime.calls[-1]["ledger_entry"]
     assert st.session_state.latest_structured_ledger == {
         "11": {"summary": long_summary},
         "19": {"summary": long_follow_up},
     }
-    assert st.session_state.latest_structured_metrics == {}
-
-
-def test_persist_structured_views_skips_short_summaries(monkeypatch):
-    backend_calls: list[dict[str, object]] = []
-
-    class DummyBackendClient:
-        def write_ledger_entry(self, **kwargs):
-            backend_calls.append(kwargs)
-            return {"entry_id": kwargs["key_identifier"]}
-
-    short_structured = {
-        "slots": [{"prime": 2, "title": "Short"}],
-        "s2": [
-            {"prime": 11, "summary": "Too short for scoring"},
-            {"prime": 19, "summary": "Another short summary"},
-        ],
-    }
-
-    monkeypatch.setattr(chat_demo_app, "BACKEND_CLIENT", DummyBackendClient())
-
-    result = chat_demo_app._persist_structured_views("demo", short_structured, ledger_id="ledger-beta")
-
-    assert result == {
-        "s2": {
-            "11": {"summary": "Too short for scoring"},
-            "19": {"summary": "Another short summary"},
-        }
-    }
-    assert backend_calls == []
+    assert st.session_state.latest_structured_metrics == {"prime_2": 1.0}
 
 
 def test_persist_structured_views_from_backend_entry(monkeypatch):

@@ -994,97 +994,46 @@ def _extract_structured_views(payload: dict | None) -> dict:
     }
 
 
-def _persist_structured_views(entity: str, structured: dict, *, ledger_id: str | None) -> dict:
-    if not isinstance(structured, Mapping):
-        structured = {}
+def _update_structured_session(
+    structured: Mapping[str, Any] | None,
+    ledger_entry: Mapping[str, Any] | None,
+) -> None:
+    """Update session state using structured payloads and ledger metadata."""
 
-    flat_map = _derive_flat_s2_map(structured)
+    structured_payload = structured if isinstance(structured, Mapping) else {}
+    entry_structured = structured_payload
+    entry_id: str | None = None
+    metrics: dict[str, Any] = {}
 
-    total_word_count = 0
-    if flat_map:
-        for entry in flat_map.values():
-            summary_value = entry.get("summary") if isinstance(entry, Mapping) else None
-            if isinstance(summary_value, str):
-                total_word_count += len(summary_value.split())
+    if isinstance(ledger_entry, Mapping):
+        entry_id = ledger_entry.get("entry_id") or ledger_entry.get("id")
+        key_payload = ledger_entry.get("key") if hasattr(ledger_entry, "get") else None
+        if not entry_id and isinstance(key_payload, Mapping):
+            namespace = key_payload.get("namespace")
+            identifier = key_payload.get("identifier")
+            if namespace and identifier:
+                entry_id = f"{namespace}:{identifier}"
 
-    if flat_map and total_word_count < _S2_MIN_WORDS:
-        LOGGER.info(
-            "Skip S2 – text too short (words=%s, threshold=%s)",
-            total_word_count,
-            _S2_MIN_WORDS,
-        )
-        return {"s2": flat_map}
+        state = ledger_entry.get("state") if hasattr(ledger_entry, "get") else None
+        if isinstance(state, Mapping):
+            coordinates = state.get("coordinates")
+            if isinstance(coordinates, Mapping):
+                metrics = {
+                    key: value
+                    for key, value in coordinates.items()
+                    if isinstance(key, str) and isinstance(value, (int, float))
+                }
+            metadata = state.get("metadata")
+            if isinstance(metadata, Mapping):
+                structured_candidate = metadata.get("structured")
+                if isinstance(structured_candidate, Mapping):
+                    entry_structured = structured_candidate
 
-    summary_lines: list[str] = []
-    for slot in structured.get("slots", []) or []:
-        if not isinstance(slot, Mapping):
-            continue
-        prime = slot.get("prime")
-        summary = slot.get("summary") or slot.get("title")
-        if summary and isinstance(prime, int):
-            summary_lines.append(f"Prime {prime}: {summary}")
-    entry_text = "\n".join(summary_lines) or "Structured ledger update"
-    metadata = {
-        "structured": structured,
-        "s2_map": flat_map,
-        "source": "chat-demo",
-        "entity": entity,
-        "ledger_id": ledger_id,
-    }
-    coordinates = {
-        "slots": float(len(structured.get("slots") or [])),
-        "s2_entries": float(len(flat_map)),
-    }
-    key_payload = _ledger_entry_key(entity, ledger_id, suffix="structured")
-    try:
-        ledger_response = BACKEND_CLIENT.write_ledger_entry(
-            key_namespace=key_payload["namespace"],
-            key_identifier=key_payload["identifier"],
-            text=entry_text,
-            phase="structured-ledger",
-            entity=entity,
-            metadata=metadata,
-            coordinates=coordinates,
-        )
-    except requests.RequestException as exc:
-        LOGGER.warning("Failed to persist structured ledger entry: %s", exc)
-        ledger_response = {"error": str(exc)}
-    else:
-        st.session_state["last_structured_entry_id"] = f"{key_payload['namespace']}:{key_payload['identifier']}"
-
-    return {
-        "s2": flat_map,
-        "ledger_entry": ledger_response,
-    }
-
-
-def _extract_structured_persist_outputs(
-    payload: Mapping[str, Any] | None,
-) -> tuple[dict[str, Any], dict[str, Any]]:
-    """Return sanitized S2 map and metrics from a persistence result."""
-
-    s2_map: dict[str, Any] = {}
-    metrics_payload: dict[str, Any] = {}
-
-    if isinstance(payload, Mapping):
-        s2_candidate = payload.get("s2") if hasattr(payload, "get") else None
-        if isinstance(s2_candidate, Mapping):
-            s2_map = {k: v for k, v in s2_candidate.items() if isinstance(k, str)}
-        else:
-            filtered: dict[str, Any] = {}
-            for key, value in payload.items():
-                if not isinstance(key, str) or key not in _S2_PRIME_KEYS:
-                    continue
-                if isinstance(value, Mapping):
-                    filtered[key] = value
-            if filtered:
-                s2_map = filtered
-
-        metrics_candidate = payload.get("metrics") if hasattr(payload, "get") else None
-        if isinstance(metrics_candidate, Mapping):
-            metrics_payload = dict(metrics_candidate)
-
-    return s2_map, metrics_payload
+    flat_map = _derive_flat_s2_map(entry_structured)
+    st.session_state.latest_structured_ledger = flat_map
+    st.session_state.latest_structured_metrics = metrics
+    if entry_id:
+        st.session_state["last_structured_entry_id"] = entry_id
 
 
 def _persist_structured_views_from_ledger(entity: str) -> None:
@@ -1116,9 +1065,8 @@ def _persist_structured_views_from_ledger(entity: str) -> None:
 
     structured_data = _extract_structured_views(structured_payload)
     structured = structured_data if isinstance(structured_data, Mapping) else {}
-    flat_map = _derive_flat_s2_map(structured)
-    st.session_state.latest_structured_ledger = flat_map
-    st.session_state.latest_structured_metrics = {}
+    ledger_entry_hint = {"entry_id": entry_path} if entry_path else None
+    _update_structured_session(structured, ledger_entry_hint)
 
 
 def _execute_enrichment(entity: str, *, limit: int = 50) -> dict[str, Any]:
@@ -1226,10 +1174,7 @@ def _execute_enrichment(entity: str, *, limit: int = 50) -> dict[str, Any]:
         response_payload = result.get("response") if isinstance(result, dict) else {}
         structured = response_payload.get("structured") if isinstance(response_payload, dict) else None
         if structured:
-            persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
-            s2_map, metrics_payload = _extract_structured_persist_outputs(persisted)
-            st.session_state.latest_structured_ledger = s2_map
-            st.session_state.latest_structured_metrics = metrics_payload
+            _update_structured_session(structured, None)
         try:
             ledger_snapshot = API_SERVICE.fetch_ledger(entity, ledger_id=ledger_id)
         except requests.RequestException:
@@ -1896,25 +1841,7 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
         st.error(f"Anchor blocked: {message}")
         return False
     structured = ingest_result.get("structured") if isinstance(ingest_result, dict) else {}
-    metadata_structured = structured
-    entry_id = None
-    if isinstance(ledger_entry, Mapping):
-        entry_state = ledger_entry.get("state") if hasattr(ledger_entry, "get") else None
-        entry_metadata = (
-            entry_state.get("metadata")
-            if isinstance(entry_state, Mapping)
-            else ledger_entry.get("metadata")
-        )
-        if isinstance(entry_metadata, Mapping):
-            structured_candidate = entry_metadata.get("structured")
-            if isinstance(structured_candidate, Mapping):
-                metadata_structured = structured_candidate
-        entry_id = ledger_entry.get("entry_id") or ledger_entry.get("id")
-    flat_map = _derive_flat_s2_map(metadata_structured)
-    st.session_state.latest_structured_ledger = flat_map
-    st.session_state.latest_structured_metrics = {}
-    if entry_id:
-        st.session_state["last_structured_entry_id"] = entry_id
+    _update_structured_session(structured, ledger_entry)
     _mark_search_index_dirty(entity, ledger_id)
     if record_chat:
         st.session_state.chat_history.append(("You", text))
