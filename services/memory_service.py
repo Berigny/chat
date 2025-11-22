@@ -1425,6 +1425,7 @@ class MemoryService:
                 entity,
                 query,
                 ledger_id=ledger_id,
+                mode=current_mode,
                 limit=resolved_limit,
             )
             logger.info("search payload (mode=%s)=%s", current_mode, payload)
