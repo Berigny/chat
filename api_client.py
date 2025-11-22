@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -699,14 +700,61 @@ class DualSubstrateV2Client:
         text: str | None = None,
         factors: Sequence[Mapping[str, Any]] | None = None,
         metadata: Mapping[str, Any] | None = None,
+        namespace: str | None = None,
+        identifier: str | None = None,
+        phase: str | None = None,
+        coordinates: Mapping[str, Any] | None = None,
+        notes: Sequence[str] | str | None = None,
     ) -> LedgerEntry:
-        payload: dict[str, Any] = {"entity": entity}
+        metadata = metadata or {}
+
+        key_payload = metadata.get("key") if isinstance(metadata, Mapping) else {}
+        namespace_value = namespace or (key_payload.get("namespace") if isinstance(key_payload, Mapping) else None)
+        identifier_value = identifier or (key_payload.get("identifier") if isinstance(key_payload, Mapping) else None)
+
+        state_phase = phase or metadata.get("phase") or "structured-ledger"
+        state_coordinates = coordinates
+        if state_coordinates is None:
+            coords_field = metadata.get("coordinates") if isinstance(metadata, Mapping) else None
+            state_coordinates = coords_field if isinstance(coords_field, Mapping) else None
+        if state_coordinates is None and factors:
+            state_coordinates = {"factors": list(factors)}
+
+        extra_notes: list[str] = []
+        if isinstance(notes, str):
+            extra_notes = [notes]
+        elif isinstance(notes, Sequence):
+            extra_notes = [str(item) for item in notes]
+        elif isinstance(metadata.get("notes"), Sequence) and not isinstance(metadata.get("notes"), str):
+            extra_notes = [str(item) for item in metadata.get("notes")]
+        elif isinstance(metadata.get("notes"), str):
+            extra_notes = [str(metadata.get("notes"))]
+
+        metadata_payload: dict[str, Any] = {}
+        if isinstance(metadata, Mapping):
+            metadata_payload = {
+                key: value
+                for key, value in metadata.items()
+                if key not in {"key", "phase", "coordinates", "notes"}
+            }
+        metadata_payload.setdefault("entity", entity)
         if text is not None:
-            payload["text"] = text
-        if factors:
-            payload["factors"] = list(factors)
-        if metadata:
-            payload["metadata"] = dict(metadata)
+            metadata_payload.setdefault("text", text)
+        metadata_payload.setdefault("timestamp", int(time.time()))
+
+        payload: dict[str, Any] = {
+            "key": {
+                "namespace": namespace_value or "default",
+                "identifier": identifier_value or entity,
+            },
+            "state": {
+                "phase": state_phase,
+                "coordinates": state_coordinates or {},
+                "metadata": metadata_payload,
+            },
+        }
+        if extra_notes:
+            payload["state"]["notes"] = extra_notes
 
         response = self._request("post", "/ledger/write", json_payload=payload)
         body = _safe_json(response)

@@ -159,12 +159,26 @@ class DemoBackendHelper:
         text: str | None = None,
         factors: Sequence[Mapping[str, Any]] | None = None,
         metadata: Mapping[str, Any] | None = None,
+        ledger_id: str | None = None,
+        notes: Sequence[str] | str | None = None,
     ) -> dict[str, object]:
+        key_payload = metadata.get("key") if isinstance(metadata, Mapping) else {}
+        namespace = None
+        identifier = None
+        if isinstance(key_payload, Mapping):
+            namespace = key_payload.get("namespace")
+            identifier = key_payload.get("identifier")
+        fallback_key = _ledger_entry_key(entity, ledger_id)
         entry = self._client.write_ledger(
             entity=entity,
             text=text,
             factors=factors or (),
             metadata=metadata,
+            namespace=namespace or fallback_key.get("namespace"),
+            identifier=identifier or fallback_key.get("identifier"),
+            phase=metadata.get("phase") if isinstance(metadata, Mapping) else None,
+            coordinates=metadata.get("coordinates") if isinstance(metadata, Mapping) else None,
+            notes=notes or (metadata.get("notes") if isinstance(metadata, Mapping) else None),
         )
         return {"status": 200, "detail": entry.asdict()}
 
@@ -676,6 +690,7 @@ def _apply_backdoor_promotion(
                 "source": "chat-demo",
                 "timestamp": time.time(),
             },
+            ledger_id=ledger_id,
         )
     except requests.RequestException as exc:
         ledger_summary = {"error": str(exc)}
