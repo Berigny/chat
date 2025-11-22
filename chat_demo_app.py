@@ -80,6 +80,7 @@ DEFAULT_LEDGER_ID = SETTINGS.default_ledger_id
 ADD_LEDGER_OPTION = "➕ Add new ledger…"
 ENABLE_ADVANCED_PROBES = SETTINGS.enable_advanced_probes
 ENABLE_LEDGER_MANAGEMENT = SETTINGS.enable_ledger_management
+ENABLE_REMOTE_SCHEMA_FETCH = SETTINGS.enable_remote_schema_fetch
 ENABLE_LOCAL_ROCKSDB_PROBE = False
 
 GENAI_KEY = SETTINGS.genai_api_key
@@ -655,6 +656,8 @@ def _auto_promote_entity_if_needed() -> None:
 
 def _fetch_prime_schema(entity: str | None) -> dict[int, dict]:
     target = entity or DEFAULT_ENTITY
+    if not ENABLE_REMOTE_SCHEMA_FETCH:
+        return DEFAULT_PRIME_SCHEMA.copy()
     try:
         schema = API_SERVICE.fetch_prime_schema(target, ledger_id=st.session_state.get("ledger_id"))
         if schema:
