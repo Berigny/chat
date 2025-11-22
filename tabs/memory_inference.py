@@ -88,7 +88,12 @@ def render_tab(
     elif telemetry_errors:
         st.warning("Inference telemetry unavailable: " + "; ".join(telemetry_errors))
 
-    _render_rocksdb_probe(entity)
+    from chat_demo_app import ENABLE_LOCAL_ROCKSDB_PROBE  # lazy import to avoid circulars
+    if ENABLE_LOCAL_ROCKSDB_PROBE:
+        _render_rocksdb_probe(entity)
+    else:
+        st.divider()
+        st.info("RocksDB filesystem probe is disabled in this hosted demo.")
 
 
 def _render_rocksdb_probe(entity: str | None) -> None:

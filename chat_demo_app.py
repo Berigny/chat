@@ -82,6 +82,7 @@ DEFAULT_ENTITY = SETTINGS.default_entity
 DEFAULT_LEDGER_ID = SETTINGS.default_ledger_id
 ADD_LEDGER_OPTION = "➕ Add new ledger…"
 ENABLE_ADVANCED_PROBES = SETTINGS.enable_advanced_probes
+ENABLE_LOCAL_ROCKSDB_PROBE = False
 
 GENAI_KEY = SETTINGS.genai_api_key
 if genai and GENAI_KEY:
