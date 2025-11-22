@@ -237,7 +237,7 @@ def test_anchor_posts_json_payload(monkeypatch):
     }
 
 
-def test_update_metrics_uses_query_entity(monkeypatch):
+def test_update_metrics_posts_ledger_entry(monkeypatch):
     captured: dict[str, object] = {}
 
     class DummyResponse:
@@ -247,7 +247,7 @@ def test_update_metrics_uses_query_entity(monkeypatch):
         def json(self) -> dict[str, object]:  # pragma: no cover - trivial
             return {"status": "ok"}
 
-    def fake_patch(url, *, json=None, headers=None, timeout=None, params=None):
+    def fake_post(url, *, json=None, headers=None, timeout=None, params=None):
         captured.update(
             {
                 "url": url,
@@ -259,14 +259,20 @@ def test_update_metrics_uses_query_entity(monkeypatch):
         )
         return DummyResponse()
 
-    monkeypatch.setattr(requests, "patch", fake_patch)
+    monkeypatch.setattr(requests, "post", fake_post)
 
     client = DualSubstrateClient("https://api.example", "secret", timeout=5)
     client.update_metrics("Demo_dev", {"dE": -1.5, "K": 0.0}, ledger_id="alpha")
 
-    assert captured["url"].endswith("/ledger/metrics")
-    assert captured["params"] == {"entity": "Demo_dev"}
-    assert captured["json"] == {"dE": -1.5, "K": 0.0}
+    assert captured["url"].endswith("/ledger/write")
+    assert captured["json"] == {
+        "key": {"namespace": "alpha", "identifier": "Demo_dev"},
+        "state": {
+            "coordinates": {"r_metrics": 1.0},
+            "phase": "metrics",
+            "metadata": {"entity": "Demo_dev", "r_metrics": {"dE": -1.5, "K": 0.0}},
+        },
+    }
     assert captured["headers"]["X-Ledger-ID"] == "alpha"
     assert captured["headers"]["x-api-key"] == "secret"
     assert captured["timeout"] == 5
