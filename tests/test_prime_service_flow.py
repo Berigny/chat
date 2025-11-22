@@ -14,7 +14,6 @@ class DummyApiService:
         *,
         ledger_id: str | None = None,
         text: str | None = None,
-        modifiers: Iterable[int] | None = None,
     ) -> Mapping[str, Any]:
         factors_list = [dict(item) for item in factors]
         self.anchor_calls.append((entity, factors_list, ledger_id, text or ""))
