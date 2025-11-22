@@ -5,6 +5,7 @@ import html
 import io
 import json
 import logging
+from dataclasses import asdict
 from datetime import datetime
 import mimetypes
 import os
@@ -88,6 +89,102 @@ if genai and GENAI_KEY:
 OPENAI_API_KEY = SETTINGS.openai_api_key
 ASSET_DIR = Path(__file__).parent
 API_CLIENT = ApiClient(API, api_key=SETTINGS.api_key)
+
+
+class DemoBackendHelper:
+    """Lightweight wrapper around the OpenAPI surface used by this UI."""
+
+    def __init__(self, base_url: str, api_key: str | None):
+        self.base_url = base_url.rstrip("/")
+        self.api_key = api_key
+        self._client = ApiClient(self.base_url, api_key=api_key)
+
+    def _headers(self, *, ledger_id: str | None = None, include_json: bool = False) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        if include_json:
+            headers["Content-Type"] = "application/json"
+        if self.api_key:
+            headers["x-api-key"] = self.api_key
+        if ledger_id:
+            headers["X-Ledger-ID"] = ledger_id
+        return headers
+
+    @staticmethod
+    def _json_detail(response) -> dict[str, object] | str | None:
+        try:
+            return response.json()
+        except ValueError:
+            text = (getattr(response, "text", "") or "").strip()
+            return text or None
+
+    def reindex_tokens(self, *, entity: str, ledger_id: str | None = None) -> dict[str, object]:
+        response = requests.get(
+            f"{self.base_url}/admin/reindex",
+            params={"entity": entity},
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=30,
+        )
+        response.raise_for_status()
+        return {"status": response.status_code, "detail": self._json_detail(response) or {}}
+
+    def search_memories(
+        self,
+        *,
+        entity: str,
+        query: str,
+        ledger_id: str | None = None,
+        limit: int | None = None,
+        mode: str | None = None,
+    ) -> dict[str, object]:
+        params: dict[str, object] = {"entity": entity, "q": query}
+        if limit is not None:
+            params["limit"] = int(limit)
+        if mode:
+            params["mode"] = mode
+        response = requests.get(
+            f"{self.base_url}/search",
+            params=params,
+            headers=self._headers(ledger_id=ledger_id),
+            timeout=15,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        return payload if isinstance(payload, dict) else {}
+
+    def anchor_conversation(
+        self,
+        *,
+        entity: str,
+        text: str | None = None,
+        factors: Sequence[Mapping[str, Any]] | None = None,
+        metadata: Mapping[str, Any] | None = None,
+    ) -> dict[str, object]:
+        entry = self._client.write_ledger(
+            entity=entity,
+            text=text,
+            factors=factors or (),
+            metadata=metadata,
+        )
+        return {"status": 200, "detail": entry.asdict()}
+
+    def read_ledger_entry(self, entry_id: str) -> dict[str, object]:
+        entry = self._client.read_ledger(entry_id)
+        return {"status": 200, "detail": entry.asdict()}
+
+    def evaluate_coherence(self, payload: Mapping[str, Any]) -> dict[str, object]:
+        response = self._client.evaluate_coherence(payload)
+        detail = asdict(response)
+        return {"status": 200, "detail": detail}
+
+    def evaluate_ethics(self, payload: Mapping[str, Any]) -> dict[str, object]:
+        response = self._client.evaluate_ethics(payload)
+        detail = asdict(response)
+        decision = str(detail.get("decision", "")).lower()
+        detail["permitted"] = decision not in {"reject", "block", "deny"}
+        return {"status": 200, "detail": detail}
+
+
+BACKEND_HELPER = DemoBackendHelper(API, SETTINGS.api_key)
 
 _RERUN_FN = getattr(st, "rerun", None) or getattr(st, "experimental_rerun", None)
 
@@ -470,18 +567,11 @@ def _maybe_refresh_search_index(entity: str | None, ledger_id: str | None, *, fo
         return
     if not force and not dirty and now - last_build < SEARCH_INDEX_REFRESH_INTERVAL:
         return
-    params = {"entity": entity}
-    headers = {}
-    if SETTINGS.api_key:
-        headers["x-api-key"] = SETTINGS.api_key
     try:
-        response = requests.get(
-            f"{API.rstrip('/')}/admin/reindex",
-            params=params,
-            headers=headers,
-            timeout=30,
+        response = BACKEND_HELPER.reindex_tokens(
+            entity=entity,
+            ledger_id=ledger_id,
         )
-        response.raise_for_status()
     except requests.RequestException as exc:
         LOGGER.warning(
             "Search index refresh failed for %s/%s: %s",
@@ -494,10 +584,7 @@ def _maybe_refresh_search_index(entity: str | None, ledger_id: str | None, *, fo
     state["last_build"] = now
     state["dirty"] = False
     state["last_error"] = None
-    try:
-        state["last_status"] = response.json()
-    except ValueError:
-        state["last_status"] = {"status": response.text[:120] if response.text else "ok"}
+    state["last_status"] = response
 
 
 def _store_attachment_preview(name: str, chunks: Sequence[str]) -> None:
@@ -577,57 +664,33 @@ def _apply_backdoor_promotion(
     entity: str,
     ledger_id: str | None,
 ) -> dict[str, Any]:
-    base_url = API.rstrip("/")
-    headers = {"Content-Type": "application/json"}
-    if SETTINGS.api_key:
-        headers["x-api-key"] = SETTINGS.api_key
-
-    placeholder_entry = {
-        "key": _ledger_entry_key(entity, ledger_id),
-        "state": {
-            "coordinates": {"baseline": 1.0},
-            "phase": "auto-promotion",
-            "metadata": {
-                "entity": entity,
-                "ledger_id": ledger_id,
+    action_payload = _action_request_payload("auto-promote", entity, ledger_id)
+    try:
+        ledger_summary = BACKEND_HELPER.anchor_conversation(
+            entity=entity,
+            text="auto-promotion placeholder",
+            metadata={
+                "key": _ledger_entry_key(entity, ledger_id),
+                "phase": "auto-promotion",
                 "source": "chat-demo",
                 "timestamp": time.time(),
             },
-        },
-    }
-    try:
-        ledger_resp = requests.post(
-            f"{base_url}/ledger/write",
-            headers=headers,
-            json=placeholder_entry,
-            timeout=10,
         )
     except requests.RequestException as exc:
-        ledger_summary: dict[str, Any] = {"error": str(exc)}
-    else:
-        ledger_summary = _summarize_http_response(ledger_resp)
+        ledger_summary = {"error": str(exc)}
 
-    action_payload = _action_request_payload("chat_completion", entity, ledger_id)
-    governance_request = {"action_request": action_payload}
     results: dict[str, Any] = {
         "ledger_write": ledger_summary,
         "action": action_payload,
     }
-    for endpoint in ("coherence", "ethics"):
-        try:
-            evaluation = requests.post(
-                f"{base_url}/{endpoint}/evaluate",
-                headers=headers,
-                json=governance_request,
-                timeout=15,
-            )
-        except requests.RequestException as exc:
-            results[endpoint] = {"error": str(exc)}
-        else:
-            label = endpoint.capitalize()
-            results[endpoint] = _governance_response_summary(
-                evaluation, label=label
-            )
+    try:
+        results["coherence"] = BACKEND_HELPER.evaluate_coherence(action_payload)
+    except requests.RequestException as exc:
+        results["coherence"] = {"error": str(exc)}
+    try:
+        results["ethics"] = BACKEND_HELPER.evaluate_ethics(action_payload)
+    except requests.RequestException as exc:
+        results["ethics"] = {"error": str(exc)}
     return results
 
 
