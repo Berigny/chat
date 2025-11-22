@@ -426,25 +426,43 @@ class DualSubstrateClient:
 
     def write_ledger_entry(
         self,
-        entity: str,
-        prime: int,
         *,
-        text: str,
+        key_namespace: str,
+        key_identifier: str,
+        text: str | None = None,
+        phase: str = "structured-ledger",
         ledger_id: str | None = None,
         metadata: Mapping[str, Any] | None = None,
+        coordinates: Mapping[str, Any] | None = None,
+        created_at: int | float | None = None,
+        notes: Sequence[str] | str | None = None,
     ) -> dict[str, Any]:
-        """Write body text into the ledger and return the write response."""
+        """Write a ledger entry using ``LedgerEntrySchema`` payloads."""
 
-        combined_metadata: dict[str, Any] = {"text": text}
-        if metadata:
-            combined_metadata.update(metadata)
-            combined_metadata.setdefault("text", text)
+        metadata_payload: dict[str, Any] = {}
+        if isinstance(metadata, Mapping):
+            metadata_payload.update(metadata)
+        if text is not None:
+            metadata_payload.setdefault("text", text)
 
         payload: dict[str, Any] = {
-            "entity": entity,
-            "prime": int(prime),
-            "metadata": combined_metadata,
+            "key": {"namespace": key_namespace, "identifier": key_identifier},
+            "state": {
+                "coordinates": dict(coordinates or {}),
+                "phase": phase,
+                "metadata": metadata_payload,
+            },
         }
+
+        if created_at is not None:
+            payload["created_at"] = created_at
+
+        if notes:
+            if isinstance(notes, str):
+                notes_value = [notes]
+            else:
+                notes_value = [str(item) for item in notes]
+            payload["state"]["notes"] = notes_value
 
         resp = requests.post(
             f"{self.base_url}/ledger/write",
