@@ -56,6 +56,7 @@ def fetch_metrics_snapshot(
     *,
     ledger_id: str | None,
     metric_floors: Dict[str, float],
+    advanced_probes_enabled: bool = True,
 ) -> Dict[str, Any]:
     """Return sanitized metrics plus durability estimates and inference telemetry."""
 
@@ -70,7 +71,7 @@ def fetch_metrics_snapshot(
     inference_errors: list[str] = []
     inference_supported: Optional[bool] = None
 
-    if entity:
+    if entity and advanced_probes_enabled:
         inference_supported = True
         try:
             metrics_payload = api_service.fetch_metrics(ledger_id=ledger_id)
@@ -124,6 +125,23 @@ def fetch_metrics_snapshot(
             "retrieve",
             lambda: api_service.fetch_inference_retrieve(entity, ledger_id=ledger_id),
         )
+    elif entity:
+        try:
+            metrics_payload = api_service.fetch_metrics(ledger_id=ledger_id)
+        except requests.RequestException as exc:
+            metrics_error = str(exc)
+            metrics_payload = {}
+        else:
+            if isinstance(metrics_payload, str):
+                numeric_metrics = _parse_prometheus_metrics(metrics_payload)
+            elif isinstance(metrics_payload, dict):
+                numeric_metrics = {
+                    key: coerced
+                    for key in metrics_payload
+                    if (coerced := _coerce_float(metrics_payload[key])) is not None
+                }
+            else:
+                numeric_metrics = {}
 
     tokens_saved = _resolve_metric(
         numeric_metrics,

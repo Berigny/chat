@@ -81,6 +81,7 @@ API = SETTINGS.api_base
 DEFAULT_ENTITY = SETTINGS.default_entity
 DEFAULT_LEDGER_ID = SETTINGS.default_ledger_id
 ADD_LEDGER_OPTION = "➕ Add new ledger…"
+ENABLE_ADVANCED_PROBES = SETTINGS.enable_advanced_probes
 
 GENAI_KEY = SETTINGS.genai_api_key
 if genai and GENAI_KEY:
@@ -807,6 +808,8 @@ def _coerce_string(value) -> str | None:
 
 
 def _supports_traverse() -> bool:
+    if not ENABLE_ADVANCED_PROBES:
+        return False
     key = "__supports_traverse__"
     cached = st.session_state.get(key)
     if cached is None:
@@ -819,6 +822,8 @@ def _supports_traverse() -> bool:
 
 
 def _supports_inference_state() -> bool:
+    if not ENABLE_ADVANCED_PROBES:
+        return False
     key = "__supports_inference_state__"
     cached = st.session_state.get(key)
     if cached is None:
@@ -2549,6 +2554,7 @@ def _render_app():
         entity,
         ledger_id=st.session_state.get("ledger_id"),
         metric_floors=METRIC_FLOORS,
+        advanced_probes_enabled=ENABLE_ADVANCED_PROBES,
     )
     tokens_saved_value = _coerce_float(snapshot.get("tokens_saved"))
     ledger_integrity = _coerce_float(snapshot.get("ledger_integrity")) or METRIC_FLOORS["ledger_integrity"]
@@ -2629,6 +2635,7 @@ def _render_app():
             render_traversal_callback=_render_traversal_tab,
             render_inference_callback=_render_inference_tab,
             inference_snapshot=snapshot,
+            advanced_probes_enabled=ENABLE_ADVANCED_PROBES,
         )
 
     with tabs[2]:
@@ -2664,6 +2671,7 @@ def _render_app():
             execute_enrichment=_execute_enrichment,
             refresh_capabilities_block=_refresh_capabilities_block,
             render_enrichment_panel=_render_enrichment_panel,
+            advanced_probes_enabled=ENABLE_ADVANCED_PROBES,
         )
 
     with tabs[4]:

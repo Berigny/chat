@@ -29,6 +29,7 @@ class AppSettings:
     genai_api_key: str | None
     openai_api_key: str | None
     rocksdb_data_path: str
+    enable_advanced_probes: bool
 
 
 def _safe_secret(key: str) -> Any:
@@ -61,6 +62,25 @@ def _load_metric_floors(raw: str | Mapping[str, Any] | None) -> dict[str, float]
     return floors
 
 
+def _coerce_bool(value: Any, default: bool = False) -> bool:
+    """Parse truthy/falsey strings and primitives into booleans."""
+
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    text = str(value).strip().lower()
+    if not text:
+        return default
+    if text in {"1", "true", "yes", "on", "enabled", "enable"}:
+        return True
+    if text in {"0", "false", "no", "off", "disabled", "disable"}:
+        return False
+    return default
+
+
 def load_settings() -> AppSettings:
     """Collect runtime configuration from environment and secrets."""
 
@@ -77,6 +97,10 @@ def load_settings() -> AppSettings:
     genai_api_key = _safe_secret("API_KEY") or os.getenv("API_KEY")
     openai_api_key = _safe_secret("OPENAI_API_KEY") or os.getenv("OPENAI_API_KEY")
     rocksdb_data_path = os.getenv("ROCKSDB_DATA_PATH", "/app/rocksdb-data")
+    enable_advanced_probes = _coerce_bool(
+        _safe_secret("ENABLE_ADVANCED_PROBES") or os.getenv("ENABLE_ADVANCED_PROBES"),
+        default=False,
+    )
     return AppSettings(
         api_base=api_base.rstrip("/"),
         api_key=api_key or "demo-key",
@@ -86,6 +110,7 @@ def load_settings() -> AppSettings:
         genai_api_key=genai_api_key,
         openai_api_key=openai_api_key,
         rocksdb_data_path=rocksdb_data_path,
+        enable_advanced_probes=enable_advanced_probes,
     )
 
 

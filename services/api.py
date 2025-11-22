@@ -131,7 +131,16 @@ class ApiService:
         axis: tuple[float, float, float] | None = None,
         angle: float | None = None,
     ) -> Dict[str, Any]:
-        return self._client.rotate(entity, ledger_id=ledger_id, axis=axis, angle=angle)
+        try:
+            return self._client.rotate(entity, ledger_id=ledger_id, axis=axis, angle=angle)
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                raise requests.HTTPError(
+                    "Rotation endpoint not available on this deployment.",
+                    response=exc.response,
+                    request=getattr(exc, "request", None),
+                ) from exc
+            raise
 
     # Ledger and memory -------------------------------------------------
     def fetch_memories(
@@ -253,6 +262,8 @@ class ApiService:
                     self._traverse_supported = True
 
                 message = self._summarize_traverse_error(response)
+                if status == 404 and not message:
+                    message = "Traversal endpoint not available on this deployment."
                 if message and message != str(exc):
                     raise requests.HTTPError(
                         message,
@@ -682,7 +693,16 @@ class ApiService:
         ledger_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         payload = dict(metrics) if isinstance(metrics, Mapping) else dict(metrics or {})
-        return self._client.update_metrics(entity, payload, ledger_id=ledger_id)
+        try:
+            return self._client.update_metrics(entity, payload, ledger_id=ledger_id)
+        except requests.HTTPError as exc:
+            if exc.response is not None and exc.response.status_code == 404:
+                raise requests.HTTPError(
+                    "Metrics endpoint not available on this deployment.",
+                    response=exc.response,
+                    request=getattr(exc, "request", None),
+                ) from exc
+            raise
 
 
 __all__ = ["ApiService", "TRAVERSAL_ENTITY_SLUGS", "requests"]

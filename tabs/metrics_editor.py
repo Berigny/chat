@@ -76,6 +76,7 @@ def render_entity_metrics_panel(
     *,
     entity: str | None,
     ledger_id: str | None,
+    advanced_probes_enabled: bool = True,
 ) -> None:
     """Render current metrics and provide an editor form."""
 
@@ -88,7 +89,10 @@ def render_entity_metrics_panel(
     if snapshot.error:
         st.warning(f"Failed to load metrics: {snapshot.error}")
     metrics = snapshot.metrics
+    probes_disabled = not advanced_probes_enabled
     st.caption("Current ℝ metrics (r_metrics) stored for this entity/ledger.")
+    if probes_disabled:
+        st.caption("Advanced probes are disabled for this deployment.")
     table_rows = []
     for key, _ in METRIC_FIELDS:
         value = metrics.get(key)
@@ -114,9 +118,14 @@ def render_entity_metrics_panel(
                     METRIC_LABELS.get(field, field),
                     value=float(default_value),
                     help=help_text,
+                    disabled=probes_disabled,
                     key=f"metric_input_{field}_{form_key_suffix}",
                 )
-        submitted = st.form_submit_button("Update metrics")
+        submitted = st.form_submit_button(
+            "Update metrics",
+            disabled=probes_disabled,
+            help="Not enabled on this deployment" if probes_disabled else None,
+        )
         if submitted:
             response = _apply_metrics_patch(api_service, entity, updated_payload, ledger_id=ledger_id)
             if response is not None:
@@ -125,7 +134,12 @@ def render_entity_metrics_panel(
                     st.json(response)
 
     reset_label = f"Reset metrics to defaults ({DEFAULT_METRICS_PAYLOAD})"
-    if st.button(reset_label, key=f"metrics_reset_{form_key_suffix}"):
+    if st.button(
+        reset_label,
+        key=f"metrics_reset_{form_key_suffix}",
+        disabled=probes_disabled,
+        help="Not enabled on this deployment" if probes_disabled else None,
+    ):
         response = _apply_metrics_patch(api_service, entity, DEFAULT_METRICS_PAYLOAD, ledger_id=ledger_id)
         if response is not None:
             st.success("Metrics reset to defaults.")

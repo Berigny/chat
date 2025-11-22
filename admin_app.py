@@ -34,6 +34,12 @@ from tabs import inference_status, ledger_chat as ledger_chat_tab, ledger_contro
 API_URL = os.getenv("DUALSUBSTRATE_API", "https://dualsubstrate-commercial.fly.dev")
 DEFAULT_ENTITY = os.getenv("DEFAULT_ENTITY", "demo_user")
 DEFAULT_LEDGER_ID = os.getenv("DEFAULT_LEDGER_ID", "default")
+ENABLE_ADVANCED_PROBES = os.getenv("ENABLE_ADVANCED_PROBES", "false").lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
 PRIME_WEIGHTS = {
     2: 1.5,
     3: 1.5,
@@ -363,8 +369,8 @@ def main() -> None:
 
     st.title("Ledger Recall Assistant")
     memory_service = get_memory_service(st.session_state)
-    traversal_supported = memory_service.supports_traverse()
-    inference_supported = memory_service.supports_inference_state()
+    traversal_supported = ENABLE_ADVANCED_PROBES and memory_service.supports_traverse()
+    inference_supported = ENABLE_ADVANCED_PROBES and memory_service.supports_inference_state()
 
     tab_labels = ["Chat"]
     if traversal_supported:

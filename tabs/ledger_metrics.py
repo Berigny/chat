@@ -89,8 +89,11 @@ def render_tab(
     execute_enrichment: ExecuteEnrichment,
     refresh_capabilities_block: SimpleCallback,
     render_enrichment_panel: RenderEnrichmentPanel,
+    advanced_probes_enabled: bool,
 ) -> None:
     """Render ledger controls, metrics, and lattice tools."""
+
+    probes_disabled = not advanced_probes_enabled
 
     _render_ledger_selector(
         add_option_label=add_ledger_option,
@@ -138,10 +141,15 @@ def render_tab(
         api_service,
         entity=get_entity(),
         ledger_id=st.session_state.get("ledger_id"),
+        advanced_probes_enabled=advanced_probes_enabled,
     )
 
     st.markdown("### Möbius lattice rotation")
-    if st.button("♾️ Möbius Transform", help="Reproject the exponent lattice"):
+    if st.button(
+        "♾️ Möbius Transform",
+        help="Reproject the exponent lattice" if advanced_probes_enabled else "Not enabled on this deployment",
+        disabled=probes_disabled,
+    ):
         entity = get_entity()
         if not entity:
             st.warning("No active entity.")
@@ -171,6 +179,8 @@ def render_tab(
                 trigger_rerun()
             except requests.RequestException as exc:  # type: ignore[name-defined]
                 st.error(f"Möbius rotation failed: {exc}")
+    if probes_disabled:
+        st.caption("Advanced probes are disabled for this deployment.")
 
     st.markdown("### Enrichment")
     if st.button("Initiate Enrichment", help="Replay stored transcripts with richer prime coverage"):
