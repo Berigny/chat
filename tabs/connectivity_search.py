@@ -66,7 +66,8 @@ def render_tab(
         resolved_ip = socket.gethostbyname(host_name)
         st.success(f"DNS resolved `{host_name}` → `{resolved_ip}`")
     except Exception as exc:  # pragma: no cover - platform specific
-        st.error(f"DNS resolution failed for `{host_name}`: {exc}")
+        st.error("DNS resolution failed; verify the API host name.")
+        st.caption(str(exc))
 
     headers: dict[str, str] = {}
     if settings.api_key:
@@ -82,7 +83,8 @@ def render_tab(
         except Exception:  # pragma: no cover - text fallback
             st.code(health_resp.text or "<empty response>", language="text")
     except Exception as exc:  # pragma: no cover - network dependent
-        st.error(f"/health error: {exc}")
+        st.error("/health check failed; backend unavailable.")
+        st.caption(str(exc))
 
     debug_url = f"{host_url}/docs"
     st.write(f"Trying GET `{debug_url}`")
@@ -94,7 +96,8 @@ def render_tab(
             preview += "…"
         st.code(preview or "<empty response>", language="text")
     except Exception as exc:  # pragma: no cover - network dependent
-        st.error(f"/docs error: {exc}")
+        st.error("/docs fetch failed; backend documentation unreachable.")
+        st.caption(str(exc))
 
     st.caption("Trigger `/admin/reindex` once per ledger to rebuild the token-prime index.")
     if st.button("Build search index", key="build_search_index"):
@@ -102,7 +105,8 @@ def render_tab(
         try:
             payload = backend_client.reindex_ledger(entity)
         except requests.RequestException as exc:  # pragma: no cover - network dependent
-            st.error(f"Index build error: {exc}")
+            st.error("Index build failed; backend did not accept the request.")
+            st.caption(str(exc))
         else:
             st.toast("Reindex triggered – only needed once after the first anchor.", icon="🔍")
             st.json(payload or {"status": "ok"})
@@ -169,7 +173,8 @@ def render_tab(
                 limit=int(probe_limit),
             )
         except requests.RequestException as exc:
-            st.error(f"Search call failed: {exc}")
+            st.error("Search call failed; backend unavailable or rejected the query.")
+            st.caption(str(exc))
             return
 
         st.info("Search request succeeded.")
@@ -241,7 +246,8 @@ def render_tab(
         try:
             result = apply_backdoor_promotion(entity, ledger_id)
         except Exception as exc:  # pragma: no cover - network dependent
-            st.error(f"Promotion failed: {exc}")
+            st.error("Governance diagnostics failed; backend call was rejected.")
+            st.caption(str(exc))
         else:
             success = promotion_result_ok(result)
             if success:
@@ -308,7 +314,8 @@ def render_tab(
                 coordinates=coords if isinstance(coords, Mapping) else None,
             )
         except requests.RequestException as exc:  # pragma: no cover - network dependent
-            st.error(f"Ledger write failed: {exc}")
+            st.error("Ledger write failed; backend could not store the entry.")
+            st.caption(str(exc))
         else:
             st.success("Ledger entry written.")
             st.json(response)
@@ -329,7 +336,8 @@ def render_tab(
             try:
                 entry = backend_client.read_ledger_entry(target)
             except requests.RequestException as exc:  # pragma: no cover - network dependent
-                st.error(f"Ledger read failed: {exc}")
+                st.error("Ledger read failed; backend could not serve the entry.")
+                st.caption(str(exc))
             else:
                 if entry:
                     st.json(entry)

@@ -91,7 +91,8 @@ def anchor_message(
             factors_override=overrides,
         )
     except requests.RequestException as exc:
-        st.error(f"Anchor failed: {exc}")
+        st.error("Anchor failed; backend could not store the memory.")
+        st.caption(str(exc))
         session_state.last_anchor_status = "error"
         session_state.last_anchor_payload = None
         if notify:
@@ -155,7 +156,8 @@ def maybe_handle_recall_query(session_state, question: str) -> bool:
             limit=5,
         )
     except requests.RequestException as exc:
-        st.error(f"Recall failed: {exc}")
+        st.error("Recall failed; search backend is unavailable.")
+        st.caption(str(exc))
         return False
 
     payload = payload if isinstance(payload, Mapping) else {}

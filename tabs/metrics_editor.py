@@ -67,7 +67,8 @@ def _apply_metrics_patch(
             ledger_id=ledger_id,
         )
     except requests.RequestException as exc:
-        st.error(f"Metrics update failed: {exc}")
+        st.error("Metrics update failed; backend rejected the patch.")
+        st.caption(str(exc))
         return None
 
 

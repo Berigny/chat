@@ -53,7 +53,8 @@ def render_tab(session_state) -> None:
                     st.toast(f"Ledger '{ledger_id}' ready", icon="📂")
                     _refresh_state(session_state, silent=True)
                 elif error:
-                    st.error(f"Failed to create or switch ledger: {error}")
+                    st.error("Unable to create or switch ledger; backend declined the request.")
+                    st.caption(str(error))
             else:
                 st.error("Ledger ID cannot be blank.")
 
@@ -73,7 +74,8 @@ def _refresh_state(session_state, *, silent: bool = False) -> None:
     if error:
         session_state.ledger_refresh_error = error
         if not silent:
-            st.error(f"Failed to load ledgers: {error}")
+            st.error("Ledger list unavailable; backend not exposing ledger management.")
+            st.caption(str(error))
         return
     session_state.ledger_refresh_error = None
     session_state.ledgers = ledgers

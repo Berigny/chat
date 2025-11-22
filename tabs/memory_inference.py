@@ -6,10 +6,14 @@ from typing import Any, Callable, Mapping
 
 import streamlit as st
 
+from app_settings import load_settings
+
 try:
     from tests.rocksdb_probe import run_probe as run_rocksdb_probe
 except Exception:  # pragma: no cover - probe is optional in prod builds
     run_rocksdb_probe = None
+
+DEFAULT_ENTITY = load_settings().default_entity
 
 
 RenderCallback = Callable[[str | None], None]
@@ -111,7 +115,7 @@ def _render_rocksdb_probe(entity: str | None) -> None:
         st.info("RocksDB probe unavailable (install rocksdict to enable it).")
         return
 
-    default_entity = entity or "Demo_dev"
+    default_entity = entity or DEFAULT_ENTITY
     with st.form("rocksdb_probe_form", clear_on_submit=False):
         probe_entity = st.text_input("Entity ID", value=default_entity, key="rocksdb_probe_entity")
         probe_prompt = st.text_area(

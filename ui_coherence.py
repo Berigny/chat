@@ -9,10 +9,12 @@ import requests
 import streamlit as st
 
 from api_client import DualSubstrateV2Client, build_action_request
+from app_settings import load_settings
 from ui_components import render_json_viewer
 from utils_streamlit import parse_json_input, show_api_error
 
 DEFAULT_API = os.getenv("DUALSUBSTRATE_API", "https://dualsubstrate-commercial.fly.dev")
+DEFAULT_ENTITY = load_settings().default_entity
 
 
 def _client(api_url: str, api_key: str | None) -> DualSubstrateV2Client:
@@ -31,7 +33,7 @@ def render() -> None:
     )
 
     col_entity, col_text = st.columns(2)
-    entity = col_entity.text_input("Entity", value="Demo_dev", key="coherence_entity")
+    entity = col_entity.text_input("Entity", value=DEFAULT_ENTITY, key="coherence_entity")
     text = col_text.text_input(
         "Text", value="", placeholder="Optional text to assess", key="coherence_text"
     )
