@@ -32,7 +32,7 @@ from tabs import inference_status, ledger_chat as ledger_chat_tab, ledger_contro
 
 
 API_URL = os.getenv("DUALSUBSTRATE_API", "https://dualsubstrate-commercial.fly.dev")
-DEFAULT_ENTITY = os.getenv("DEFAULT_ENTITY", "demo_user")
+DEFAULT_ENTITY = os.getenv("DEFAULT_ENTITY", "Demo_dev")
 DEFAULT_LEDGER_ID = os.getenv("DEFAULT_LEDGER_ID", "default")
 ENABLE_ADVANCED_PROBES = os.getenv("ENABLE_ADVANCED_PROBES", "false").lower() in {
     "1",

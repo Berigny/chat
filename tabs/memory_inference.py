@@ -36,15 +36,17 @@ def render_tab(
         st.button(
             "Advanced probes disabled",
             disabled=True,
-            help="Not enabled on this deployment",
+            help="Traversal and inference probes are turned off on this demo backend",
         )
-        st.caption("Traversal, inference, and telemetry panels are unavailable here.")
+        st.caption(
+            "Traversal, inference, and telemetry panels are unavailable on this demo backend."
+        )
         return
 
     if traversal_supported:
         _render_section("Traversal snapshot", render_traversal_callback, entity)
     else:
-        st.info("Traversal endpoint unavailable on this deployment.")
+        st.info("Traversal probes are disabled on this demo backend; no paths to display.")
 
     st.divider()
 
@@ -104,7 +106,7 @@ def _render_rocksdb_probe(entity: str | None) -> None:
         st.info("RocksDB probe unavailable (install rocksdict to enable it).")
         return
 
-    default_entity = entity or "demo_user"
+    default_entity = entity or "Demo_dev"
     with st.form("rocksdb_probe_form", clear_on_submit=False):
         probe_entity = st.text_input("Entity ID", value=default_entity, key="rocksdb_probe_entity")
         probe_prompt = st.text_area(

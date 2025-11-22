@@ -97,7 +97,7 @@ When you call POST /anchor, send a factors array containing every slot you fille
 ]
 If a slot has no info, omit it (or use delta 0). Include the raw transcript in text.
 
-After anchoring, call GET /memories?entity=demo_user&limit=20 to retrieve the exact strings you just logged.
+After anchoring, call GET /memories?entity=Demo_dev&limit=20 to retrieve the exact strings you just logged.
 ```
 
 ### Ready-to-test script
@@ -107,7 +107,7 @@ curl -X POST https://dualsubstrate-commercial.fly.dev/anchor \
   -H "x-api-key: demo-key" \
   -H "Content-Type: application/json" \
   -d '{
-        "entity":"demo_user",
+        "entity":"Demo_dev",
         "text":"Met Priya at the NYC office to finalize Tuesday’s launch plan.",
         "factors":[
           {"prime":2,"delta":1},
@@ -139,7 +139,7 @@ to regenerate the exponent lattice. You can call it directly:
 curl -X POST https://dualsubstrate-commercial.fly.dev/rotate \
   -H "x-api-key: demo-key" \
   -H "Content-Type: application/json" \
-  -d '{"entity":"demo_user","axis":[0,0,1],"angle":1.0472}'
+  -d '{"entity":"Demo_dev","axis":[0,0,1],"angle":1.0472}'
 ```
 
 In the Streamlit UI we expose a `♾️ Möbius Transform` button beneath the Metrics card:
