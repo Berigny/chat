@@ -137,15 +137,23 @@ class DualSubstrateClient:
         ledger_id: str | None = None,
         mode: str | None = None,
         limit: int | None = None,
+        fuzzy: bool = True,
+        semantic_weight: float = 0.45,
+        delta: int = 2,
     ) -> requests.Response:
-        params: dict[str, Any] = {"entity": entity, "q": query}
+        params: dict[str, Any] = {
+            "entity": entity,
+            "q": query,
+            "limit": int(limit) if limit is not None else 5,
+            "fuzzy": str(fuzzy).lower(),
+            "semantic_weight": semantic_weight,
+            "delta": delta,
+        }
         if mode:
             params["mode"] = mode
-        if limit is not None:
-            params["limit"] = int(limit)
 
         return requests.get(
-            f"{self.base_url}/search",
+            f"{self.base_url}/memories",
             params=params,
             headers=self._headers(ledger_id=ledger_id),
             timeout=self.timeout,
@@ -159,8 +167,11 @@ class DualSubstrateClient:
         ledger_id: str | None = None,
         mode: str | None = None,
         limit: int | None = None,
+        fuzzy: bool = True,
+        semantic_weight: float = 0.45,
+        delta: int = 2,
     ) -> dict[str, Any]:
-        """Call the `/search` endpoint for recall and slot lookups."""
+        """Call the `/memories` endpoint for recall and slot lookups."""
 
         resp = self._request_search(
             entity,
@@ -168,6 +179,9 @@ class DualSubstrateClient:
             ledger_id=ledger_id,
             mode=mode,
             limit=limit,
+            fuzzy=fuzzy,
+            semantic_weight=semantic_weight,
+            delta=delta,
         )
         resp.raise_for_status()
         payload = resp.json()
@@ -181,6 +195,9 @@ class DualSubstrateClient:
         ledger_id: str | None = None,
         mode: str | None = None,
         limit: int | None = None,
+        fuzzy: bool = True,
+        semantic_weight: float = 0.45,
+        delta: int = 2,
     ) -> tuple[dict[str, Any], requests.Response]:
         """Return the parsed search payload along with the raw HTTP response."""
 
@@ -190,6 +207,9 @@ class DualSubstrateClient:
             ledger_id=ledger_id,
             mode=mode,
             limit=limit,
+            fuzzy=fuzzy,
+            semantic_weight=semantic_weight,
+            delta=delta,
         )
         resp.raise_for_status()
         payload = resp.json()
