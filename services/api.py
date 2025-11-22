@@ -404,6 +404,9 @@ class ApiService:
         ledger_id: Optional[str] = None,
         mode: Optional[str] = None,
         limit: Optional[int] = None,
+        fuzzy: bool = True,
+        semantic_weight: float = 0.45,
+        delta: int = 2,
     ) -> Dict[str, Any]:
         return self._client.search(
             entity,
@@ -411,6 +414,9 @@ class ApiService:
             ledger_id=ledger_id,
             mode=mode,
             limit=limit,
+            fuzzy=fuzzy,
+            semantic_weight=semantic_weight,
+            delta=delta,
         )
 
     def search_with_response(
@@ -421,8 +427,11 @@ class ApiService:
         ledger_id: Optional[str] = None,
         mode: Optional[str] = None,
         limit: Optional[int] = None,
+        fuzzy: bool = True,
+        semantic_weight: float = 0.45,
+        delta: int = 2,
     ) -> tuple[Dict[str, Any], "requests.Response"]:
-        """Call ``/search`` and return both parsed JSON and raw HTTP response."""
+        """Call ``/memories`` and return both parsed JSON and raw HTTP response."""
 
         return self._client.search_with_response(
             entity,
@@ -430,6 +439,9 @@ class ApiService:
             ledger_id=ledger_id,
             mode=mode,
             limit=limit,
+            fuzzy=fuzzy,
+            semantic_weight=semantic_weight,
+            delta=delta,
         )
 
     def search_slots(

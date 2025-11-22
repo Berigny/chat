@@ -25,14 +25,25 @@ def test_search_forwards_query_and_headers(monkeypatch):
     monkeypatch.setattr(requests, "get", fake_get)
 
     client = DualSubstrateClient("https://api.example", "secret", timeout=7)
-    client.search("demo", "meeting recap", ledger_id="alpha", mode="slots", limit=4)
+    client.search(
+        "demo",
+        "meeting recap",
+        ledger_id="alpha",
+        mode="slots",
+        limit=4,
+        semantic_weight=0.45,
+        delta=2,
+    )
 
-    assert captured["url"].endswith("/search")
+    assert captured["url"].endswith("/memories")
     assert captured["params"] == {
         "entity": "demo",
         "q": "meeting recap",
         "mode": "slots",
         "limit": 4,
+        "fuzzy": "true",
+        "semantic_weight": 0.45,
+        "delta": 2,
     }
     assert captured["headers"]["X-Ledger-ID"] == "alpha"
     assert captured["headers"]["x-api-key"] == "secret"
