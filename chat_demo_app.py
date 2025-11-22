@@ -46,7 +46,6 @@ from agent_selector import (
 from services.api import ApiService, requests
 from services.api_service import EnrichmentHelper
 from services.ethics_service import EthicsService
-from services.ledger_traversal import LedgerTraversalService
 from services.memory_service import (
     MemoryService,
     derive_time_filters,
@@ -56,9 +55,7 @@ from services.memory_service import (
 )
 from services.prompt_service import (
     LEDGER_SNIPPET_LIMIT,
-    TRANSLATOR_SYSTEM_PROMPT,
     build_synthesis_prompt,
-    build_traversal_intent_prompt,
     create_prompt_service,
 )
 from services.prime_service import PrimeService
@@ -691,7 +688,6 @@ PRIME_SERVICE = PrimeService(API_SERVICE, FALLBACK_PRIME)
 MEMORY_SERVICE = MemoryService(API_SERVICE, PRIME_WEIGHTS)
 ENRICHMENT_HELPER = EnrichmentHelper(API_SERVICE, PRIME_SERVICE)
 PROMPT_SERVICE = create_prompt_service(MEMORY_SERVICE)
-LEDGER_TRAVERSAL_SERVICE = LedgerTraversalService(API_SERVICE, MEMORY_SERVICE)
 
 LOGGER = logging.getLogger(__name__)
 
@@ -1470,36 +1466,6 @@ def _extract_json_object(raw: str) -> dict | None:
     return data if isinstance(data, dict) else None
 
 
-def _build_traversal_intent_prompt(question: str, entity: str | None, ledger_id: str | None) -> str:
-    default_entity = entity or DEFAULT_ENTITY
-    return build_traversal_intent_prompt(
-        question,
-        default_entity=default_entity,
-        ledger_id=ledger_id,
-    )
-
-
-def _translate_traversal_intent(question: str) -> dict | None:
-    if not (genai and GENAI_KEY):
-        return None
-    prompt = _build_traversal_intent_prompt(
-        question,
-        _get_entity() or DEFAULT_ENTITY,
-        st.session_state.get("ledger_id"),
-    )
-    try:
-        model = genai.GenerativeModel(
-            "gemini-2.0-flash",
-            generation_config={"response_mime_type": "application/json"},
-            system_instruction=TRANSLATOR_SYSTEM_PROMPT,
-        )
-        response = model.generate_content(prompt)
-    except Exception:
-        return None
-    raw = getattr(response, "text", None) or ""
-    return _extract_json_object(raw)
-
-
 def _record_latest_assembly(
     *,
     entity: str | None,
@@ -2027,29 +1993,7 @@ def _chat_response(
     assembly_quote_safe = quote_mode
     target_entity = entity
 
-    translator_intent = _translate_traversal_intent(prompt)
-    if translator_intent:
-        traversal = LEDGER_TRAVERSAL_SERVICE.execute_intent(
-            translator_intent,
-            default_entity=entity or DEFAULT_ENTITY,
-            ledger_id=ledger_id,
-            quote_safe_default=quote_mode,
-            since=since,
-        )
-        target_entity = traversal.get("entity") or target_entity
-        assembly = traversal.get("assembly")
-        assembly_k = traversal.get("k") or assembly_k
-        assembly_quote_safe = traversal.get("quote_safe", assembly_quote_safe)
-        _record_latest_assembly(
-            entity=target_entity,
-            ledger_id=ledger_id,
-            k=assembly_k,
-            quote_safe=assembly_quote_safe,
-            since=since,
-            assembly=assembly,
-        )
-
-    if assembly is None and target_entity:
+    if target_entity:
         assembly = MEMORY_SERVICE.assemble_context(
             target_entity,
             ledger_id=ledger_id,
