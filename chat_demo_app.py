@@ -684,7 +684,9 @@ if not PRIME_SCHEMA:
 PRIME_SYMBOLS = {prime: data["name"] for prime, data in PRIME_SCHEMA.items()}
 FALLBACK_PRIME = PRIME_ARRAY[0]
 
-PRIME_SERVICE = PrimeService(API_SERVICE, FALLBACK_PRIME)
+PRIME_SERVICE = PrimeService(
+    API_SERVICE, FALLBACK_PRIME, backend_client=BACKEND_CLIENT
+)
 MEMORY_SERVICE = MemoryService(API_SERVICE, PRIME_WEIGHTS)
 ENRICHMENT_HELPER = EnrichmentHelper(API_SERVICE, PRIME_SERVICE)
 PROMPT_SERVICE = create_prompt_service(MEMORY_SERVICE)
@@ -1115,15 +1117,8 @@ def _persist_structured_views_from_ledger(entity: str) -> None:
     structured_data = _extract_structured_views(structured_payload)
     structured = structured_data if isinstance(structured_data, Mapping) else {}
     flat_map = _derive_flat_s2_map(structured)
-    if not structured.get("slots"):
-        st.session_state.latest_structured_ledger = flat_map
-        st.session_state.latest_structured_metrics = {}
-        return
-
-    persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
-    s2_map, metrics_payload = _extract_structured_persist_outputs(persisted)
-    st.session_state.latest_structured_ledger = s2_map
-    st.session_state.latest_structured_metrics = metrics_payload
+    st.session_state.latest_structured_ledger = flat_map
+    st.session_state.latest_structured_metrics = {}
 
 
 def _execute_enrichment(entity: str, *, limit: int = 50) -> dict[str, Any]:
@@ -1900,13 +1895,30 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
         st.session_state.last_anchor_error = message
         st.error(f"Anchor blocked: {message}")
         return False
+    ledger_entry = (
+        ingest_result.get("ledger_entry") if isinstance(ingest_result, dict) else {}
+    )
     structured = ingest_result.get("structured") if isinstance(ingest_result, dict) else {}
-    if structured:
-        persisted = _persist_structured_views(entity, structured, ledger_id=ledger_id)
-        s2_map, metrics_payload = _extract_structured_persist_outputs(persisted)
-        st.session_state.latest_structured_ledger = s2_map
-        st.session_state.latest_structured_metrics = metrics_payload
-    else:
+    metadata_structured = structured
+    entry_id = None
+    if isinstance(ledger_entry, Mapping):
+        entry_state = ledger_entry.get("state") if hasattr(ledger_entry, "get") else None
+        entry_metadata = (
+            entry_state.get("metadata")
+            if isinstance(entry_state, Mapping)
+            else ledger_entry.get("metadata")
+        )
+        if isinstance(entry_metadata, Mapping):
+            structured_candidate = entry_metadata.get("structured")
+            if isinstance(structured_candidate, Mapping):
+                metadata_structured = structured_candidate
+        entry_id = ledger_entry.get("entry_id") or ledger_entry.get("id")
+    flat_map = _derive_flat_s2_map(metadata_structured)
+    st.session_state.latest_structured_ledger = flat_map
+    st.session_state.latest_structured_metrics = {}
+    if entry_id:
+        st.session_state["last_structured_entry_id"] = entry_id
+    elif metadata_structured:
         _persist_structured_views_from_ledger(entity)
     _mark_search_index_dirty(entity, ledger_id)
     if record_chat:

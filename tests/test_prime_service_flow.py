@@ -6,7 +6,6 @@ from services.prime_service import PrimeService
 class DummyApiService:
     def __init__(self) -> None:
         self.anchor_calls: list[tuple[str, list[dict[str, Any]], str | None, str]] = []
-        self.body_calls: list[dict[str, Any]] = []
 
     def anchor(
         self,
@@ -21,23 +20,18 @@ class DummyApiService:
         self.anchor_calls.append((entity, factors_list, ledger_id, text or ""))
         return {"edges": [], "energy": 1.0, "text": text or ""}
 
-    def write_body_entry(self, entity: str, prime: int, text: str, *, ledger_id=None, metadata=None):
-        metadata_payload = {"text": text}
-        if isinstance(metadata, Mapping):
-            metadata_payload.update(metadata)
-        self.body_calls.append(
-            {
-                "entity": entity,
-                "prime": prime,
-                "metadata": metadata_payload,
-                "ledger_id": ledger_id,
-                "metadata_arg": metadata,
-            }
-        )
-        return {"entry_id": f"{prime}:1", "state": {"metadata": metadata_payload}}
 
-    def fetch_ledger(self, entity: str, *, ledger_id: str | None = None) -> Mapping[str, Any]:
-        return {}
+class DummyBackendClient:
+    def __init__(self) -> None:
+        self.write_calls: list[dict[str, Any]] = []
+
+    def write_ledger_entry(self, **kwargs) -> Mapping[str, Any]:
+        self.write_calls.append(kwargs)
+        metadata = kwargs.get("metadata") or {}
+        return {
+            "entry_id": f"{kwargs['key_namespace']}:{kwargs['key_identifier']}",
+            "state": {"metadata": metadata},
+        }
 
 
 SCHEMA = {
@@ -50,7 +44,8 @@ SCHEMA = {
 
 def test_ingest_blocks_flow_violation() -> None:
     api = DummyApiService()
-    service = PrimeService(api_service=api, fallback_prime=23)
+    backend = DummyBackendClient()
+    service = PrimeService(api_service=api, fallback_prime=23, backend_client=backend)
 
     result = service.ingest(
         "demo",
@@ -60,13 +55,14 @@ def test_ingest_blocks_flow_violation() -> None:
     )
 
     assert api.anchor_calls == []
-    assert api.body_calls == []
+    assert backend.write_calls == []
     assert result["flow_errors"]
 
 
 def test_ingest_allows_mediated_flow() -> None:
     api = DummyApiService()
-    service = PrimeService(api_service=api, fallback_prime=23)
+    backend = DummyBackendClient()
+    service = PrimeService(api_service=api, fallback_prime=23, backend_client=backend)
 
     result = service.ingest(
         "demo",
@@ -80,10 +76,8 @@ def test_ingest_allows_mediated_flow() -> None:
     )
 
     assert not result.get("flow_errors")
-    assert api.anchor_calls
-    assert api.body_calls
-    call = api.body_calls[0]
-    assert isinstance(call["metadata_arg"], Mapping)
-    metadata = call.get("metadata")
-    assert isinstance(metadata, dict)
-    assert metadata.get("kind") == "memory"
+    assert api.anchor_calls == []
+    assert backend.write_calls
+    metadata = backend.write_calls[0].get("metadata", {})
+    assert isinstance(metadata, Mapping)
+    assert metadata.get("structured")
