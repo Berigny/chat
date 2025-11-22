@@ -48,13 +48,15 @@ def _build_action_request(
     default_entity: str,
 ) -> dict[str, Any]:
     return {
-        "actor": entity or default_entity,
-        "action": action,
-        "key": {
-            "namespace": _normalize_namespace(ledger_id),
-            "identifier": f"{_entity_slug(entity, default_entity)}-structured",
-        },
-        "parameters": {"tier": 3.0},
+        "action_request": {
+            "actor": entity or default_entity,
+            "action": action,
+            "key": {
+                "namespace": _normalize_namespace(ledger_id),
+                "identifier": f"{_entity_slug(entity, default_entity)}-structured",
+            },
+            "parameters": {"tier": 3.0},
+        }
     }
 
 
