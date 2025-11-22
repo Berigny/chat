@@ -91,7 +91,7 @@ class DualSubstrateClient:
         if since is not None:
             params["since"] = since
         resp = requests.get(
-            f"{self.base_url}/memories",
+            f"{self.base_url}/search",
             params=params,
             headers=self._headers(ledger_id=ledger_id),
             timeout=self.timeout,
@@ -153,7 +153,7 @@ class DualSubstrateClient:
             params["mode"] = mode
 
         return requests.get(
-            f"{self.base_url}/memories",
+            f"{self.base_url}/search",
             params=params,
             headers=self._headers(ledger_id=ledger_id),
             timeout=self.timeout,
@@ -171,7 +171,7 @@ class DualSubstrateClient:
         semantic_weight: float = 0.45,
         delta: int = 2,
     ) -> dict[str, Any]:
-        """Call the `/memories` endpoint for recall and slot lookups."""
+        """Call the `/search` endpoint for recall and slot lookups."""
 
         resp = self._request_search(
             entity,
@@ -648,7 +648,7 @@ def _coerce_ledger_records(payload: Any) -> list[dict[str, str]]:
 
 @dataclass
 class DualSubstrateV2Client:
-    """HTTP client for the v2 evaluation endpoints."""
+    """HTTP client for the evaluation endpoints."""
 
     base_url: str
     api_key: str | None = None
@@ -662,7 +662,7 @@ class DualSubstrateV2Client:
 
     def _full_url(self, path: str) -> str:
         path = path if path.startswith("/") else f"/{path}"
-        return f"{self.base_url.rstrip('/')}/v2{path}"
+        return f"{self.base_url.rstrip('/')}{path}"
 
     def _request(
         self,
