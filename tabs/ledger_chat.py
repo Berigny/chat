@@ -14,10 +14,33 @@ from services.api_helpers import (
     ingest_text,
     search_probe,
 )
-from services.structured_writer import write_structured_views
 from ui_components import render_json_viewer, toggle_group
 
 _SAFE_FACTORS = [{"prime": 5, "delta": 1}, {"prime": 19, "delta": 1}]
+
+
+def _derive_flat_s2_map(structured: Mapping[str, Any] | None) -> dict[str, dict[str, str]]:
+    flat: dict[str, dict[str, str]] = {}
+    if not isinstance(structured, Mapping):
+        return flat
+    for entry in structured.get("s2", []) or []:
+        if not isinstance(entry, Mapping):
+            continue
+        summary = entry.get("summary")
+        prime = entry.get("prime")
+        if not isinstance(prime, int):
+            continue
+        if isinstance(summary, str) and summary.strip():
+            flat[str(prime)] = {"summary": summary.strip()}
+    raw_map = structured.get("raw") if isinstance(structured, Mapping) else None
+    if isinstance(raw_map, Mapping):
+        for key, value in raw_map.items():
+            if not isinstance(key, str) or key in flat:
+                continue
+            summary_value = value.get("summary") if isinstance(value, Mapping) else None
+            if isinstance(summary_value, str) and summary_value.strip():
+                flat[key] = {"summary": summary_value.strip()}
+    return flat
 
 
 def render_tab(session_state) -> None:
@@ -90,17 +113,19 @@ def anchor_message(
         return False
 
     structured = ingest_result.get("structured") if isinstance(ingest_result, Mapping) else None
-    if structured:
-        try:
-            persisted = write_structured_views(
-                get_api_service(session_state),
-                entity,
-                structured,
-                ledger_id=ledger_id,
-            )
-            session_state.latest_structured_ledger = persisted
-        except requests.RequestException as exc:
-            st.warning(f"Structured persist failed: {exc}")
+    ledger_entry = ingest_result.get("ledger_entry") if isinstance(ingest_result, Mapping) else None
+    structured_payload = structured if isinstance(structured, Mapping) else {}
+    if isinstance(ledger_entry, Mapping):
+        entry_metadata = ledger_entry.get("state", {}).get("metadata", {})
+        if isinstance(entry_metadata, Mapping):
+            structured_candidate = entry_metadata.get("structured")
+            if isinstance(structured_candidate, Mapping):
+                structured_payload = structured_candidate
+        entry_id = ledger_entry.get("entry_id") or ledger_entry.get("id")
+        if entry_id:
+            session_state.last_structured_entry_id = entry_id
+    if structured_payload:
+        session_state.latest_structured_ledger = _derive_flat_s2_map(structured_payload)
     if notify:
         st.toast("Anchored", icon="✅")
     return True

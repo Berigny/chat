@@ -14,6 +14,7 @@ if TYPE_CHECKING:
 
 
 from flow_rules import FlowAssessment, assess_enrichment_path
+from services.body_prime_allocator import sanitize_metadata
 
 def _normalize_deltas(entries: Sequence[Mapping[str, Any]] | None) -> list[dict[str, int]]:
     """Return a sanitized list of deltas ready for the enrichment endpoint."""
@@ -73,27 +74,12 @@ class EnrichmentHelper:
                 ledger_id=ledger_id,
             )
             reserved.add(prime)
-            ledger_entry = self.api_service.write_body_entry(
-                entity,
-                prime,
-                text,
-                ledger_id=ledger_id,
-                metadata=supplemental_meta,
-            )
+            metadata_payload = sanitize_metadata(supplemental_meta)
             minted.append(
                 {
                     "prime": prime,
-                    "body": (
-                        ledger_entry.get("state", {})
-                        .get("metadata", {})
-                        .get("text", text)
-                    ),
-                    "metadata": (
-                        ledger_entry.get("state", {})
-                        .get("metadata", {})
-                        if isinstance(ledger_entry, Mapping)
-                        else dict(supplemental_meta)
-                    ),
+                    "body": text,
+                    "metadata": metadata_payload,
                 }
             )
         return minted

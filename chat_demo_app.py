@@ -1918,8 +1918,6 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
     st.session_state.latest_structured_metrics = {}
     if entry_id:
         st.session_state["last_structured_entry_id"] = entry_id
-    elif metadata_structured:
-        _persist_structured_views_from_ledger(entity)
     _mark_search_index_dirty(entity, ledger_id)
     if record_chat:
         st.session_state.chat_history.append(("You", text))
