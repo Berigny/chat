@@ -83,7 +83,7 @@ def test_build_recall_response_returns_engine_text() -> None:
     response = service.build_recall_response("demo", "recall meeting", {}, ledger_id="ledger-alpha")
 
     assert response == "Here’s what the ledger currently recalls:\n• Meeting notes"
-    assert api.last_call["mode"] == "all"
+    assert api.last_call["mode"] == "body"
     assert api.last_call["limit"] >= 1
     assert api.last_call["ledger_id"] == "ledger-alpha"
 
@@ -118,7 +118,7 @@ def test_build_recall_response_uses_custom_mode() -> None:
     assert api.calls == ["body"]
 
 
-def test_build_recall_response_retries_body_mode_when_empty() -> None:
+def test_build_recall_response_retries_all_mode_when_empty() -> None:
     class ApiStub(SimpleNamespace):
         def __init__(self) -> None:
             self.modes: list[str] = []
@@ -126,7 +126,7 @@ def test_build_recall_response_retries_body_mode_when_empty() -> None:
         def search(self, entity, query, **kwargs):
             mode = kwargs.get("mode")
             self.modes.append(mode)
-            if mode == "all":
+            if mode == "body":
                 return {"results": []}
             return {"results": [{"snippet": "Ledger body hit"}]}
 
@@ -136,7 +136,7 @@ def test_build_recall_response_retries_body_mode_when_empty() -> None:
     response = service.build_recall_response("demo", "recall topic", {})
 
     assert response == "Ledger body hit"
-    assert api.modes == ["all", "body"]
+    assert api.modes == ["body", "all"]
 
 
 def test_build_recall_response_skips_prompt_echo_snippet() -> None:
@@ -157,7 +157,7 @@ def test_build_recall_response_skips_prompt_echo_snippet() -> None:
     response = service.build_recall_response("demo", "Do you have any quotes about God?", {})
 
     assert response == "Here is a ledger answer discussing God and definitions"
-    assert api.modes == ["all", "body"]
+    assert api.modes == ["body", "all"]
 
 
 def test_build_recall_response_skips_prompt_like_snippet_with_ledger_hint() -> None:
@@ -178,7 +178,7 @@ def test_build_recall_response_skips_prompt_like_snippet_with_ledger_hint() -> N
     response = service.build_recall_response("demo", "Please recall 5 quotes about God", {})
 
     assert response == "Ledger quote result describing God and definition"
-    assert api.calls == ["all", "body"]
+    assert api.calls == ["body", "all"]
 
 
 def test_build_recall_response_requires_topic_overlap_in_results() -> None:
@@ -199,7 +199,7 @@ def test_build_recall_response_requires_topic_overlap_in_results() -> None:
     response = service.build_recall_response("demo", "Please recall definitions of God", {})
 
     assert response == "Definition of God appears in this ledger quote"
-    assert api.calls == ["all", "body"]
+    assert api.calls == ["body"]
 
 
 def test_build_recall_response_ignores_prompt_echo_response_payload() -> None:
@@ -220,7 +220,7 @@ def test_build_recall_response_ignores_prompt_echo_response_payload() -> None:
     response = service.build_recall_response("demo", "Do you have any quotes about God?", {})
 
     assert response == "Ledger echo free result including God definition"
-    assert api.modes == ["all", "body"]
+    assert api.modes == ["body"]
 
 
 def test_build_recall_response_returns_message_when_no_results() -> None:
@@ -256,6 +256,38 @@ def test_build_recall_response_falls_back_to_memory_lookup_entries() -> None:
     response = service.build_recall_response("demo", "Do you have any quotes about God?", {})
 
     assert response.startswith("- Light for the million – quote about God")
+
+
+def test_build_recall_response_prefers_memories_over_attachments() -> None:
+    class ApiStub(SimpleNamespace):
+        def __init__(self) -> None:
+            self.modes: list[str] = []
+
+        def search(self, *_, **kwargs):
+            self.modes.append(kwargs.get("mode"))
+            return {"results": []}
+
+        def fetch_memories(self, *_, **__):
+            return [
+                {"summary": "You said your favorite color is blue", "meta": {"source": "chat"}},
+            ]
+
+        def assemble_context(self, *_, **__):
+            return {
+                "bodies": [
+                    {
+                        "body": "Attachment snippet from research PDF",
+                        "name": "reference.pdf",
+                    }
+                ]
+            }
+
+    service = MemoryService(api_service=ApiStub(), prime_weights={})
+
+    response = service.build_recall_response("demo", "What's my favorite color?", {})
+
+    assert "favorite color is blue" in response
+    assert "Attachment snippet" not in response
 
 
 def test_build_recall_response_filters_irrelevant_memory_entries() -> None:
