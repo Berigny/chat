@@ -21,6 +21,29 @@ def _api_headers() -> Dict[str, str]:
     return {"x-api-key": key} if key else {}
 
 
+def _schema_fetch_enabled(default: bool = False) -> bool:
+    """Check whether remote schema fetches should be attempted."""
+
+    try:
+        raw_value = st.secrets.get("ENABLE_REMOTE_SCHEMA_FETCH")
+    except Exception:
+        raw_value = None
+    if raw_value is None:
+        raw_value = os.getenv("ENABLE_REMOTE_SCHEMA_FETCH")
+    if isinstance(raw_value, bool):
+        return raw_value
+    if raw_value is None:
+        return default
+    normalized = str(raw_value).strip().lower()
+    if not normalized:
+        return default
+    if normalized in {"1", "true", "yes", "on", "enabled", "enable"}:
+        return True
+    if normalized in {"0", "false", "no", "off", "disabled", "disable"}:
+        return False
+    return default
+
+
 DEFAULT_PRIME_SCHEMA: Dict[int, Dict[str, str]] = {
     2: {"name": "Novelty", "tier": "S", "mnemonic": "spark"},
     3: {"name": "Uniqueness", "tier": "S", "mnemonic": "spec"},
@@ -39,6 +62,9 @@ DEFAULT_PRIME_SCHEMA: Dict[int, Dict[str, str]] = {
 
 def fetch_schema(entity: str) -> Dict[int, Dict]:
     """Fetch the schema from the API with a baked fallback."""
+
+    if not _schema_fetch_enabled():
+        return copy.deepcopy(DEFAULT_PRIME_SCHEMA)
 
     params = {"entity": entity} if entity else {}
     try:
