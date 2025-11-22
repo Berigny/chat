@@ -471,6 +471,14 @@ def _action_request_payload(
     return payload
 
 
+def _governance_response_summary(response, *, label: str) -> dict[str, Any]:
+    summary = _summarize_http_response(response)
+    status = summary.get("status") if isinstance(summary, Mapping) else None
+    if isinstance(status, int) and status >= 400:
+        summary["detail"] = f"{label} engine unavailable (HTTP {status})."
+    return summary
+
+
 def _summarize_http_response(response):
     summary: dict[str, Any] = {}
     if response is None:
