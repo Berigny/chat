@@ -198,7 +198,6 @@ class PrimeService:
         ledger_id: str | None = None,
         factors_override: Sequence[Mapping[str, int]] | None = None,
         llm_extractor=None,
-        modifiers: Sequence[int] | None = None,
     ) -> Payload:
         """Send the text and factors to the engine and return the payload."""
 
@@ -213,7 +212,6 @@ class PrimeService:
             factors,
             ledger_id=ledger_id,
             text=text,
-            modifiers=modifiers,
         )
         return {"text": text, "factors": factors, "response": response}
 

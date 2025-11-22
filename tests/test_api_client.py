@@ -222,7 +222,6 @@ def test_anchor_posts_json_payload(monkeypatch):
         ],
         ledger_id="alpha",
         text="Hello",
-        modifiers=[11],
     )
 
     assert captured["url"].endswith("/anchor")
@@ -233,7 +232,6 @@ def test_anchor_posts_json_payload(monkeypatch):
             {"prime": 3, "weight": 0.2},
         ],
         "text": "Hello",
-        "modifiers": [11],
     }
 
 

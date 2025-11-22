@@ -113,14 +113,12 @@ class ApiService:
         *,
         ledger_id: Optional[str] = None,
         text: Optional[str] = None,
-        modifiers: Optional[Iterable[int]] = None,
     ) -> Dict[str, Any]:
         return self._client.anchor(
             entity,
             factors,
             ledger_id=ledger_id,
             text=text,
-            modifiers=modifiers,
         )
 
     def rotate(
@@ -129,7 +127,7 @@ class ApiService:
         *,
         ledger_id: Optional[str] = None,
         axis: tuple[float, float, float] | None = None,
-        angle: float | None = None,
+        angle: float,
     ) -> Dict[str, Any]:
         try:
             return self._client.rotate(entity, ledger_id=ledger_id, axis=axis, angle=angle)

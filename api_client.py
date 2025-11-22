@@ -379,15 +379,12 @@ class DualSubstrateClient:
         *,
         ledger_id: str | None = None,
         text: str | None = None,
-        modifiers: Iterable[int] | None = None,
     ) -> dict[str, Any]:
         """Anchor factors (and optional text) into the ledger."""
 
         payload: dict[str, Any] = {"entity": entity, "factors": list(factors)}
         if text:
             payload["text"] = text
-        if modifiers:
-            payload["modifiers"] = list(modifiers)
         resp = requests.post(
             f"{self.base_url}/anchor",
             json=payload,
@@ -657,15 +654,14 @@ class DualSubstrateClient:
         *,
         ledger_id: str | None = None,
         axis: tuple[float, float, float] | None = None,
-        angle: float | None = None,
+        angle: float,
     ) -> dict[str, Any]:
         """Invoke the rotation endpoint used by the Möbius transform button."""
 
         payload: dict[str, Any] = {"entity": entity}
         if axis is not None:
             payload["axis"] = list(axis)
-        if angle is not None:
-            payload["angle"] = angle
+        payload["angle"] = angle
         resp = requests.post(
             f"{self.base_url}/rotate",
             json=payload,

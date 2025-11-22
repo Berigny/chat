@@ -16,7 +16,6 @@ class RecordingApiService:
         *,
         ledger_id: str | None = None,
         text: str | None = None,
-        modifiers: Iterable[int] | None = None,
     ) -> Mapping[str, Any]:
         payload = [dict(item) for item in factors]
         self.anchor_calls.append((entity, payload, ledger_id, text or ""))
