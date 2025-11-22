@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Iterable, Mapping, Sequence
 
+import time
+
 import requests
 
 from prime_pipeline import (
@@ -15,10 +17,10 @@ from prime_pipeline import (
     normalize_override_factors,
 )
 
+from backend_client import BackendAPIClient
 from services.body_prime_allocator import (
     BodyPrimeAllocator,
     BODY_PRIME_FLOOR as DEFAULT_BODY_PRIME_FLOOR,
-    sanitize_metadata,
 )
 
 
@@ -57,6 +59,24 @@ def _derive_summary(text: str, *, max_length: int = 160) -> str | None:
     if len(summary) <= max_length:
         return summary
     return summary[: max_length - 1].rstrip() + "…"
+
+
+def _normalize_namespace(raw: str | None) -> str:
+    namespace = (raw or "default").strip().lower()
+    slug = "".join(char if char.isalnum() or char in {"_", "-"} else "-" for char in namespace)
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    slug = slug.strip("-")
+    return slug or "default"
+
+
+def _entity_identifier(entity: str | None, *, suffix: str = "structured") -> str:
+    base = (entity or "entity").strip().lower()
+    slug = "".join(char if char.isalnum() or char in {"_", "-"} else "-" for char in base)
+    while "--" in slug:
+        slug = slug.replace("--", "-")
+    slug = slug.strip("-") or "entity"
+    return f"{slug}-{suffix}" if suffix else slug
 
 
 def _prepare_ingest_plan(
@@ -126,10 +146,13 @@ class PrimeService:
 
     api_service: "ApiService"
     fallback_prime: int
+    backend_client: BackendAPIClient | None = None
     body_prime_floor: int = BODY_PRIME_FLOOR
     body_allocator: BodyPrimeAllocator | None = None
 
     def __post_init__(self) -> None:
+        if self.backend_client is None:
+            self.backend_client = BackendAPIClient()
         if self.body_allocator is None:
             self.body_allocator = BodyPrimeAllocator(
                 api_service=self.api_service,
@@ -242,115 +265,68 @@ class PrimeService:
                 "flow_assessment": flow_assessment.asdict(),
             }
         plan = _prepare_ingest_plan(normalized_text, metadata=metadata)
-        anchor_payload = {
-            "entity": entity,
-            "factors": factors,
-            "text": normalized_text,
-        }
-        anchor_response = self.api_service.anchor(
-            entity,
-            factors,
-            ledger_id=ledger_id,
-            text=normalized_text,
-        )
-
-        if not self.body_allocator:
-            raise RuntimeError("Body prime allocator is not configured")
-        minted_bodies = self.body_allocator.mint_bodies(
-            entity,
-            plan.get("bodies", []),
-            ledger_id=ledger_id,
-        )
-        body_map = {
-            item.get("key"): item.get("prime")
-            for item in minted_bodies
-            if isinstance(item.get("key"), str) and isinstance(item.get("prime"), int)
-        }
-
-        s1_slots: list[dict[str, Any]] = []
-        for slot in plan.get("s1", []):
-            if not isinstance(slot, Mapping):
-                continue
-            prime = slot.get("prime")
-            if not isinstance(prime, int):
-                continue
-            body_key = slot.get("body_key")
-            body_prime = body_map.get(body_key)
-            if not body_prime:
-                continue
-            payload: dict[str, Any] = {
-                "prime": prime,
-                "value": int(slot.get("value", 1)),
-                "body_prime": body_prime,
-            }
-            title = slot.get("title")
-            if isinstance(title, str) and title.strip():
-                payload["title"] = title.strip()
-            tags = slot.get("tags")
-            if isinstance(tags, Sequence) and not isinstance(tags, (str, bytes, bytearray)):
-                cleaned_tags = [str(tag).strip() for tag in tags if str(tag).strip()]
-                if cleaned_tags:
-                    payload["tags"] = cleaned_tags
-            slot_meta = sanitize_metadata(slot.get("metadata"))
-            if slot_meta:
-                payload["metadata"] = slot_meta
-            s1_slots.append(payload)
-
-        s2_slots: list[dict[str, Any]] = []
-        for slot in plan.get("s2", []):
-            if not isinstance(slot, Mapping):
-                continue
-            prime = slot.get("prime")
-            if not isinstance(prime, int):
-                continue
-            body_key = slot.get("body_key")
-            body_prime = body_map.get(body_key)
-            if not body_prime:
-                continue
-            payload: dict[str, Any] = {
-                "prime": prime,
-                "body_prime": body_prime,
-            }
-            summary = slot.get("summary")
-            if isinstance(summary, str) and summary.strip():
-                payload["summary"] = summary.strip()
-            slot_meta = sanitize_metadata(slot.get("metadata"))
-            if slot_meta:
-                payload["metadata"] = slot_meta
-            s2_slots.append(payload)
-
-        slots = []
-        for slot in plan.get("slots", []):
-            if not isinstance(slot, Mapping):
-                continue
-            body_key = slot.get("body_key")
-            body_prime = body_map.get(body_key)
-            enriched = dict(slot)
-            if body_prime:
-                enriched["body_prime"] = body_prime
-            enriched.pop("body_key", None)
-            slots.append(enriched)
-
         structured = {
-            "slots": slots,
-            "s1": s1_slots,
-            "s2": s2_slots,
-            "bodies": minted_bodies,
+            "slots": plan.get("slots", []),
+            "s1": plan.get("s1", []),
+            "s2": plan.get("s2", []),
+            "bodies": plan.get("bodies", []),
         }
+
+        key_namespace = _normalize_namespace(ledger_id)
+        key_identifier = _entity_identifier(entity, suffix="structured")
+        coordinates = {
+            "slots": float(len(structured.get("slots", []) or [])),
+            "s1_slots": float(len(structured.get("s1", []) or [])),
+            "s2_slots": float(len(structured.get("s2", []) or [])),
+        }
+        ledger_entry: Mapping[str, Any] | None = None
+        if not self.backend_client:
+            raise RuntimeError("Backend client is not configured")
+        try:
+            ledger_entry = self.backend_client.write_ledger_entry(
+                key_namespace=key_namespace,
+                key_identifier=key_identifier,
+                text=normalized_text,
+                phase="ingest",
+                entity=entity,
+                metadata={
+                    "entity": entity,
+                    "text": normalized_text,
+                    "factors": factors,
+                    "structured": structured,
+                    "source": "chat-demo",
+                    "timestamp": time.time(),
+                },
+                coordinates=coordinates,
+            )
+        except requests.RequestException:
+            ledger_entry = {"error": "write_failed", "entry_id": f"{key_namespace}:{key_identifier}"}
+        else:
+            if isinstance(ledger_entry, Mapping) and "entry_id" not in ledger_entry:
+                ledger_entry = {"entry_id": f"{key_namespace}:{key_identifier}", **dict(ledger_entry)}
 
         return {
             "text": normalized_text,
             "factors": factors,
             "structured": structured,
-            "anchor": anchor_response,
-            "anchor_request": anchor_payload,
+            "anchor": {"phase": "ingest"},
+            "ledger_entry": ledger_entry,
         }
 
 
-def create_prime_service(api_service: "ApiService", fallback_prime: int) -> PrimeService:
+def create_prime_service(
+    api_service: "ApiService",
+    fallback_prime: int,
+    *,
+    backend_client: BackendAPIClient | None = None,
+) -> PrimeService:
     """Factory to avoid import cycles when wiring from Streamlit."""
 
-    return PrimeService(api_service=api_service, fallback_prime=fallback_prime)
+    return PrimeService(
+        api_service=api_service,
+        fallback_prime=fallback_prime,
+        backend_client=backend_client,
+    )
 
 
 __all__ = ["PrimeService", "create_prime_service"]

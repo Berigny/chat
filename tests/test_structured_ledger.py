@@ -1,11 +1,12 @@
 import time
+
 import streamlit as st
 
 import chat_demo_app
 from prime_schema import DEFAULT_PRIME_SCHEMA
 
 
-def test_anchor_persists_structured_views(monkeypatch):
+def test_anchor_uses_ingest_structured_payload(monkeypatch):
     st.session_state.clear()
     st.session_state.entity = "demo"
     st.session_state.prime_schema = DEFAULT_PRIME_SCHEMA
@@ -18,7 +19,6 @@ def test_anchor_persists_structured_views(monkeypatch):
     st.session_state.latest_structured_metrics = {}
 
     captured: dict[str, object] = {}
-    backend_calls: list[dict[str, object]] = []
 
     long_summary = " ".join(["Meeting"] * 80)
     long_follow_up = " ".join(["Follow-up"] * 70)
@@ -37,51 +37,32 @@ def test_anchor_persists_structured_views(monkeypatch):
             }
             self.calls.append(record)
             captured.update(record)
-            return {
-                "structured": {
-                    "slots": [{"prime": 2, "title": "Meeting"}],
-                    "s1": [],
-                    "s2": [
-                        {
-                            "prime": 11,
-                            "body_prime": 101,
-                            "summary": long_summary,
-                        },
-                        {"prime": 13, "summary": ""},
-                    ],
-                    "raw": {
-                        "17": {"summary": None},
-                        "19": {"summary": f"  {long_follow_up}  "},
-                    },
-                    "bodies": [],
+            structured = {
+                "slots": [{"prime": 2, "title": "Meeting"}],
+                "s1": [],
+                "s2": [
+                    {"prime": 11, "summary": long_summary},
+                    {"prime": 13, "summary": ""},
+                ],
+                "raw": {
+                    "17": {"summary": None},
+                    "19": {"summary": f"  {long_follow_up}  "},
                 },
+                "bodies": [],
+            }
+            ledger_entry = {
+                "entry_id": "default:demo-structured",
+                "state": {"metadata": {"structured": structured}},
+            }
+            return {
+                "structured": structured,
                 "anchor": {"edges": [], "energy": 1.0},
+                "ledger_entry": ledger_entry,
             }
 
     class DummyBackendClient:
-        def write_ledger_entry(
-            self,
-            *,
-            key_namespace,
-            key_identifier,
-            text,
-            phase,
-            entity,
-            metadata=None,
-            coordinates=None,
-        ):
-            backend_calls.append(
-                {
-                    "key_namespace": key_namespace,
-                    "key_identifier": key_identifier,
-                    "text": text,
-                    "phase": phase,
-                    "entity": entity,
-                    "metadata": metadata,
-                    "coordinates": coordinates,
-                }
-            )
-            return {"entry_id": key_identifier}
+        def read_ledger_entry(self, *_args, **_kwargs):
+            raise AssertionError("Backend client should not be called during anchor")
 
     dummy_prime = DummyPrimeService()
 
@@ -94,14 +75,7 @@ def test_anchor_persists_structured_views(monkeypatch):
     assert result is True
     assert captured["entity"] == "demo"
     assert captured["text"] == "Test entry"
-    assert len(backend_calls) == 1
-    backend_entry = backend_calls[0]
-    assert backend_entry["entity"] == "demo"
-    assert backend_entry["phase"] == "structured-ledger"
-    assert backend_entry["metadata"]["s2_map"] == {
-        "11": {"summary": long_summary},
-        "19": {"summary": long_follow_up},
-    }
+    assert st.session_state.last_structured_entry_id == "default:demo-structured"
     assert st.session_state.latest_structured_ledger == {
         "11": {"summary": long_summary},
         "19": {"summary": long_follow_up},

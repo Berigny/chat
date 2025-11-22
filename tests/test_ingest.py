@@ -1,7 +1,5 @@
 from typing import Any, Iterable, Mapping
 
-import requests
-
 import pytest
 
 from services.prime_service import PrimeService
@@ -10,7 +8,6 @@ from services.prime_service import PrimeService
 class RecordingApiService:
     def __init__(self) -> None:
         self.anchor_calls: list[tuple[str, list[dict[str, Any]], str | None, str]] = []
-        self.body_calls: list[dict[str, Any]] = []
 
     def anchor(
         self,
@@ -25,36 +22,18 @@ class RecordingApiService:
         self.anchor_calls.append((entity, payload, ledger_id, text or ""))
         return {"edges": [], "energy": 1.0, "text": text or ""}
 
-    def write_body_entry(
-        self,
-        entity: str,
-        prime: int,
-        text: str,
-        *,
-        ledger_id: str | None = None,
-        metadata: Mapping[str, Any] | None = None,
-    ) -> Mapping[str, Any]:
-        payload_metadata = {"text": text}
-        if metadata:
-            payload_metadata.update(metadata)
-        self.body_calls.append(
-            {
-                "entity": entity,
-                "prime": prime,
-                "metadata": payload_metadata,
-                "ledger_id": ledger_id,
-                "metadata_arg": metadata,
-            }
-        )
-        return {"entry_id": f"{prime}:1", "state": {"metadata": payload_metadata}}
 
-    def fetch_ledger(
-        self,
-        entity: str,
-        *,
-        ledger_id: str | None = None,
-    ) -> Mapping[str, Any]:
-        return {}
+class RecordingBackendClient:
+    def __init__(self) -> None:
+        self.write_calls: list[dict[str, Any]] = []
+
+    def write_ledger_entry(self, **kwargs) -> Mapping[str, Any]:
+        self.write_calls.append(kwargs)
+        metadata = kwargs.get("metadata") or {}
+        return {
+            "entry_id": f"{kwargs['key_namespace']}:{kwargs['key_identifier']}",
+            "state": {"metadata": metadata},
+        }
 
 
 SCHEMA = {
@@ -71,10 +50,11 @@ SCHEMA = {
 
 
 @pytest.fixture()
-def prime_service() -> tuple[PrimeService, RecordingApiService]:
+def prime_service() -> tuple[PrimeService, RecordingApiService, RecordingBackendClient]:
     api = RecordingApiService()
-    service = PrimeService(api_service=api, fallback_prime=23)
-    return service, api
+    backend = RecordingBackendClient()
+    service = PrimeService(api_service=api, fallback_prime=23, backend_client=backend)
+    return service, api, backend
 
 
 def _ingest(service: PrimeService, text: str) -> Mapping[str, Any]:
@@ -90,138 +70,51 @@ def _ingest(service: PrimeService, text: str) -> Mapping[str, Any]:
     )
 
 
-def test_ingest_mints_body_primes_for_structured_payload(prime_service: tuple[PrimeService, RecordingApiService]) -> None:
-    service, api = prime_service
+def test_ingest_writes_single_ledger_entry(
+    prime_service: tuple[PrimeService, RecordingApiService, RecordingBackendClient]
+) -> None:
+    service, api, backend = prime_service
 
     result = _ingest(service, "Meeting recap with immutable storage")
 
-    assert api.anchor_calls, "Expected anchor call"
-    assert api.body_calls, "Expected minted body primes"
-    first_call = api.body_calls[0]
-    minted_prime = first_call["prime"]
-    assert minted_prime >= service.body_prime_floor
-    assert isinstance(first_call["metadata_arg"], Mapping)
-    metadata = first_call["metadata"]
-    assert isinstance(metadata, dict)
-    assert metadata.get("kind") == "memory"
-
-    structured = result["structured"]
-    bodies = structured["bodies"]
-    assert bodies and bodies[0]["prime"] == minted_prime
-
-    anchor_payload = result.get("anchor")
-    assert isinstance(anchor_payload, Mapping)
-    assert anchor_payload.get("energy") == 1.0
-
-    for slot in structured["s1"]:
-        assert slot["body_prime"] == minted_prime
-    for slot in structured["s2"]:
-        assert slot["body_prime"] == minted_prime
+    assert not api.anchor_calls, "Anchor should be skipped for ingest"  # /anchor is deprecated here
+    assert len(backend.write_calls) == 1
+    call = backend.write_calls[0]
+    assert call["phase"] == "ingest"
+    assert call["entity"] == "demo"
+    assert isinstance(call.get("metadata", {}), Mapping)
+    structured = call["metadata"].get("structured")
+    assert structured and structured.get("s2")
+    ledger_entry = result.get("ledger_entry")
+    assert isinstance(ledger_entry, Mapping)
+    assert ledger_entry.get("entry_id") == f"{call['key_namespace']}:{call['key_identifier']}"
 
 
-def test_ingest_preserves_s1_s2_reference_integrity(prime_service: tuple[PrimeService, RecordingApiService]) -> None:
-    service, api = prime_service
+def test_ingest_persists_factors_in_metadata(
+    prime_service: tuple[PrimeService, RecordingApiService, RecordingBackendClient]
+) -> None:
+    service, api, backend = prime_service
 
-    _ingest(service, "First body copy")
-    structured = _ingest(service, "Second body copy")["structured"]
+    _ingest(service, "Second body copy")
 
-    minted_prime = structured["bodies"][0]["prime"]
-    assert minted_prime == api.body_calls[-1]["prime"]
-
-    s1_body_primes = {slot["body_prime"] for slot in structured["s1"]}
-    s2_body_primes = {slot["body_prime"] for slot in structured["s2"]}
-    assert s1_body_primes == {minted_prime}
-    assert s2_body_primes == {minted_prime}
+    assert backend.write_calls, "Expected a ledger write"
+    metadata = backend.write_calls[-1]["metadata"]
+    factor_primes = {item.get("prime") for item in metadata.get("factors", []) if isinstance(item, Mapping)}
+    assert {2, 11, 37}.issubset(factor_primes)
 
 
-def test_ingest_does_not_overwrite_existing_body_primes(prime_service: tuple[PrimeService, RecordingApiService]) -> None:
-    service, api = prime_service
+def test_ingest_blocks_flow_violations_without_writes(
+    prime_service: tuple[PrimeService, RecordingApiService, RecordingBackendClient]
+) -> None:
+    service, api, backend = prime_service
 
-    _ingest(service, "Legacy transcript one")
-    _ingest(service, "Legacy transcript two")
-    _ingest(service, "Legacy transcript three")
+    result = service.ingest(
+        "demo",
+        "hello",
+        SCHEMA,
+        factors_override=[{"prime": 2, "delta": 1}, {"prime": 11, "delta": 1}],
+    )
 
-    minted_primes = [call["prime"] for call in api.body_calls]
-    assert len(minted_primes) == len(set(minted_primes)), "Body primes should not be reused"
-    assert minted_primes == sorted(minted_primes), "Body primes should grow monotonically"
-
-
-class SeededApiService(RecordingApiService):
-    def __init__(self) -> None:
-        super().__init__()
-        self.fetch_payload: dict[str, Any] = {
-            "bodies": [{"prime": 23}, {"prime": 29}],
-            "slots": [{"body_prime": 31}],
-        }
-        self.fetch_calls = 0
-
-    def fetch_ledger(
-        self,
-        entity: str,
-        *,
-        ledger_id: str | None = None,
-    ) -> Mapping[str, Any]:
-        self.fetch_calls += 1
-        return self.fetch_payload
-
-
-def test_ingest_skips_primes_already_in_ledger() -> None:
-    api = SeededApiService()
-    service = PrimeService(api_service=api, fallback_prime=23)
-
-    result = _ingest(service, "Prime collision guard")
-
-    minted = [body["prime"] for body in result["structured"]["bodies"]]
-    assert minted == [37]
-    assert api.fetch_calls == 1
-    assert api.body_calls[0]["prime"] == 37
-
-
-class ConflictingApiService(SeededApiService):
-    def __init__(self) -> None:
-        super().__init__()
-        self.conflict_triggered = False
-
-    def write_body_entry(
-        self,
-        entity: str,
-        prime: int,
-        text: str,
-        *,
-        ledger_id: str | None = None,
-        metadata: Mapping[str, Any] | None = None,
-    ) -> Mapping[str, Any]:
-        payload_metadata = {"text": text}
-        if metadata:
-            payload_metadata.update(metadata)
-        self.body_calls.append(
-            {
-                "entity": entity,
-                "prime": prime,
-                "metadata": payload_metadata,
-                "ledger_id": ledger_id,
-                "metadata_arg": metadata,
-            }
-        )
-        if not self.conflict_triggered:
-            self.conflict_triggered = True
-            self.fetch_payload.setdefault("bodies", []).append({"prime": prime})
-            response = type(
-                "DummyResponse",
-                (),
-                {"status_code": 422, "text": "duplicate body prime"},
-            )()
-            raise requests.HTTPError("duplicate body prime", response=response)
-        return {"entry_id": f"{prime}:1", "state": {"metadata": payload_metadata}}
-
-
-def test_ingest_retries_when_body_prime_conflicts() -> None:
-    api = ConflictingApiService()
-    service = PrimeService(api_service=api, fallback_prime=23)
-
-    result = _ingest(service, "Handle remote conflict")
-
-    minted = [body["prime"] for body in result["structured"]["bodies"]]
-    assert minted == [41]
-    assert len(api.body_calls) == 2
-    assert api.fetch_calls >= 2
+    assert result["flow_errors"]
+    assert backend.write_calls == []
+    assert not api.anchor_calls
