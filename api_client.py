@@ -13,6 +13,34 @@ import requests
 from models import CoherenceResponse, LedgerEntry, PolicyDecisionResponse
 
 
+def build_action_request(
+    actor: str,
+    action: str,
+    key_namespace: str | None,
+    key_identifier: str | None,
+    parameters: Mapping[str, float] | None = None,
+) -> dict[str, Any]:
+    request_payload: dict[str, Any] = {
+        "actor": actor,
+        "action": action,
+        "key": (
+            {"namespace": key_namespace, "identifier": key_identifier}
+            if key_namespace and key_identifier
+            else None
+        ),
+        "parameters": {},
+    }
+    if parameters:
+        sanitized: dict[str, float] = {}
+        for key, value in parameters.items():
+            try:
+                sanitized[str(key)] = float(value)
+            except (TypeError, ValueError):
+                continue
+        request_payload["parameters"] = sanitized
+    return request_payload
+
+
 logger = logging.getLogger(__name__)
 
 
@@ -803,4 +831,4 @@ def _extract_error_message(response: requests.Response) -> str:
     return str(payload)
 
 
-__all__ = ["DualSubstrateClient", "DualSubstrateV2Client"]
+__all__ = ["DualSubstrateClient", "DualSubstrateV2Client", "build_action_request"]

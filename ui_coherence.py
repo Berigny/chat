@@ -8,7 +8,7 @@ from typing import Any, Mapping
 import requests
 import streamlit as st
 
-from api_client import DualSubstrateV2Client
+from api_client import DualSubstrateV2Client, build_action_request
 from ui_components import render_json_viewer
 from utils_streamlit import parse_json_input, show_api_error
 
@@ -17,17 +17,6 @@ DEFAULT_API = os.getenv("DUALSUBSTRATE_API", "https://dualsubstrate-commercial.f
 
 def _client(api_url: str, api_key: str | None) -> DualSubstrateV2Client:
     return DualSubstrateV2Client(api_url, api_key=api_key)
-
-
-def _coherence_payload(entity: str, text: str, deltas: Any, metadata: Any) -> Mapping[str, Any]:
-    payload: dict[str, Any] = {"entity": entity}
-    if text:
-        payload["text"] = text
-    if deltas is not None:
-        payload["deltas"] = deltas
-    if metadata is not None:
-        payload["metadata"] = metadata
-    return payload
 
 
 def render() -> None:
@@ -47,31 +36,17 @@ def render() -> None:
         "Text", value="", placeholder="Optional text to assess", key="coherence_text"
     )
 
-    deltas_raw = st.text_area(
-        "Prime deltas JSON",
-        value='[{"prime": 2, "delta": 1}]',
-        height=140,
-        help="Provide a JSON array of prime deltas.",
-    )
-    metadata_raw = st.text_area(
-        "Metadata JSON",
-        value="{}",
-        height=100,
-        help="Optional metadata forwarded to the API.",
-    )
-
-    deltas, deltas_error = parse_json_input(deltas_raw)
-    metadata, metadata_error = parse_json_input(metadata_raw)
-    if deltas_error:
-        st.warning(deltas_error)
-    if metadata_error:
-        st.warning(metadata_error)
-
     if st.button("Evaluate Coherence", type="primary"):
         client = _client(api_url, api_key or None)
-        payload = _coherence_payload(entity, text, deltas, metadata)
+        action_request = build_action_request(
+            actor=entity or "demo_user",
+            action="coherence_probe",
+            key_namespace="default",
+            key_identifier=f"{(entity or 'demo_user').lower()}-probe",
+            parameters={"text_length": float(len(text or ""))},
+        )
         try:
-            response = client.evaluate_coherence(payload)
+            response = client.evaluate_coherence(action_request)
         except requests.RequestException as exc:
             show_api_error(exc)
             return

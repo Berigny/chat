@@ -8,7 +8,7 @@ from typing import Any, Mapping
 import requests
 import streamlit as st
 
-from api_client import DualSubstrateV2Client
+from api_client import DualSubstrateV2Client, build_action_request
 from ui_components import render_json_viewer
 from utils_streamlit import parse_json_input, show_api_error
 
@@ -17,22 +17,6 @@ DEFAULT_API = os.getenv("DUALSUBSTRATE_API", "https://dualsubstrate-commercial.f
 
 def _client(api_url: str, api_key: str | None) -> DualSubstrateV2Client:
     return DualSubstrateV2Client(api_url, api_key=api_key)
-
-
-def _ethics_payload(
-    entity: str,
-    ledger_snapshot: Any,
-    deltas: Any,
-    minted_bodies: Any,
-) -> Mapping[str, Any]:
-    payload: dict[str, Any] = {"entity": entity}
-    if ledger_snapshot is not None:
-        payload["ledger_snapshot"] = ledger_snapshot
-    if deltas is not None:
-        payload["deltas"] = deltas
-    if minted_bodies is not None:
-        payload["minted_bodies"] = minted_bodies
-    return payload
 
 
 def render() -> None:
@@ -76,9 +60,15 @@ def render() -> None:
 
     if st.button("Evaluate Ethics", type="primary"):
         client = _client(api_url, api_key or None)
-        payload = _ethics_payload(entity, ledger_snapshot, deltas, minted_bodies)
+        action_request = build_action_request(
+            actor=entity or "demo_user",
+            action="ethics_probe",
+            key_namespace="default",
+            key_identifier=f"{(entity or 'demo_user').lower()}-probe",
+            parameters={"snapshot": float(bool(ledger_snapshot))},
+        )
         try:
-            response = client.evaluate_ethics(payload)
+            response = client.evaluate_ethics(action_request)
         except requests.RequestException as exc:
             show_api_error(exc)
             return
