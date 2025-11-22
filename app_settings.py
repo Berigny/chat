@@ -86,7 +86,7 @@ def load_settings() -> AppSettings:
 
     api_base = os.getenv("DUALSUBSTRATE_API", "https://dualsubstrate-commercial.fly.dev")
     api_key = _safe_secret("DUALSUBSTRATE_API_KEY") or os.getenv("DUALSUBSTRATE_API_KEY")
-    default_entity = os.getenv("DEFAULT_ENTITY", "demo_user")
+    default_entity = os.getenv("DEFAULT_ENTITY", "Demo_dev")
     default_ledger_id = os.getenv("DEFAULT_LEDGER_ID", "default")
     metric_source = (
         _safe_secret("METRIC_FLOORS")

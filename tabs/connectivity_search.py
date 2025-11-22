@@ -131,14 +131,40 @@ def render_tab(
                 payload = resp.json()
             except Exception:
                 payload = resp.text
-            if isinstance(payload, (dict, list)):
-                st.json(payload)
+
+            detail: str | None = None
+            if isinstance(payload, dict):
+                raw_detail = payload.get("detail") or payload.get("message")
+                if isinstance(raw_detail, list):
+                    detail_items = []
+                    for item in raw_detail:
+                        if isinstance(item, dict) and item.get("msg"):
+                            detail_items.append(str(item.get("msg")))
+                        elif isinstance(item, str):
+                            detail_items.append(item)
+                    detail = "; ".join(detail_items)
+                elif isinstance(raw_detail, str):
+                    detail = raw_detail
+
+            if resp.status_code == 422:
+                st.warning(
+                    detail
+                    or "Reindex expects a valid entity. Use Demo_dev and anchor at least one memory first."
+                )
+            elif resp.ok:
+                st.toast(
+                    "Reindex triggered – only needed once after the first anchor.",
+                    icon="🔍",
+                )
+                if isinstance(payload, (dict, list)):
+                    st.json(payload)
+                else:
+                    st.code(str(payload) or "<empty response>", language="json")
             else:
-                st.code(str(payload) or "<empty response>", language="json")
-            st.toast(
-                "Reindex triggered – only needed once after the first anchor.",
-                icon="🔍",
-            )
+                st.error(
+                    detail
+                    or f"Index build failed with HTTP {resp.status_code}. Please retry after anchoring."
+                )
 
     entity = get_entity() or default_entity
     ledger_id = st.session_state.get("ledger_id")
@@ -222,12 +248,36 @@ def render_tab(
             return
 
         status = response.status_code
-        if status in {422, 500}:
+        if status == 422:
+            try:
+                detail_payload = response.json()
+            except Exception:
+                detail_payload = None
+            message = None
+            if isinstance(detail_payload, dict):
+                raw_detail = detail_payload.get("detail") or detail_payload.get("message")
+                if isinstance(raw_detail, list):
+                    detail_parts = []
+                    for item in raw_detail:
+                        if isinstance(item, dict) and item.get("msg"):
+                            detail_parts.append(str(item.get("msg")))
+                        elif isinstance(item, str):
+                            detail_parts.append(item)
+                    message = "; ".join(detail_parts)
+                elif isinstance(raw_detail, str):
+                    message = raw_detail
+            st.warning(
+                message
+                or "Search needs both an entity (e.g., Demo_dev) and a query before it can run."
+            )
+            st.caption("HTTP 422 returned from /search.")
+            return
+        if status == 500:
             st.error(
                 "Search unavailable (build index first). Run ‘Build search index’ "
                 "via `/admin/reindex`, then retry."
             )
-            st.caption(f"HTTP {status} returned from /search.")
+            st.caption("HTTP 500 returned from /search.")
             return
 
         try:

@@ -42,7 +42,7 @@ def render() -> None:
     )
 
     col_entity, col_text = st.columns(2)
-    entity = col_entity.text_input("Entity", value="demo_user", key="coherence_entity")
+    entity = col_entity.text_input("Entity", value="Demo_dev", key="coherence_entity")
     text = col_text.text_input(
         "Text", value="", placeholder="Optional text to assess", key="coherence_text"
     )
