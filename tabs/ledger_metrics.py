@@ -7,6 +7,7 @@ from typing import Any, Callable, Mapping
 import streamlit as st
 
 from services.api import requests
+from tabs.ledger_debug import render_ledger_debug_panel
 from tabs.metrics_editor import render_entity_metrics_panel
 
 
@@ -216,3 +217,10 @@ def render_tab(
                 refresh_capabilities_block()
     if st.session_state.get("latest_enrichment_report"):
         render_enrichment_panel(st.session_state.latest_enrichment_report)
+
+    st.markdown("---")
+    render_ledger_debug_panel(
+        api_service=api_service,
+        ledger_management_enabled=ledger_management_enabled,
+        refresh_ledgers=refresh_ledgers,
+    )

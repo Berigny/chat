@@ -101,6 +101,24 @@ class ApiService:
     def create_ledger(self, ledger_id: str) -> Dict[str, Any]:
         return self._client.create_ledger(ledger_id)
 
+    def get_ledger_metrics(self, entity: str, *, ledger_id: Optional[str] = None) -> Dict[str, Any]:
+        """Fetch raw ledger metrics for an entity/ledger pair."""
+
+        params: Dict[str, Any] = {"entity": entity}
+        if ledger_id:
+            params["ledger_id"] = ledger_id
+
+        response = requests.get(
+            f"{self._client.base_url}/ledger",
+            params=params,
+            headers=self._client._headers(ledger_id=ledger_id),
+            timeout=self._client.timeout,
+        )
+        response.raise_for_status()
+
+        payload = response.json()
+        return payload if isinstance(payload, Mapping) else {}
+
     # Schema ------------------------------------------------------------
     def fetch_prime_schema(self, entity: str, *, ledger_id: Optional[str] = None) -> Dict[int, Dict[str, Any]]:
         return self._client.fetch_prime_schema(entity, ledger_id=ledger_id)
@@ -452,6 +470,39 @@ class ApiService:
             semantic_weight=semantic_weight,
             delta=delta,
         )
+
+    def debug_search(
+        self,
+        entity: str,
+        query: str,
+        *,
+        ledger_id: Optional[str] = None,
+        limit: int = 10,
+        fuzzy: bool = True,
+        semantic_weight: float = 0.45,
+        delta: int = 2,
+    ) -> Dict[str, Any]:
+        """Call the ``/search`` endpoint with debug-friendly defaults."""
+
+        params: Dict[str, Any] = {
+            "entity": entity,
+            "q": query,
+            "limit": limit,
+            "fuzzy": fuzzy,
+            "semantic_weight": semantic_weight,
+            "delta": delta,
+        }
+
+        response = requests.get(
+            f"{self._client.base_url}/search",
+            params=params,
+            headers=self._client._headers(ledger_id=ledger_id),
+            timeout=self._client.timeout,
+        )
+        response.raise_for_status()
+
+        payload = response.json()
+        return payload if isinstance(payload, Mapping) else {}
 
     def search_slots(
         self,
