@@ -28,8 +28,18 @@ def render_tab(
     render_traversal_callback: RenderCallback,
     render_inference_callback: RenderCallback,
     inference_snapshot: Mapping[str, Any] | None,
+    advanced_probes_enabled: bool,
 ) -> None:
     """Render traversal, inference, and telemetry panels."""
+
+    if not advanced_probes_enabled:
+        st.button(
+            "Advanced probes disabled",
+            disabled=True,
+            help="Not enabled on this deployment",
+        )
+        st.caption("Traversal, inference, and telemetry panels are unavailable here.")
+        return
 
     if traversal_supported:
         _render_section("Traversal snapshot", render_traversal_callback, entity)
