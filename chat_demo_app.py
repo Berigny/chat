@@ -374,6 +374,14 @@ def _action_request_payload(
     return payload
 
 
+def _governance_response_summary(response, *, label: str) -> dict[str, Any]:
+    summary = _summarize_http_response(response)
+    status = summary.get("status") if isinstance(summary, Mapping) else None
+    if isinstance(status, int) and status >= 400:
+        summary["detail"] = f"{label} engine unavailable (HTTP {status})."
+    return summary
+
+
 def _summarize_http_response(response):
     summary: dict[str, Any] = {}
     if response is None:
@@ -599,7 +607,8 @@ def _apply_backdoor_promotion(
     else:
         ledger_summary = _summarize_http_response(ledger_resp)
 
-    action_payload = _action_request_payload("auto-promote", entity, ledger_id)
+    action_payload = _action_request_payload("chat_completion", entity, ledger_id)
+    governance_request = {"action_request": action_payload}
     results: dict[str, Any] = {
         "ledger_write": ledger_summary,
         "action": action_payload,
@@ -609,13 +618,16 @@ def _apply_backdoor_promotion(
             evaluation = requests.post(
                 f"{base_url}/{endpoint}/evaluate",
                 headers=headers,
-                json=action_payload,
+                json=governance_request,
                 timeout=15,
             )
         except requests.RequestException as exc:
             results[endpoint] = {"error": str(exc)}
         else:
-            results[endpoint] = _summarize_http_response(evaluation)
+            label = endpoint.capitalize()
+            results[endpoint] = _governance_response_summary(
+                evaluation, label=label
+            )
     return results
 
 
