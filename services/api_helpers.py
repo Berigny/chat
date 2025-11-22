@@ -124,7 +124,6 @@ def search_probe(
         entity,
         question,
         ledger_id=ledger_id,
-        mode=mode,
         limit=limit,
     )
 
