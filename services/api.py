@@ -431,7 +431,7 @@ class ApiService:
         semantic_weight: float = 0.45,
         delta: int = 2,
     ) -> tuple[Dict[str, Any], "requests.Response"]:
-        """Call ``/memories`` and return both parsed JSON and raw HTTP response."""
+        """Call ``/search`` and return both parsed JSON and raw HTTP response."""
 
         return self._client.search_with_response(
             entity,

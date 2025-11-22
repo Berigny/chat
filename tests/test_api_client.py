@@ -35,7 +35,7 @@ def test_search_forwards_query_and_headers(monkeypatch):
         delta=2,
     )
 
-    assert captured["url"].endswith("/memories")
+    assert captured["url"].endswith("/search")
     assert captured["params"] == {
         "entity": "demo",
         "q": "meeting recap",

@@ -143,7 +143,7 @@ def render_tab(
 
     st.divider()
     st.write("### Search diagnostics")
-    st.caption("Probe the token-prime `/memories` endpoint without leaving the debug tab.")
+    st.caption("Probe the token-prime `/search` endpoint without leaving the debug tab.")
     promotion_record = get_auto_promotion_record(entity, ledger_id)
     if promotion_record is None:
         st.caption("Auto-promotion now calls `/coherence/evaluate` and `/ethics/evaluate` on load.")
@@ -199,7 +199,7 @@ def render_tab(
         "Fuzzy",
         value=True,
         key="search_probe_fuzzy",
-        help="Toggle fuzzy matching for the `/memories` query.",
+        help="Toggle fuzzy matching for the `/search` query.",
     )
     semantic_weight = st.slider(
         "Semantic weight",
@@ -217,7 +217,7 @@ def render_tab(
         value=2,
         step=1,
         key="search_probe_delta",
-        help="Temporal delta horizon for the `/memories` query.",
+        help="Temporal delta horizon for the `/search` query.",
     )
 
     def _run_search_probe(query: str) -> None:
@@ -237,7 +237,7 @@ def render_tab(
             params["entity"] = entity
         try:
             response = requests.get(
-                f"{host_url}/memories",
+                f"{host_url}/search",
                 params=params,
                 headers=headers,
                 timeout=15,
@@ -279,12 +279,12 @@ def render_tab(
             else:
                 st.json(payload or {})
 
-    if st.button("Probe /memories endpoint", key="probe_search_endpoint"):
+    if st.button("Probe /search endpoint", key="probe_search_endpoint"):
         _run_search_probe(probe_query)
 
     last_response_meta = st.session_state.get("search_probe_last_response")
     if isinstance(last_response_meta, Mapping):
-        with st.expander("Last /memories HTTP details", expanded=False):
+        with st.expander("Last /search HTTP details", expanded=False):
             status = last_response_meta.get("status")
             reason = last_response_meta.get("reason")
             elapsed = last_response_meta.get("elapsed")
