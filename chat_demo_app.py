@@ -1886,18 +1886,15 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
         if isinstance(ingest_result, dict)
         else None
     )
-    anchor_payload = (
-        ingest_result.get("anchor") if isinstance(ingest_result, dict) else None
+    ledger_entry = (
+        ingest_result.get("ledger_entry") if isinstance(ingest_result, dict) else None
     )
-    st.session_state.last_anchor_payload = anchor_payload
+    st.session_state.last_anchor_payload = ledger_entry
     if flow_errors:
         message = "; ".join(flow_errors)
         st.session_state.last_anchor_error = message
         st.error(f"Anchor blocked: {message}")
         return False
-    ledger_entry = (
-        ingest_result.get("ledger_entry") if isinstance(ingest_result, dict) else {}
-    )
     structured = ingest_result.get("structured") if isinstance(ingest_result, dict) else {}
     metadata_structured = structured
     entry_id = None

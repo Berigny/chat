@@ -102,9 +102,8 @@ def anchor_message(
         session_state.chat_history.append({"role": "user", "content": text})
     session_state.last_anchor_status = "ok"
     flow_errors = ingest_result.get("flow_errors") if isinstance(ingest_result, Mapping) else None
-    session_state.last_anchor_payload = (
-        ingest_result.get("anchor") if isinstance(ingest_result, Mapping) else None
-    )
+    ledger_entry = ingest_result.get("ledger_entry") if isinstance(ingest_result, Mapping) else None
+    session_state.last_anchor_payload = ledger_entry
     if flow_errors:
         st.error("Anchor blocked: " + "; ".join(flow_errors))
         session_state.last_anchor_status = "error"
@@ -113,7 +112,6 @@ def anchor_message(
         return False
 
     structured = ingest_result.get("structured") if isinstance(ingest_result, Mapping) else None
-    ledger_entry = ingest_result.get("ledger_entry") if isinstance(ingest_result, Mapping) else None
     structured_payload = structured if isinstance(structured, Mapping) else {}
     if isinstance(ledger_entry, Mapping):
         entry_metadata = ledger_entry.get("state", {}).get("metadata", {})
