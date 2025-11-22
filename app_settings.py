@@ -30,6 +30,7 @@ class AppSettings:
     openai_api_key: str | None
     rocksdb_data_path: str
     enable_advanced_probes: bool
+    enable_ledger_management: bool
 
 
 def _safe_secret(key: str) -> Any:
@@ -101,6 +102,10 @@ def load_settings() -> AppSettings:
         _safe_secret("ENABLE_ADVANCED_PROBES") or os.getenv("ENABLE_ADVANCED_PROBES"),
         default=False,
     )
+    enable_ledger_management = _coerce_bool(
+        _safe_secret("ENABLE_LEDGER_MANAGEMENT") or os.getenv("ENABLE_LEDGER_MANAGEMENT"),
+        default=False,
+    )
     return AppSettings(
         api_base=api_base.rstrip("/"),
         api_key=api_key or "demo-key",
@@ -111,6 +116,7 @@ def load_settings() -> AppSettings:
         openai_api_key=openai_api_key,
         rocksdb_data_path=rocksdb_data_path,
         enable_advanced_probes=enable_advanced_probes,
+        enable_ledger_management=enable_ledger_management,
     )
 
 

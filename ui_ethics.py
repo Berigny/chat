@@ -8,11 +8,13 @@ from typing import Any, Mapping
 import requests
 import streamlit as st
 
+from app_settings import load_settings
 from api_client import DualSubstrateV2Client, build_action_request
 from ui_components import render_json_viewer
 from utils_streamlit import parse_json_input, show_api_error
 
 DEFAULT_API = os.getenv("DUALSUBSTRATE_API", "https://dualsubstrate-commercial.fly.dev")
+DEFAULT_ENTITY = load_settings().default_entity
 
 
 def _client(api_url: str, api_key: str | None) -> DualSubstrateV2Client:
@@ -29,7 +31,7 @@ def render() -> None:
     api_key = st.text_input(
         "API Key", value=os.getenv("DUALSUBSTRATE_API_KEY", ""), type="password", key="ethics_api_key"
     )
-    entity = st.text_input("Entity", value="Demo_dev", key="ethics_entity")
+    entity = st.text_input("Entity", value=DEFAULT_ENTITY, key="ethics_entity")
 
     ledger_raw = st.text_area(
         "Ledger snapshot JSON",

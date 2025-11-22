@@ -25,8 +25,14 @@ def _render_ledger_selector(
     refresh_ledgers: RefreshLedgers,
     create_or_switch_ledger: LedgerSwitcher,
     validate_ledger_name: ValidateLedger,
+    ledger_management_enabled: bool,
 ) -> None:
     st.subheader("Ledger routing")
+    if not ledger_management_enabled:
+        active_ledger = st.session_state.get("ledger_id") or "default"
+        st.caption(f"Active ledger: {active_ledger}")
+        st.info("Multiple ledgers are not available on this deployment.")
+        return
     if st.button("Refresh ledgers", key="refresh_ledgers_btn"):
         refresh_ledgers(silent=False)
     raw_ledgers = st.session_state.get("ledgers", [])
@@ -90,6 +96,7 @@ def render_tab(
     refresh_capabilities_block: SimpleCallback,
     render_enrichment_panel: RenderEnrichmentPanel,
     advanced_probes_enabled: bool,
+    ledger_management_enabled: bool,
 ) -> None:
     """Render ledger controls, metrics, and lattice tools."""
 
@@ -100,6 +107,7 @@ def render_tab(
         refresh_ledgers=refresh_ledgers,
         create_or_switch_ledger=create_or_switch_ledger,
         validate_ledger_name=validate_ledger_name,
+        ledger_management_enabled=ledger_management_enabled,
     )
 
     col_left, col_right = st.columns(2)
@@ -145,7 +153,9 @@ def render_tab(
     )
 
     st.markdown("### Möbius lattice rotation")
-    if st.button(
+    if not advanced_probes_enabled:
+        st.caption("Möbius rotation is not available on this deployment.")
+    elif st.button(
         "♾️ Möbius Transform",
         help="Reproject the exponent lattice" if advanced_probes_enabled else "Not enabled on this deployment",
         disabled=probes_disabled,
@@ -177,10 +187,11 @@ def render_tab(
                     st.caption("Updated ledger snapshot after Möbius transform:")
                     render_ledger_state(st.session_state.ledger_state)
                 trigger_rerun()
-            except requests.RequestException as exc:  # type: ignore[name-defined]
-                st.error(f"Möbius rotation failed: {exc}")
-    if probes_disabled:
-        st.caption("Advanced probes are disabled for this deployment.")
+            except requests.HTTPError as exc:  # type: ignore[name-defined]
+                st.warning("Rotation endpoint unavailable on this deployment.")
+                st.caption(str(exc))
+            except requests.RequestException:  # type: ignore[name-defined]
+                st.error("Möbius rotation failed; please retry once the backend is available.")
 
     st.markdown("### Enrichment")
     if st.button("Initiate Enrichment", help="Replay stored transcripts with richer prime coverage"):

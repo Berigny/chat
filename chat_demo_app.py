@@ -79,6 +79,7 @@ DEFAULT_ENTITY = SETTINGS.default_entity
 DEFAULT_LEDGER_ID = SETTINGS.default_ledger_id
 ADD_LEDGER_OPTION = "➕ Add new ledger…"
 ENABLE_ADVANCED_PROBES = SETTINGS.enable_advanced_probes
+ENABLE_LEDGER_MANAGEMENT = SETTINGS.enable_ledger_management
 ENABLE_LOCAL_ROCKSDB_PROBE = False
 
 GENAI_KEY = SETTINGS.genai_api_key
@@ -258,6 +259,11 @@ def _reset_discrete_state() -> bool:
 
 
 def _refresh_ledgers(*, silent: bool = False) -> None:
+    if not ENABLE_LEDGER_MANAGEMENT:
+        st.session_state.ledgers = []
+        st.session_state.ledger_refresh_error = "Ledger management disabled"
+        st.session_state.setdefault("ledger_id", DEFAULT_LEDGER_ID)
+        return
     try:
         st.session_state.ledgers = API_SERVICE.list_ledgers()
         st.session_state.ledger_refresh_error = None
@@ -265,7 +271,7 @@ def _refresh_ledgers(*, silent: bool = False) -> None:
         st.session_state.ledgers = []
         st.session_state.ledger_refresh_error = str(exc)
         if not silent:
-            st.error(f"Failed to load ledger list: {exc}")
+            st.error("Ledger list unavailable; backend not exposing ledger management.")
         return
     if not st.session_state.ledgers:
         st.session_state.ledger_id = DEFAULT_LEDGER_ID
@@ -275,6 +281,10 @@ def _refresh_ledgers(*, silent: bool = False) -> None:
 
 
 def _create_or_switch_ledger(ledger_id: str, *, notify: bool = True) -> bool:
+    if not ENABLE_LEDGER_MANAGEMENT:
+        if notify:
+            st.info("Multiple ledgers are disabled on this deployment.")
+        return False
     ledger_id = (ledger_id or "").strip()
     if not ledger_id:
         if notify:
@@ -284,7 +294,7 @@ def _create_or_switch_ledger(ledger_id: str, *, notify: bool = True) -> bool:
         API_SERVICE.create_ledger(ledger_id)
     except requests.RequestException as exc:
         if notify:
-            st.error(f"Could not create/switch ledger: {exc}")
+            st.error("Could not create or switch ledger; ledger endpoint unavailable.")
         return False
 
     st.session_state.ledger_id = ledger_id
@@ -313,10 +323,10 @@ def _ensure_ledger_bootstrap() -> None:
     if "latest_enrichment_report" not in st.session_state:
         st.session_state.latest_enrichment_report = None
 
-    if not st.session_state.get("ledgers"):
+    if ENABLE_LEDGER_MANAGEMENT and not st.session_state.get("ledgers"):
         _refresh_ledgers(silent=True)
     active = st.session_state.get("ledger_id") or DEFAULT_LEDGER_ID
-    if active:
+    if active and ENABLE_LEDGER_MANAGEMENT:
         _create_or_switch_ledger(active, notify=False)
 
 
@@ -685,7 +695,10 @@ PRIME_SYMBOLS = {prime: data["name"] for prime, data in PRIME_SCHEMA.items()}
 FALLBACK_PRIME = PRIME_ARRAY[0]
 
 PRIME_SERVICE = PrimeService(
-    API_SERVICE, FALLBACK_PRIME, backend_client=BACKEND_CLIENT
+    API_SERVICE,
+    FALLBACK_PRIME,
+    backend_client=BACKEND_CLIENT,
+    default_entity=DEFAULT_ENTITY,
 )
 MEMORY_SERVICE = MemoryService(API_SERVICE, PRIME_WEIGHTS)
 ENRICHMENT_HELPER = EnrichmentHelper(API_SERVICE, PRIME_SERVICE)
@@ -1821,7 +1834,8 @@ def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors
         st.session_state.last_anchor_error = str(exc)
         st.session_state.last_anchor_payload = None
         _refresh_capabilities_block()
-        st.error(f"Anchor failed: {exc}")
+        st.error("Anchor failed; backend could not store the memory.")
+        st.caption(str(exc))
         return False
 
     st.session_state.last_anchor_error = None
@@ -2441,6 +2455,7 @@ def _render_app():
             refresh_capabilities_block=_refresh_capabilities_block,
             render_enrichment_panel=_render_enrichment_panel,
             advanced_probes_enabled=ENABLE_ADVANCED_PROBES,
+            ledger_management_enabled=ENABLE_LEDGER_MANAGEMENT,
         )
 
     with tabs[4]:

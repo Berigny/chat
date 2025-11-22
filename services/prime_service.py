@@ -149,6 +149,7 @@ class PrimeService:
     backend_client: BackendAPIClient | None = None
     body_prime_floor: int = BODY_PRIME_FLOOR
     body_allocator: BodyPrimeAllocator | None = None
+    default_entity: str = "Demo_dev"
 
     def __post_init__(self) -> None:
         if self.backend_client is None:
@@ -161,6 +162,7 @@ class PrimeService:
         else:
             self.body_allocator.api_service = self.api_service
             self.body_allocator.floor = self.body_prime_floor
+        self.default_entity = (self.default_entity or "Demo_dev").strip() or "Demo_dev"
 
     def build_factors(
         self,
@@ -245,6 +247,9 @@ class PrimeService:
     ) -> Payload:
         """Persist text via /ingest with structured metadata and bodies."""
 
+        normalized_entity = (entity or self.default_entity or "entity").strip() or (
+            self.default_entity or "entity"
+        )
         normalized_text = (text or "").strip()
         factors = self.build_factors(
             normalized_text,
@@ -273,7 +278,7 @@ class PrimeService:
         }
 
         key_namespace = _normalize_namespace(ledger_id)
-        key_identifier = _entity_identifier(entity, suffix="structured")
+        key_identifier = _entity_identifier(normalized_entity, suffix="structured")
         coordinates = {
             "prime_2": float(len(structured.get("slots", []) or [])),
             "prime_11": float(len(structured.get("s1", []) or [])),
@@ -288,9 +293,9 @@ class PrimeService:
                 key_identifier=key_identifier,
                 text=normalized_text,
                 phase="ingest",
-                entity=entity,
+                entity=normalized_entity,
                 metadata={
-                    "entity": entity,
+                    "entity": normalized_entity,
                     "text": normalized_text,
                     "ledger_id": ledger_id,
                     "factors": factors,
