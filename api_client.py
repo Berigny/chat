@@ -562,14 +562,24 @@ class DualSubstrateClient:
         *,
         ledger_id: str | None = None,
     ) -> dict[str, Any]:
-        """Update ℝ metrics; server enforces bounds."""
+        """Persist ℝ metrics using a LedgerEntrySchema write."""
 
-        params = {"entity": entity}
-        body = dict(payload or {})
-        resp = requests.patch(
-            f"{self.base_url}/ledger/metrics",
-            params=params,
-            json=body,
+        metadata: dict[str, Any] = {"entity": entity, "r_metrics": dict(payload or {})}
+        write_payload: dict[str, Any] = {
+            "key": {
+                "namespace": ledger_id or "default",
+                "identifier": entity,
+            },
+            "state": {
+                "coordinates": {"r_metrics": 1.0},
+                "phase": "metrics",
+                "metadata": metadata,
+            },
+        }
+
+        resp = requests.post(
+            f"{self.base_url}/ledger/write",
+            json=write_payload,
             headers=self._headers(ledger_id=ledger_id),
             timeout=5,
         )
