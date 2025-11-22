@@ -29,6 +29,7 @@ def render_tab(
     render_inference_callback: RenderCallback,
     inference_snapshot: Mapping[str, Any] | None,
     advanced_probes_enabled: bool,
+    enable_rocksdb_probe: bool,
 ) -> None:
     """Render traversal, inference, and telemetry panels."""
 
@@ -88,8 +89,7 @@ def render_tab(
     elif telemetry_errors:
         st.warning("Inference telemetry unavailable: " + "; ".join(telemetry_errors))
 
-    from chat_demo_app import ENABLE_LOCAL_ROCKSDB_PROBE  # lazy import to avoid circulars
-    if ENABLE_LOCAL_ROCKSDB_PROBE:
+    if enable_rocksdb_probe:
         _render_rocksdb_probe(entity)
     else:
         st.divider()

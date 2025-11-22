@@ -1869,7 +1869,7 @@ def _maybe_handle_recall_query(text: str) -> bool:
             mode=recall_mode,
         )
     except requests.RequestException as exc:
-        st.error(f"Recall failed: {exc}")
+        st.error("Recall failed. Please try again after rebuilding the search index.")
         st.session_state.recall_mode = "all"
         return True
 
@@ -1895,7 +1895,7 @@ def _maybe_handle_recall_query(text: str) -> bool:
 def _anchor(text: str, *, record_chat: bool = True, notify: bool = True, factors_override: list[dict] | None = None):
     entity = _get_entity()
     if not entity:
-        st.error("No active entity; cannot anchor.")
+        st.error("Select an entity before anchoring memories.")
         return False
 
     schema = st.session_state.get("prime_schema", PRIME_SCHEMA)
@@ -2525,6 +2525,7 @@ def _render_app():
             render_inference_callback=_render_inference_tab,
             inference_snapshot=snapshot,
             advanced_probes_enabled=ENABLE_ADVANCED_PROBES,
+            enable_rocksdb_probe=ENABLE_LOCAL_ROCKSDB_PROBE,
         )
 
     with tabs[2]:
