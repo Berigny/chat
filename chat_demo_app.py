@@ -175,21 +175,6 @@ PLACEHOLDER_METRICS_GUARD = {
     "K": 0.0,
 }
 
-RECOMMENDED_S2_METRICS = {
-    **METRIC_FLOORS,
-    "dRetention": 1.0,
-    "dE": 1.0,
-    "dDrift": 0.0,
-    "K": 0.5,
-}
-
-SAFE_PROMOTION_METRICS = {
-    "dE": -1.0,
-    "dDrift": -1.0,
-    "dRetention": 0.8,
-    "K": 0.0,
-}
-
 SEARCH_INDEX_REFRESH_INTERVAL = 90.0
 _ATTACHMENT_QUERY_HINTS = ("attachment", "attachments", "pdf", "document", "file", "upload", "chunk")
 _TOPIC_TOKEN_PATTERN = re.compile(r"[a-z0-9]{3,}")
@@ -341,6 +326,54 @@ def _auto_promotion_key(entity: str | None, ledger_id: str | None) -> str | None
     return f"{entity}::{normalized_ledger}"
 
 
+def _normalize_namespace(ledger_id: str | None) -> str:
+    raw = (ledger_id or "default").strip().lower()
+    slug = re.sub(r"[^a-z0-9_-]", "-", raw)
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug or "default"
+
+
+def _entity_slug(entity: str | None) -> str:
+    raw = (entity or DEFAULT_ENTITY or "entity").strip().lower()
+    slug = re.sub(r"[^a-z0-9_-]", "-", raw)
+    slug = re.sub(r"-+", "-", slug).strip("-")
+    return slug or "entity"
+
+
+def _ledger_entry_key(entity: str | None, ledger_id: str | None, *, suffix: str = "structured") -> dict[str, str]:
+    identifier = _entity_slug(entity)
+    if suffix:
+        identifier = f"{identifier}-{suffix}"
+    return {
+        "namespace": _normalize_namespace(ledger_id),
+        "identifier": identifier,
+    }
+
+
+def _action_request_payload(
+    action: str,
+    entity: str | None,
+    ledger_id: str | None,
+    *,
+    parameters: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload = {
+        "actor": entity or DEFAULT_ENTITY,
+        "action": action,
+        "key": _ledger_entry_key(entity, ledger_id),
+        "parameters": {},
+    }
+    if parameters:
+        for key, value in parameters.items():
+            try:
+                payload["parameters"][str(key)] = float(value)
+            except (TypeError, ValueError):
+                continue
+    if not payload["parameters"]:
+        payload["parameters"] = {"tier": 3.0}
+    return payload
+
+
 def _summarize_http_response(response):
     summary: dict[str, Any] = {}
     if response is None:
@@ -370,7 +403,17 @@ def _response_ok(summary: Mapping[str, Any] | None) -> bool:
 def _promotion_result_ok(result: Mapping[str, Any] | None) -> bool:
     if not isinstance(result, Mapping):
         return False
-    return _response_ok(result.get("lawfulness")) and _response_ok(result.get("metrics"))
+    coherence_ok = _response_ok(result.get("coherence"))
+    ethics_summary = result.get("ethics")
+    ethics_ok = _response_ok(ethics_summary)
+    if not (coherence_ok and ethics_ok):
+        return False
+    detail = ethics_summary.get("detail") if isinstance(ethics_summary, Mapping) else None
+    if isinstance(detail, Mapping):
+        permitted = detail.get("permitted")
+        if isinstance(permitted, bool):
+            return permitted
+    return True
 
 
 def _reset_recall_mode() -> None:
@@ -420,14 +463,12 @@ def _maybe_refresh_search_index(entity: str | None, ledger_id: str | None, *, fo
     if not force and not dirty and now - last_build < SEARCH_INDEX_REFRESH_INTERVAL:
         return
     params = {"entity": entity}
-    if ledger_id:
-        params["ledger_id"] = ledger_id
     headers = {}
     if SETTINGS.api_key:
         headers["x-api-key"] = SETTINGS.api_key
     try:
-        response = requests.post(
-            f"{API.rstrip('/')}/search/index",
+        response = requests.get(
+            f"{API.rstrip('/')}/admin/reindex",
             params=params,
             headers=headers,
             timeout=30,
@@ -527,34 +568,55 @@ def _attachment_quote_fallback(query: str) -> str | None:
 def _apply_backdoor_promotion(
     entity: str,
     ledger_id: str | None,
-    *,
-    metrics_payload: Mapping[str, Any],
 ) -> dict[str, Any]:
     base_url = API.rstrip("/")
-    params = {"entity": entity}
-    if ledger_id:
-        params["ledger_id"] = ledger_id
     headers = {"Content-Type": "application/json"}
     if SETTINGS.api_key:
         headers["x-api-key"] = SETTINGS.api_key
-    lawfulness_resp = requests.patch(
-        f"{base_url}/ledger/lawfulness",
-        params=params,
-        headers=headers,
-        json={"value": 3},
-        timeout=10,
-    )
-    metrics_resp = requests.patch(
-        f"{base_url}/ledger/metrics",
-        params=params,
-        headers=headers,
-        json=dict(metrics_payload or {}),
-        timeout=10,
-    )
-    return {
-        "lawfulness": _summarize_http_response(lawfulness_resp),
-        "metrics": _summarize_http_response(metrics_resp),
+
+    placeholder_entry = {
+        "key": _ledger_entry_key(entity, ledger_id),
+        "state": {
+            "coordinates": {"baseline": 1.0},
+            "phase": "auto-promotion",
+            "metadata": {
+                "entity": entity,
+                "ledger_id": ledger_id,
+                "source": "chat-demo",
+                "timestamp": time.time(),
+            },
+        },
     }
+    try:
+        ledger_resp = requests.post(
+            f"{base_url}/ledger/write",
+            headers=headers,
+            json=placeholder_entry,
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        ledger_summary: dict[str, Any] = {"error": str(exc)}
+    else:
+        ledger_summary = _summarize_http_response(ledger_resp)
+
+    action_payload = _action_request_payload("auto-promote", entity, ledger_id)
+    results: dict[str, Any] = {
+        "ledger_write": ledger_summary,
+        "action": action_payload,
+    }
+    for endpoint in ("coherence", "ethics"):
+        try:
+            evaluation = requests.post(
+                f"{base_url}/{endpoint}/evaluate",
+                headers=headers,
+                json=action_payload,
+                timeout=15,
+            )
+        except requests.RequestException as exc:
+            results[endpoint] = {"error": str(exc)}
+        else:
+            results[endpoint] = _summarize_http_response(evaluation)
+    return results
 
 
 def _update_auto_promotion_tracker(
@@ -600,7 +662,6 @@ def _auto_promote_entity_if_needed() -> None:
         result = _apply_backdoor_promotion(
             entity,
             ledger_id,
-            metrics_payload=SAFE_PROMOTION_METRICS,
         )
     except requests.RequestException as exc:
         _update_auto_promotion_tracker(entity, ledger_id, result=None, error=str(exc))
@@ -2499,7 +2560,6 @@ def _render_app():
         connectivity_search.render_tab(
             api_base=API,
             settings=SETTINGS,
-            api_service=API_SERVICE,
             default_entity=DEFAULT_ENTITY,
             get_entity=_get_entity,
             clean_attachment_header=_clean_attachment_header,
@@ -2508,10 +2568,6 @@ def _render_app():
             reset_recall_mode=_reset_recall_mode,
             update_auto_promotion_tracker=_update_auto_promotion_tracker,
             get_auto_promotion_record=_get_auto_promotion_record,
-            recommended_s2_metrics=RECOMMENDED_S2_METRICS,
-            safe_promotion_metrics=SAFE_PROMOTION_METRICS,
-            derive_flat_s2_map=_derive_flat_s2_map,
-            s2_prime_keys=_S2_PRIME_KEYS,
         )
 
     with tabs[3]:
